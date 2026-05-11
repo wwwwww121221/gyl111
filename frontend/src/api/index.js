@@ -35,7 +35,7 @@ api.interceptors.response.use(
         // Use window.location to avoid circular dependency with router
         window.location.href = '/login'
       } else {
-        ElMessage.error(error.response.data.detail || '请求失败')
+        ElMessage.error(error.response.data.error || error.response.data.detail || '请求失败')
       }
     } else {
       ElMessage.error('网络错误或服务不可用')

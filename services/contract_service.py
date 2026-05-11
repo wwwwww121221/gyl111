@@ -273,6 +273,59 @@ def _format_delivery_date(value) -> str:
     return text[:10]
 
 
+def _load_link_quotes(db: Session, link: InquirySupplier):
+    quotes = db.query(Quotation).filter(
+        Quotation.inquiry_supplier_id == link.id,
+        Quotation.round == link.current_round
+    ).all()
+    if not quotes:
+        quotes = db.query(Quotation).filter(
+            Quotation.inquiry_supplier_id == link.id
+        ).order_by(Quotation.round.desc(), Quotation.id.asc()).all()
+        if quotes:
+            max_round = quotes[0].round
+            quotes = [q for q in quotes if q.round == max_round]
+    return quotes
+
+
+def _build_allocated_qty_map(quote_rows: list, link: InquirySupplier) -> dict:
+    base_qty_map = {}
+    total_base_qty = Decimal("0")
+    for row in quote_rows:
+        base_qty = row["base_qty"]
+        base_qty_map[row["quote"].id] = base_qty
+        total_base_qty += base_qty
+
+    if link.allocated_qty is not None:
+        allocated_total_qty = _to_decimal(link.allocated_qty)
+        if len(quote_rows) <= 1:
+            quote = quote_rows[0]["quote"] if quote_rows else None
+            return {quote.id: allocated_total_qty} if quote else {}
+        if total_base_qty > 0:
+            allocated_qty_map = {}
+            allocated_so_far = Decimal("0")
+            for index, row in enumerate(quote_rows):
+                quote_id = row["quote"].id
+                if index == len(quote_rows) - 1:
+                    allocated_qty_map[quote_id] = allocated_total_qty - allocated_so_far
+                else:
+                    qty = allocated_total_qty * row["base_qty"] / total_base_qty
+                    allocated_qty_map[quote_id] = qty
+                    allocated_so_far += qty
+            return allocated_qty_map
+        average_qty = allocated_total_qty / Decimal(str(len(quote_rows)))
+        return {row["quote"].id: average_qty for row in quote_rows}
+
+    if link.allocated_ratio is not None:
+        ratio = _to_decimal(link.allocated_ratio) / Decimal("100")
+        return {
+            quote_id: base_qty * ratio
+            for quote_id, base_qty in base_qty_map.items()
+        }
+
+    return base_qty_map
+
+
 def _estimate_wrapped_lines(value, chars_per_line: int) -> int:
     if chars_per_line <= 0:
         chars_per_line = 1
@@ -335,17 +388,7 @@ def _collect_contract_payload(
     if not task or not supplier:
         raise ValueError("询价任务或供应商信息不存在")
 
-    quotes = db.query(Quotation).filter(
-        Quotation.inquiry_supplier_id == link.id,
-        Quotation.round == link.current_round
-    ).all()
-    if not quotes:
-        quotes = db.query(Quotation).filter(
-            Quotation.inquiry_supplier_id == link.id
-        ).order_by(Quotation.round.desc(), Quotation.id.asc()).all()
-        if quotes:
-            max_round = quotes[0].round
-            quotes = [q for q in quotes if q.round == max_round]
+    quotes = _load_link_quotes(db, link)
     if not quotes:
         raise ValueError("未找到该成交供应商的报价数据")
 
@@ -357,15 +400,27 @@ def _collect_contract_payload(
     items = []
     total_amount = Decimal("0")
     total_qty = Decimal("0")
-
-    for idx, q in enumerate(quotes, start=1):
+    quote_rows = []
+    for q in quotes:
         task_item = db.query(InquiryTaskItem).filter(InquiryTaskItem.id == q.item_id).first()
         req = db.query(InquiryRequest).filter(InquiryRequest.id == task_item.request_id).first() if task_item else None
+        base_qty = _to_decimal(req.qty if req and req.qty is not None else q.qty)
+        quote_rows.append({
+            "quote": q,
+            "task_item": task_item,
+            "request": req,
+            "base_qty": base_qty,
+        })
+    allocated_qty_map = _build_allocated_qty_map(quote_rows, link)
+
+    for idx, row in enumerate(quote_rows, start=1):
+        q = row["quote"]
+        req = row["request"]
         material_name = req.material_name if req else ""
         material_code = req.material_code if req else ""
         item_project_no = str(req.project_info.get("number") or req.project_info.get("name") or "") if req and req.project_info else ""
         item_project_name = str(req.project_info.get("name") or req.project_info.get("number") or "") if req and req.project_info else ""
-        qty = _to_decimal(req.qty if req and req.qty is not None else q.qty)
+        qty = allocated_qty_map.get(q.id, row["base_qty"])
         price = _to_decimal(q.price)
         amount = qty * price
         total_qty += qty

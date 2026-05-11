@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Any, Optional
 from pydantic import BaseModel
@@ -7,9 +7,13 @@ from datetime import datetime, date
 
 from models import (
     get_db, User, InquiryRequest, InquiryTask, InquiryTaskItem,
-    Supplier, InquirySupplier, InquiryStatus, TaskStatus, LinkStatus, Quotation, Contract, ContractTemplate
+    Supplier, InquirySupplier, InquiryStatus, TaskStatus, LinkStatus, Quotation, Contract, ContractTemplate,
+    ensure_runtime_schema_columns
 )
-from schemas import InquiryTaskCreate, InquiryTask as InquiryTaskSchema, StrategyConfig, InquiryRequest as InquiryRequestSchema
+from schemas import (
+    InquiryTaskCreate, InquiryTask as InquiryTaskSchema, StrategyConfig,
+    InquiryRequest as InquiryRequestSchema, TaskClosePayload
+)
 from routers.auth import oauth2_scheme, login_access_token # reuse auth but simpler dependency
 from services.negotiation_service import calculate_supplier_scores
 
@@ -23,7 +27,7 @@ class ManualInterventionPayload(BaseModel):
     message: Optional[str] = None
 
 
-def _calc_link_total_amount(db: Session, link: InquirySupplier) -> float:
+def _load_link_quotes(db: Session, link: InquirySupplier):
     quotes = db.query(Quotation).filter(
         Quotation.inquiry_supplier_id == link.id,
         Quotation.round == link.current_round
@@ -35,13 +39,116 @@ def _calc_link_total_amount(db: Session, link: InquirySupplier) -> float:
         if quotes:
             max_round = quotes[0].round
             quotes = [q for q in quotes if q.round == max_round]
-    total_amount = 0.0
+    return quotes
+
+
+def _build_allocated_qty_map(db: Session, link: InquirySupplier, quotes: List[Quotation]) -> dict:
+    quote_rows = []
+    total_base_qty = 0.0
     for q in quotes:
         task_item = db.query(InquiryTaskItem).filter(InquiryTaskItem.id == q.item_id).first()
         req = db.query(InquiryRequest).filter(InquiryRequest.id == task_item.request_id).first() if task_item else None
-        qty = req.qty if req and req.qty is not None else (q.qty or 0)
+        base_qty = float(req.qty if req and req.qty is not None else (q.qty or 0))
+        quote_rows.append({"quote_id": q.id, "base_qty": base_qty})
+        total_base_qty += base_qty
+
+    if link.allocated_qty is not None:
+        allocated_total_qty = float(link.allocated_qty or 0)
+        if len(quote_rows) <= 1:
+            return {quote_rows[0]["quote_id"]: allocated_total_qty} if quote_rows else {}
+        if total_base_qty > 0:
+            allocated_qty_map = {}
+            allocated_so_far = 0.0
+            for index, row in enumerate(quote_rows):
+                if index == len(quote_rows) - 1:
+                    allocated_qty_map[row["quote_id"]] = max(allocated_total_qty - allocated_so_far, 0.0)
+                else:
+                    qty = allocated_total_qty * row["base_qty"] / total_base_qty
+                    allocated_qty_map[row["quote_id"]] = qty
+                    allocated_so_far += qty
+            return allocated_qty_map
+        average_qty = allocated_total_qty / len(quote_rows)
+        return {row["quote_id"]: average_qty for row in quote_rows}
+
+    if link.allocated_ratio is not None:
+        ratio = float(link.allocated_ratio or 0) / 100.0
+        return {
+            row["quote_id"]: row["base_qty"] * ratio
+            for row in quote_rows
+        }
+
+    return {row["quote_id"]: row["base_qty"] for row in quote_rows}
+
+
+def _calc_link_total_amount(db: Session, link: InquirySupplier) -> float:
+    quotes = _load_link_quotes(db, link)
+    allocated_qty_map = _build_allocated_qty_map(db, link, quotes)
+    total_amount = 0.0
+    for q in quotes:
+        qty = allocated_qty_map.get(q.id, 0.0)
         total_amount += float(q.price or 0) * float(qty or 0)
     return total_amount
+
+
+def _get_task_total_requested_qty(task: InquiryTask) -> float:
+    total_qty = 0.0
+    for item in task.items:
+        if item.request and item.request.qty is not None:
+            total_qty += float(item.request.qty)
+    return total_qty
+
+
+def _normalize_close_allocations(
+    task: InquiryTask,
+    payload: Optional[TaskClosePayload],
+    selected_link_id: Optional[int]
+) -> List[dict]:
+    if payload and payload.allocations:
+        raw_allocations = payload.allocations
+    elif selected_link_id is not None:
+        raw_allocations = [{"link_id": selected_link_id, "allocated_ratio": 100.0, "allocated_qty": None}]
+    else:
+        raw_allocations = []
+
+    task_link_map = {link.id: link for link in task.suppliers}
+    task_total_qty = _get_task_total_requested_qty(task)
+    normalized_allocations = []
+    seen_link_ids = set()
+    effective_total_qty = 0.0
+
+    for allocation in raw_allocations:
+        link_id = allocation["link_id"] if isinstance(allocation, dict) else allocation.link_id
+        allocated_ratio = allocation.get("allocated_ratio") if isinstance(allocation, dict) else allocation.allocated_ratio
+        allocated_qty = allocation.get("allocated_qty") if isinstance(allocation, dict) else allocation.allocated_qty
+
+        if link_id in seen_link_ids:
+            raise HTTPException(status_code=400, detail=f"Duplicate allocation for link_id={link_id}")
+        if link_id not in task_link_map:
+            raise HTTPException(status_code=404, detail=f"Supplier link {link_id} not found in this task")
+        if allocated_ratio is None and allocated_qty is None:
+            raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} must provide ratio or quantity")
+        if allocated_ratio is not None and allocated_qty is not None:
+            raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} cannot provide both ratio and quantity")
+        if allocated_ratio is not None and allocated_ratio <= 0:
+            raise HTTPException(status_code=400, detail=f"Allocation ratio for link_id={link_id} must be greater than 0")
+        if allocated_qty is not None and allocated_qty <= 0:
+            raise HTTPException(status_code=400, detail=f"Allocation quantity for link_id={link_id} must be greater than 0")
+
+        effective_qty = float(allocated_qty) if allocated_qty is not None else (
+            task_total_qty * float(allocated_ratio) / 100.0 if task_total_qty > 0 else 0.0
+        )
+        effective_total_qty += effective_qty
+        seen_link_ids.add(link_id)
+        normalized_allocations.append({
+            "link_id": link_id,
+            "allocated_ratio": float(allocated_ratio) if allocated_ratio is not None else None,
+            "allocated_qty": float(allocated_qty) if allocated_qty is not None else None,
+        })
+
+    if task_total_qty > 0 and effective_total_qty - task_total_qty > 1e-6:
+        raise HTTPException(status_code=400, detail="Allocated quantity exceeds task requested quantity")
+
+    return normalized_allocations
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -117,6 +224,9 @@ def create_inquiry_task(
     
     if not request_ids:
         raise HTTPException(status_code=400, detail="No valid requests provided")
+
+    # 兼容历史数据库：确保任务表和供应商关联表新增字段已补齐
+    ensure_runtime_schema_columns()
 
     # 2. 创建任务
     new_task = InquiryTask(
@@ -390,6 +500,8 @@ def get_task_details(
             "supplier_code": link.supplier.code,
             "supplier_grade": grade,
             "status": link.status,
+            "allocated_ratio": link.allocated_ratio,
+            "allocated_qty": link.allocated_qty,
             "current_round": link.current_round,
             "quotes": quotes_by_round,
             "total_price": float(score_info.get("total_price", 0)),
@@ -547,58 +659,83 @@ def save_manual_quotes(
 @router.post("/tasks/{task_id}/close")
 def close_inquiry_task(
     task_id: int,
+    payload: Optional[TaskClosePayload] = Body(default=None),
     selected_link_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ) -> Any:
     """
-    手动关闭询价任务。如果指定了 selected_link_id，则该供应商成交，其他淘汰。
-    如果不指定，则按综合评分自动定标；若无有效候选则流标。
+    手动关闭询价任务，支持单供应商整单中标或多供应商拆单中标。
+    兼容旧逻辑：如果仍通过 selected_link_id 传参，则按 100% 分配处理。
     """
     task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task.status = TaskStatus.CLOSED
-    selected_link = None
-    selected_link_key = selected_link_id
+    normalized_allocations = _normalize_close_allocations(task, payload, selected_link_id)
+    allocation_map = {allocation["link_id"]: allocation for allocation in normalized_allocations}
+    task_total_qty = _get_task_total_requested_qty(task)
 
+    task.status = TaskStatus.CLOSED
     for link in task.suppliers:
-        if selected_link_key is not None and link.id == selected_link_key:
+        allocation = allocation_map.get(link.id)
+        if allocation:
             link.status = LinkStatus.DEAL
+            if allocation["allocated_ratio"] is not None:
+                link.allocated_ratio = allocation["allocated_ratio"]
+                link.allocated_qty = (
+                    task_total_qty * allocation["allocated_ratio"] / 100.0
+                    if task_total_qty > 0 else None
+                )
+            else:
+                link.allocated_qty = allocation["allocated_qty"]
+                link.allocated_ratio = (
+                    allocation["allocated_qty"] / task_total_qty * 100.0
+                    if task_total_qty > 0 else None
+                )
             link.latest_ai_feedback = "恭喜，采购员已确认您中标，本次询价已达成合作。"
-            selected_link = link
         else:
             link.status = LinkStatus.REJECT
-            if selected_link_key is None:
+            link.allocated_ratio = None
+            link.allocated_qty = None
+            if not allocation_map:
                 link.latest_ai_feedback = "本次询价任务已终止（流标），所有报价已作废，感谢您的参与。"
             else:
                 link.latest_ai_feedback = "很遗憾，采购员最终选择了其他供应商，本次询价已结束。"
+            contract_record = db.query(Contract).filter(
+                Contract.inquiry_supplier_id == link.id
+            ).first()
+            if contract_record:
+                db.delete(contract_record)
 
-    if selected_link_key is not None and not selected_link:
-        raise HTTPException(status_code=404, detail="Selected supplier link not found in this task")
-
-    if selected_link:
-        total_amount = _calc_link_total_amount(db, selected_link)
+    if allocation_map:
         active_template = db.query(ContractTemplate).filter(
             ContractTemplate.is_active == True
         ).order_by(ContractTemplate.id.desc()).first()
-        contract_record = db.query(Contract).filter(
-            Contract.inquiry_supplier_id == selected_link.id
-        ).first()
-        if not contract_record:
-            contract_record = Contract(
-                task_id=task.id,
-                inquiry_supplier_id=selected_link.id,
-                status="待供应商填写"
-            )
-        contract_record.total_amount = total_amount
-        if active_template and active_template.default_buyer_name and not contract_record.buyer_company_name:
-            contract_record.buyer_company_name = active_template.default_buyer_name
-        db.add(contract_record)
+        for link in task.suppliers:
+            if link.status != LinkStatus.DEAL:
+                continue
+            total_amount = _calc_link_total_amount(db, link)
+            contract_record = db.query(Contract).filter(
+                Contract.inquiry_supplier_id == link.id
+            ).first()
+            if not contract_record:
+                contract_record = Contract(
+                    task_id=task.id,
+                    inquiry_supplier_id=link.id,
+                    status="待供应商填写"
+                )
+            contract_record.total_amount = total_amount
+            if active_template and active_template.default_buyer_name and not contract_record.buyer_company_name:
+                contract_record.buyer_company_name = active_template.default_buyer_name
+            db.add(contract_record)
 
     db.commit()
-    return {"message": "Task closed successfully."}
+    return {
+        "message": "Task closed successfully.",
+        "deal_link_ids": sorted(allocation_map.keys()),
+        "is_split_award": len(allocation_map) > 1
+    }
 
 @router.post("/tasks/{task_id}/links/{link_id}/manual-continue")
 def manual_continue_negotiation(

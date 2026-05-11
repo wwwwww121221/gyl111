@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 from datetime import datetime
 from enum import Enum
@@ -83,6 +83,16 @@ class InquiryTask(InquiryTaskBase):
     
     class Config:
         from_attributes = True
+
+
+class TaskCloseAllocation(BaseModel):
+    link_id: int
+    allocated_ratio: Optional[float] = Field(default=None, ge=0, le=100)
+    allocated_qty: Optional[float] = Field(default=None, ge=0)
+
+
+class TaskClosePayload(BaseModel):
+    allocations: List[TaskCloseAllocation]
 
 class ContractBase(BaseModel):
     task_id: int

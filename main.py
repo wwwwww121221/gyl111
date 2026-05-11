@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from core.config import settings
 from routers import auth, erp_sync, inquiry, supplier, warning, contract, template, material, system, compare
-from models import Base, engine
+from models import Base, engine, ensure_runtime_schema_columns
 import traceback
 import os
 from models import SessionLocal, User
@@ -22,6 +22,7 @@ scheduler = AsyncIOScheduler()
 # 初始化数据库
 # 注意：在生产环境中通常使用 Alembic 进行迁移，这里为了简单直接创建
 Base.metadata.create_all(bind=engine)
+ensure_runtime_schema_columns()
 
 def ensure_admin_user():
     username = os.getenv("ADMIN_USERNAME")

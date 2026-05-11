@@ -54,7 +54,22 @@
           </div>
           <el-table :data="currentComparison" style="width: 100%" class="custom-table mb-4">
             <el-table-column type="index" label="#" width="50" align="center" />
-            <el-table-column prop="name" label="供应商名称" min-width="180" />
+            <el-table-column prop="name" label="供应商名称" min-width="240">
+              <template #default="scope">
+                <div class="supplier-name-cell">
+                  <span>{{ scope.row.name }}</span>
+                  <el-tag
+                    v-for="tag in getSupplierIdentityTags(scope.row)"
+                    :key="tag.label"
+                    :type="tag.type"
+                    size="small"
+                    effect="dark"
+                  >
+                    {{ tag.label }}
+                  </el-tag>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="含税单价" width="140" align="center">
               <template #default="scope">
                 <span class="table-text-value price-highlight">{{ scope.row.tax_net_price ? scope.row.tax_net_price.toFixed(2) : '-' }}</span>
@@ -115,6 +130,94 @@
               <el-input v-if="wechatScriptResult" type="textarea" :rows="3" v-model="wechatScriptResult" readonly></el-input>
             </div>
           </div>
+
+          <el-card shadow="never" class="allocation-card mt-4" v-if="activeMaterial">
+            <template #header>
+              <div class="allocation-card-header">
+                <span>采购份额分配策略</span>
+                <span class="allocation-card-subtitle">支持一键策略与手工微调，分配总和需为 100%</span>
+              </div>
+            </template>
+
+            <div class="allocation-strategy-toolbar">
+              <el-button @click="applyStrategy('common')">全额给常用 (100%)</el-button>
+
+              <div class="pressure-strategy-group">
+                <el-button type="warning" @click="applyStrategy('pressure')">价格压迫策略</el-button>
+                <div class="pressure-ratio-group">
+                  <span class="pressure-ratio-label">常用占%</span>
+                  <el-input-number
+                    v-model="pressureCommonRatio"
+                    size="small"
+                    :min="0"
+                    :max="100"
+                    :controls="false"
+                  />
+                  <span class="pressure-ratio-label">最低价占%</span>
+                  <el-input-number
+                    v-model="pressureLowestRatio"
+                    size="small"
+                    :min="0"
+                    :max="100"
+                    :controls="false"
+                  />
+                </div>
+              </div>
+
+              <el-button type="success" @click="applyStrategy('lowest')">价低者得 (100%)</el-button>
+            </div>
+
+            <el-table :data="currentComparison" class="custom-table allocation-table" style="width: 100%">
+              <el-table-column prop="name" label="供应商名称" min-width="180" />
+              <el-table-column label="业务标签" min-width="220">
+                <template #default="scope">
+                  <div class="supplier-tags">
+                    <el-tag
+                      v-for="tag in getSupplierIdentityTags(scope.row)"
+                      :key="tag.label"
+                      :type="tag.type"
+                      size="small"
+                      effect="dark"
+                    >
+                      {{ tag.label }}
+                    </el-tag>
+                    <span v-if="getSupplierIdentityTags(scope.row).length === 0" class="text-muted">-</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="含税单价" width="140" align="center">
+                <template #default="scope">
+                  <span class="table-text-value">{{ scope.row.tax_net_price ? scope.row.tax_net_price.toFixed(2) : '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="不含税单价" width="140" align="center">
+                <template #default="scope">
+                  <span class="table-text-value">{{ scope.row.price ? scope.row.price.toFixed(2) : '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="分配比例 (%)" width="180" align="center">
+                <template #default="scope">
+                  <el-input-number
+                    v-model="allocations[getAllocationKey(scope.row)]"
+                    size="small"
+                    :min="0"
+                    :max="100"
+                    :precision="0"
+                    :step="5"
+                    controls-position="right"
+                  />
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="allocation-footer">
+              <div class="allocation-summary">
+                <span class="allocation-sum-text">当前分配总和：{{ allocationSum }} %</span>
+                <span v-if="allocationSum !== 100" class="allocation-warning">分配比例总和必须等于 100%</span>
+              </div>
+              <el-button type="primary" :disabled="!canSubmit" :loading="isSubmittingAllocation" @click="submitAllocation">确认并生成合同</el-button>
+            </div>
+          </el-card>
           
         </el-card>
       </div>
@@ -129,7 +232,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { DataAnalysis, MagicStick, Histogram, TrendCharts, Opportunity, Menu, Goods, ChatDotRound, Check, Share, Printer, User, Search, Refresh } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -145,6 +248,10 @@ const activeIndex = ref(0)
 const historicalSuppliers = ref([])
 const otherSuppliers = ref([])
 const historyLoading = ref(false)
+const pressureCommonRatio = ref(80)
+const pressureLowestRatio = ref(20)
+const allocations = ref({})
+const isSubmittingAllocation = ref(false)
 
 const wechatTargetSupplier = ref('')
 const wechatTargetPrice = ref(undefined)
@@ -152,6 +259,29 @@ const wechatLoading = ref(false)
 const wechatScriptResult = ref('')
 
 const activeMaterial = computed(() => materialsData.value[activeIndex.value] || null)
+const allocationSum = computed(() => {
+  return currentComparison.value.reduce((sum, supplier) => {
+    const key = getAllocationKey(supplier)
+    return sum + Number(allocations.value[key] || 0)
+  }, 0)
+})
+const canSubmit = computed(() => allocationSum.value === 100)
+
+let syncingPressureRatios = false
+
+watch(pressureCommonRatio, (value) => {
+  if (syncingPressureRatios) return
+  syncingPressureRatios = true
+  pressureLowestRatio.value = Math.max(0, 100 - Number(value || 0))
+  syncingPressureRatios = false
+})
+
+watch(pressureLowestRatio, (value) => {
+  if (syncingPressureRatios) return
+  syncingPressureRatios = true
+  pressureCommonRatio.value = Math.max(0, 100 - Number(value || 0))
+  syncingPressureRatios = false
+})
 
 // Init from sessionStorage
 onMounted(async () => {
@@ -177,6 +307,7 @@ onMounted(async () => {
           const price = quote ? quote.price : undefined;
           const tax_net_price = price ? Number((price * 1.13).toFixed(2)) : undefined;
           return {
+            link_id: link.link_id,
             code: link.supplier_code,
             name: link.supplier_name,
             grade: link.supplier_grade,
@@ -274,6 +405,48 @@ const getGradeStars = (grade) => {
   if (grade === 'C级') return 3;
   return 2; // 一般
 }
+
+const getAllocationKey = (supplier) => {
+  return String(supplier?.link_id ?? supplier?.code ?? supplier?.name ?? '')
+}
+
+const initializeAllocations = () => {
+  const nextAllocations = {}
+  const suppliers = activeMaterial.value?.suppliers || []
+  suppliers.forEach((supplier) => {
+    const key = getAllocationKey(supplier)
+    if (key) {
+      nextAllocations[key] = 0
+    }
+  })
+  allocations.value = nextAllocations
+}
+
+const getSupplierIdentityTags = (supplier) => {
+  const tags = []
+  if (supplier?.is_common) {
+    tags.push({ label: '常用供应商', type: 'primary' })
+  }
+  if (supplier?.is_lowest) {
+    tags.push({ label: '最低价', type: 'success' })
+  }
+  if (supplier?.is_highest) {
+    tags.push({ label: '最高价', type: 'danger' })
+  }
+  return tags
+}
+
+watch(
+  () => ({
+    reqId: activeMaterial.value?.reqId,
+    supplierKeys: (activeMaterial.value?.suppliers || []).map(getAllocationKey).join('|')
+  }),
+  () => {
+    initializeAllocations()
+  },
+  { immediate: true }
+)
+
 const fetchHistoryStats = async () => {
   if (!activeMaterial.value) return
   historyLoading.value = true
@@ -308,24 +481,161 @@ const fetchHistoryStats = async () => {
 const currentComparison = computed(() => {
   if (!activeMaterial.value) return []
   const suppliersList = activeMaterial.value.suppliers || []
+  const rankedHistoricalSuppliers = historicalSuppliers.value || []
+  const commonSupplier = rankedHistoricalSuppliers.length > 0 ? rankedHistoricalSuppliers[0] : null
+  const commonSupplierCode = commonSupplier?.code || null
+  const commonSupplierName = commonSupplier?.name || commonSupplier?.supplier_name || null
   
   const validSuppliers = suppliersList.filter(s => s.tax_net_price > 0)
-  if (validSuppliers.length === 0) return suppliersList.map(s => ({ ...s, diff_percent: 0, is_lowest: false }))
+  if (validSuppliers.length === 0) {
+    return suppliersList.map(s => ({
+      ...s,
+      diff_percent: 0,
+      is_lowest: false,
+      is_highest: false,
+      is_common: Boolean(
+        (commonSupplierCode && s.code === commonSupplierCode) ||
+        (commonSupplierName && s.name === commonSupplierName)
+      )
+    }))
+  }
   
   const sum = validSuppliers.reduce((acc, s) => acc + s.tax_net_price, 0)
   const avg = sum / validSuppliers.length
   const minPrice = Math.min(...validSuppliers.map(s => s.tax_net_price))
+  const maxPrice = Math.max(...validSuppliers.map(s => s.tax_net_price))
   
   return suppliersList.map(s => {
-    if (!s.tax_net_price) return { ...s, diff_percent: 0, is_lowest: false }
+    const isCommon = Boolean(
+      (commonSupplierCode && s.code === commonSupplierCode) ||
+      (commonSupplierName && s.name === commonSupplierName)
+    )
+    if (!s.tax_net_price) {
+      return {
+        ...s,
+        diff_percent: 0,
+        is_lowest: false,
+        is_highest: false,
+        is_common: isCommon
+      }
+    }
     const diff_percent = ((s.tax_net_price - avg) / avg) * 100
     return {
       ...s,
       diff_percent,
-      is_lowest: s.tax_net_price === minPrice
+      is_lowest: s.tax_net_price === minPrice,
+      is_highest: s.tax_net_price === maxPrice,
+      is_common: isCommon
     }
   })
 })
+
+const applyStrategy = (type) => {
+  if (!currentComparison.value.length) {
+    ElMessage.warning('当前暂无可分配的供应商')
+    return
+  }
+
+  initializeAllocations()
+
+  const commonSupplier = currentComparison.value.find(item => item.is_common)
+  const lowestSupplier = currentComparison.value.find(item => item.is_lowest)
+
+  const setAllocation = (supplier, ratio) => {
+    if (!supplier) return
+    const key = getAllocationKey(supplier)
+    if (!key) return
+    allocations.value[key] = Number(ratio || 0)
+  }
+
+  if (type === 'common') {
+    if (!commonSupplier) {
+      ElMessage.warning('未识别到常用供应商')
+      return
+    }
+    setAllocation(commonSupplier, 100)
+    return
+  }
+
+  if (type === 'lowest') {
+    if (!lowestSupplier) {
+      ElMessage.warning('未识别到最低价供应商')
+      return
+    }
+    setAllocation(lowestSupplier, 100)
+    return
+  }
+
+  if (type === 'pressure') {
+    if (!commonSupplier && !lowestSupplier) {
+      ElMessage.warning('未识别到常用供应商或最低价供应商')
+      return
+    }
+
+    const commonKey = commonSupplier ? getAllocationKey(commonSupplier) : null
+    const lowestKey = lowestSupplier ? getAllocationKey(lowestSupplier) : null
+
+    if (commonKey && lowestKey && commonKey === lowestKey) {
+      setAllocation(commonSupplier, 100)
+      return
+    }
+
+    if (commonSupplier && lowestSupplier) {
+      setAllocation(commonSupplier, pressureCommonRatio.value)
+      setAllocation(lowestSupplier, pressureLowestRatio.value)
+      return
+    }
+
+    setAllocation(commonSupplier || lowestSupplier, 100)
+  }
+}
+
+const submitAllocation = async () => {
+  if (!route.query.taskId) {
+    ElMessage.error('当前缺少询价任务ID，无法提交定标')
+    return
+  }
+  if (!canSubmit.value) {
+    ElMessage.warning('分配比例总和必须等于 100%')
+    return
+  }
+
+  const selectedSuppliers = currentComparison.value
+    .map((supplier) => ({
+      supplier,
+      ratio: Number(allocations.value[getAllocationKey(supplier)] || 0)
+    }))
+    .filter(item => item.ratio > 0)
+
+  if (selectedSuppliers.length === 0) {
+    ElMessage.warning('请至少为一个供应商分配份额')
+    return
+  }
+
+  const missingLinkSupplier = selectedSuppliers.find(item => !item.supplier.link_id)
+  if (missingLinkSupplier) {
+    ElMessage.error(`供应商 ${missingLinkSupplier.supplier.name} 缺少关联ID，无法提交定标`)
+    return
+  }
+
+  const payload = {
+    allocations: selectedSuppliers.map(item => ({
+      link_id: item.supplier.link_id,
+      allocated_ratio: item.ratio
+    }))
+  }
+
+  isSubmittingAllocation.value = true
+  try {
+    await api.post(`/inquiry/tasks/${route.query.taskId}/close`, payload)
+    ElMessage.success('定标成功，合同生成流程已触发')
+    router.push({ name: 'InquiryTasks' })
+  } catch (error) {
+    console.error(error)
+  } finally {
+    isSubmittingAllocation.value = false
+  }
+}
 
 // Generate Analysis
 const generateAnalysis = async (isAuto = false) => {
@@ -533,6 +843,101 @@ const generateWechatScript = async () => {
   display: flex;
   align-items: center;
   font-size: 12px;
+}
+
+.supplier-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.supplier-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.allocation-card {
+  border-radius: 8px;
+}
+
+.allocation-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-weight: bold;
+  color: #303133;
+}
+
+.allocation-card-subtitle {
+  font-size: 12px;
+  font-weight: normal;
+  color: #909399;
+}
+
+.allocation-strategy-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.pressure-strategy-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid #f3d19e;
+  background: #fff8eb;
+  border-radius: 8px;
+}
+
+.pressure-ratio-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pressure-ratio-label {
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
+}
+
+.allocation-table {
+  margin-bottom: 16px;
+}
+
+.allocation-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.allocation-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.allocation-sum-text {
+  font-size: 14px;
+  color: #303133;
+  font-weight: 500;
+}
+
+.allocation-warning {
+  font-size: 13px;
+  color: #f56c6c;
 }
 
 /* AI Box Custom Styling */

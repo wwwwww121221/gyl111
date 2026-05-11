@@ -1,7 +1,16 @@
 <template>
   <div class="page-container">
     <div class="content-card">
-      <el-table :data="suppliers" style="width: 100%" v-loading="loading">
+      <div class="toolbar">
+        <el-input
+          v-model="searchQuery"
+          placeholder="请输入供应商名称进行搜索"
+          clearable
+          class="search-input"
+        />
+      </div>
+
+      <el-table :data="filteredSuppliers" style="width: 100%" v-loading="loading">
         <el-table-column type="index" label="序号" width="80" />
         <el-table-column prop="name" label="供应商名称" />      
         <el-table-column prop="contact_person" label="联系人" />
@@ -81,6 +90,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 const allSuppliers = ref([])
 const loading = ref(false)
+const searchQuery = ref('')
 
 const userRole = computed(() => localStorage.getItem('role') || '')
 
@@ -109,6 +119,16 @@ const fetchSuppliers = async () => {
 // Only show approved/rejected suppliers in this view
 const suppliers = computed(() => {
   return allSuppliers.value.filter(s => s.status !== 'pending')
+})
+
+const filteredSuppliers = computed(() => {
+  const keyword = searchQuery.value.trim().toLowerCase()
+  if (!keyword) {
+    return suppliers.value
+  }
+  return suppliers.value.filter((supplier) =>
+    (supplier.name || '').toLowerCase().includes(keyword)
+  )
 })
 
 onMounted(() => {
@@ -199,6 +219,16 @@ const handleDelete = async (row) => {
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.search-input {
+  width: 280px;
 }
 
 /* 让表格自动占满剩余高度并内部滚动 */

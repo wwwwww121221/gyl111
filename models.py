@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, JSON, Enum, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, JSON, Enum, UniqueConstraint, inspect, text
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
@@ -16,6 +16,33 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+
+def ensure_runtime_schema_columns():
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    alter_statements = []
+
+    if "inquiry_suppliers" in table_names:
+        inquiry_supplier_columns = {col["name"] for col in inspector.get_columns("inquiry_suppliers")}
+        if "allocated_ratio" not in inquiry_supplier_columns:
+            alter_statements.append("ALTER TABLE inquiry_suppliers ADD COLUMN allocated_ratio FLOAT")
+        if "allocated_qty" not in inquiry_supplier_columns:
+            alter_statements.append("ALTER TABLE inquiry_suppliers ADD COLUMN allocated_qty FLOAT")
+
+    if "inquiry_tasks" in table_names:
+        inquiry_task_columns = {col["name"] for col in inspector.get_columns("inquiry_tasks")}
+        if "type" not in inquiry_task_columns:
+            alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN type VARCHAR DEFAULT 'auto'")
+        if "buyer_id" not in inquiry_task_columns:
+            alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN buyer_id INTEGER")
+
+    if not alter_statements:
+        return
+
+    with engine.begin() as conn:
+        for statement in alter_statements:
+            conn.execute(text(statement))
 
 # --- 枚举类型 ---
 
@@ -162,6 +189,8 @@ class InquirySupplier(Base):
     supplier_id = Column(Integer, ForeignKey("suppliers.id"))
     current_round = Column(Integer, default=1)
     status = Column(String, default=LinkStatus.SENT)
+    allocated_ratio = Column(Float, nullable=True, comment="中标分配比例(0-100)")
+    allocated_qty = Column(Float, nullable=True, comment="中标分配数量")
     latest_ai_feedback = Column(Text, nullable=True, comment="最新的AI谈判反馈")
     created_at = Column(DateTime, default=datetime.now)
 

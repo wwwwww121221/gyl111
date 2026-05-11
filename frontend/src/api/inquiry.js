@@ -36,6 +36,26 @@ export const closeInquiryTask = (taskId, closeData = null) => {
   return api.post(`${INQUIRY_BASE}/tasks/${taskId}/close`, closeData)
 }
 
+export const saveManualQuotes = (taskId, data) => {
+  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/save-manual-quotes`, data)
+}
+
+export const saveCompareDraft = (taskId, data) => {
+  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/compare-draft`, data)
+}
+
+export const getCompareDrafts = () => {
+  return api.get(`${INQUIRY_BASE}/compare-drafts`)
+}
+
+export const deleteCompareDraft = (draftId) => {
+  return api.delete(`${INQUIRY_BASE}/compare-drafts/${draftId}`)
+}
+
+export const deleteCompareDraftsByTask = (taskId) => {
+  return api.delete(`${INQUIRY_BASE}/compare-drafts/by-task/${taskId}`)
+}
+
 export const syncErpRequisitions = (params = {}) => {
   return api.post('/erp/requisitions', null, {
     params

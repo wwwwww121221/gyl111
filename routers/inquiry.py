@@ -8,7 +8,7 @@ from datetime import datetime, date
 from models import (
     get_db, User, InquiryRequest, InquiryTask, InquiryTaskItem,
     Supplier, InquirySupplier, InquiryStatus, TaskStatus, LinkStatus, Quotation, Contract, ContractTemplate,
-    ensure_runtime_schema_columns
+    ensure_runtime_schema_columns, CompareDraft
 )
 from schemas import (
     InquiryTaskCreate, InquiryTask as InquiryTaskSchema, StrategyConfig,
@@ -589,6 +589,13 @@ class ManualQuotePayload(BaseModel):
     material_code: str
     suppliers: List[ManualQuoteItem]
 
+
+class CompareDraftPayload(BaseModel):
+    material_code: str
+    material_name: Optional[str] = None
+    supplier_count: int = 0
+    task_title: Optional[str] = None
+
 @router.post("/tasks/{task_id}/save-manual-quotes")
 def save_manual_quotes(
     task_id: int,
@@ -655,6 +662,110 @@ def save_manual_quotes(
             
     db.commit()
     return {"message": "Quotes saved successfully"}
+
+
+@router.post("/tasks/{task_id}/compare-draft")
+def upsert_compare_draft(
+    task_id: int,
+    payload: CompareDraftPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    保存/更新智能比价草稿（服务端持久化，多端共享）
+    """
+    task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    draft = db.query(CompareDraft).filter(
+        CompareDraft.task_id == task_id,
+        CompareDraft.buyer_id == current_user.id,
+        CompareDraft.material_code == payload.material_code
+    ).first()
+
+    if not draft:
+        draft = CompareDraft(
+            task_id=task_id,
+            buyer_id=current_user.id,
+            material_code=payload.material_code
+        )
+        db.add(draft)
+
+    draft.task_title = payload.task_title or task.title
+    draft.material_name = payload.material_name
+    draft.supplier_count = max(int(payload.supplier_count or 0), 0)
+    draft.updated_at = datetime.now()
+
+    db.commit()
+    db.refresh(draft)
+    return {
+        "id": draft.id,
+        "task_id": draft.task_id,
+        "task_title": draft.task_title,
+        "material_code": draft.material_code,
+        "material_name": draft.material_name,
+        "supplier_count": draft.supplier_count,
+        "updated_at": draft.updated_at
+    }
+
+
+@router.get("/compare-drafts")
+def get_compare_drafts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    获取当前采购员的智能比价草稿列表
+    """
+    query = db.query(CompareDraft)
+    if current_user.role != "admin":
+        query = query.filter(CompareDraft.buyer_id == current_user.id)
+    drafts = query.order_by(CompareDraft.updated_at.desc(), CompareDraft.id.desc()).all()
+    return [
+        {
+            "id": d.id,
+            "task_id": d.task_id,
+            "task_title": d.task_title,
+            "material_code": d.material_code,
+            "material_name": d.material_name,
+            "supplier_count": d.supplier_count,
+            "updated_at": d.updated_at
+        }
+        for d in drafts
+    ]
+
+
+@router.delete("/compare-drafts/{draft_id}")
+def delete_compare_draft(
+    draft_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    draft = db.query(CompareDraft).filter(CompareDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if current_user.role != "admin" and draft.buyer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    db.delete(draft)
+    db.commit()
+    return {"message": "Draft deleted successfully"}
+
+
+@router.delete("/compare-drafts/by-task/{task_id}")
+def delete_compare_drafts_by_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    query = db.query(CompareDraft).filter(CompareDraft.task_id == task_id)
+    if current_user.role != "admin":
+        query = query.filter(CompareDraft.buyer_id == current_user.id)
+
+    deleted = query.delete()
+    db.commit()
+    return {"message": "Drafts deleted successfully", "deleted_count": deleted}
 
 @router.post("/tasks/{task_id}/close")
 def close_inquiry_task(

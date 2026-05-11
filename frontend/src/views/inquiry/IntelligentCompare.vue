@@ -57,8 +57,12 @@
           </el-table>
 
           <!-- 2. 本次报价明细 -->
-          <div class="section-header mt-4">
+          <div class="section-header mt-4 comparison-header">
             <h3 class="section-title">本次报价明细</h3>
+            <el-button type="primary" link size="small" @click="openAddSupplierDialog">
+              <el-icon><Plus /></el-icon>
+              补充供应商
+            </el-button>
           </div>
           <el-table :data="currentComparison" style="width: 100%" class="custom-table mb-4">
             <el-table-column type="index" label="#" width="50" align="center" />
@@ -80,12 +84,30 @@
             </el-table-column>
             <el-table-column label="含税单价" width="140" align="center">
               <template #default="scope">
-                <span class="table-text-value price-highlight">{{ scope.row.tax_net_price ? scope.row.tax_net_price.toFixed(2) : '-' }}</span>
+                <el-input-number
+                  :model-value="scope.row.tax_net_price"
+                  size="small"
+                  :min="0"
+                  :precision="2"
+                  :step="0.1"
+                  :controls="false"
+                  placeholder="请输入"
+                  @change="(val) => updateSupplierTaxNetPrice(scope.row, val)"
+                />
               </template>
             </el-table-column>
             <el-table-column label="不含税单价" width="140" align="center">
               <template #default="scope">
-                <span class="table-text-value">{{ scope.row.price ? scope.row.price.toFixed(2) : '-' }}</span>
+                <el-input-number
+                  :model-value="scope.row.price"
+                  size="small"
+                  :min="0"
+                  :precision="2"
+                  :step="0.1"
+                  :controls="false"
+                  placeholder="请输入"
+                  @change="(val) => updateSupplierPrice(scope.row, val)"
+                />
               </template>
             </el-table-column>
             <el-table-column label="报价优势" min-width="160">
@@ -223,7 +245,10 @@
                 <span class="allocation-sum-text">当前分配总和：{{ allocationSum }} %</span>
                 <span v-if="allocationSum !== 100" class="allocation-warning">分配比例总和必须等于 100%</span>
               </div>
-              <el-button type="primary" :disabled="!canSubmit" :loading="isSubmittingAllocation" @click="submitAllocation">确认并生成合同</el-button>
+              <div class="allocation-actions">
+                <el-button @click="handleSaveDraft" :loading="isSavingDraft">保存报价草稿</el-button>
+                <el-button type="primary" :disabled="!canSubmit" :loading="isSubmittingAllocation" @click="submitAllocation">确认并生成合同</el-button>
+              </div>
             </div>
           </el-card>
           
@@ -234,21 +259,65 @@
       </div>
     </div>
     
-    <div v-else class="empty-state">
-      <el-empty description="暂无比价物料，请从询价池选择" :image-size="200">
-        <el-button type="primary" @click="router.push('/inquiries/requests')">前往询价池</el-button>
-      </el-empty>
+    <div v-else class="workbench-empty-wrap">
+      <el-card shadow="never" class="draft-list-card">
+        <template #header>
+          <div class="draft-list-header">
+            <span>智能比价草稿列表</span>
+            <el-button type="primary" link @click="router.push('/inquiries/requests')">前往询价池创建任务</el-button>
+          </div>
+        </template>
+        <el-table v-if="compareDraftRows.length > 0" :data="compareDraftRows" class="custom-table" style="width: 100%">
+          <el-table-column type="index" label="#" width="60" align="center" />
+          <el-table-column prop="task_title" label="询价任务" min-width="220" />
+          <el-table-column prop="material_name" label="物料名称" min-width="180" />
+          <el-table-column prop="material_code" label="物料编码" min-width="140" />
+          <el-table-column prop="supplier_count" label="报价供应商数" width="120" align="center" />
+          <el-table-column label="保存时间" min-width="170" align="center">
+            <template #default="scope">
+              {{ formatDraftTime(scope.row.updated_at) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="180" align="center" fixed="right">
+            <template #default="scope">
+              <el-button type="primary" link @click="openDraft(scope.row)">继续编辑</el-button>
+              <el-button type="danger" link @click="removeDraft(scope.row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂无保存的比价草稿" :image-size="140" />
+      </el-card>
     </div>
+
+    <el-dialog v-model="showAddSupplierDialog" title="添加比价供应商" width="400px">
+      <el-select
+        v-model="newSupplierId"
+        placeholder="请选择或搜索供应商"
+        filterable
+        style="width: 100%"
+      >
+        <el-option
+          v-for="s in availableSuppliersForCurrentMaterial"
+          :key="s.id || s.code || s.name"
+          :label="s.code ? `${s.name} (${s.code})` : s.name"
+          :value="s.id"
+        />
+      </el-select>
+      <template #footer>
+        <el-button @click="showAddSupplierDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleAddSupplier">确认添加</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { DataAnalysis, MagicStick, Histogram, TrendCharts, Opportunity, Menu, Goods, ChatDotRound, Check, Share, Printer, User, Search, Refresh } from '@element-plus/icons-vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { DataAnalysis, MagicStick, Histogram, TrendCharts, Opportunity, Menu, Goods, ChatDotRound, Check, Share, Printer, User, Search, Refresh, Plus } from '@element-plus/icons-vue'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../api/index'
-import { closeInquiryTask } from '../../api/inquiry'
+import { closeInquiryTask, saveManualQuotes, saveCompareDraft, getCompareDrafts, deleteCompareDraft, deleteCompareDraftsByTask } from '../../api/inquiry'
 import { marked } from 'marked'
 
 const route = useRoute()
@@ -265,11 +334,209 @@ const pressureCommonRatio = ref(80)
 const pressureLowestRatio = ref(20)
 const allocations = ref({})
 const isSubmittingAllocation = ref(false)
+const isSavingDraft = ref(false)
+const isFormDirty = ref(false)
+const skipLeaveGuardOnce = ref(false)
+const showAddSupplierDialog = ref(false)
+const newSupplierId = ref(undefined)
+const isInitializingAllocations = ref(false)
+const compareDraftRows = ref([])
+const compareDraftApiChecked = ref(false)
+const compareDraftApiReady = ref(false)
 
 const wechatTargetSupplier = ref('')
 const wechatTargetPrice = ref(undefined)
 const wechatLoading = ref(false)
 const wechatScriptResult = ref('')
+const DRAFT_INDEX_KEY = 'intelligent_compare_draft_index'
+
+const getLocalDraftKey = () => {
+  const taskId = route.query.taskId
+  return taskId ? `intelligent_compare_draft_${taskId}` : ''
+}
+
+const getLocalDraftKeyByTaskId = (taskId) => {
+  return taskId ? `intelligent_compare_draft_${taskId}` : ''
+}
+
+const loadLocalDraftIndex = () => {
+  try {
+    const raw = localStorage.getItem(DRAFT_INDEX_KEY)
+    compareDraftRows.value = raw ? JSON.parse(raw) : []
+  } catch {
+    compareDraftRows.value = []
+  }
+}
+
+const saveLocalDraftIndex = (rows) => {
+  compareDraftRows.value = rows
+  localStorage.setItem(DRAFT_INDEX_KEY, JSON.stringify(rows))
+}
+
+const upsertLocalDraftIndex = (entry) => {
+  const rows = [...compareDraftRows.value]
+  const idx = rows.findIndex(item => String(item.task_id) === String(entry.task_id))
+  if (idx >= 0) {
+    rows[idx] = { ...rows[idx], ...entry }
+  } else {
+    rows.unshift(entry)
+  }
+  saveLocalDraftIndex(rows)
+}
+
+const removeLocalDraftByTaskId = (taskId) => {
+  const rows = compareDraftRows.value.filter(item => String(item.task_id) !== String(taskId))
+  saveLocalDraftIndex(rows)
+}
+
+const detectCompareDraftApi = async () => {
+  try {
+    const res = await api.get('/openapi.json')
+    const paths = res?.data?.paths || {}
+    compareDraftApiReady.value = Boolean(
+      paths['/api/inquiry/compare-drafts'] &&
+      paths['/api/inquiry/tasks/{task_id}/compare-draft']
+    )
+  } catch {
+    compareDraftApiReady.value = false
+  } finally {
+    compareDraftApiChecked.value = true
+  }
+}
+
+const loadCompareDraftRows = async () => {
+  if (!compareDraftApiChecked.value) {
+    await detectCompareDraftApi()
+  }
+  if (!compareDraftApiReady.value) {
+    loadLocalDraftIndex()
+    return
+  }
+  try {
+    const res = await getCompareDrafts()
+    compareDraftRows.value = (res.data || []).map(item => ({
+      ...item,
+      supplier_count: Number(item.supplier_count || 0)
+    }))
+  } catch (error) {
+    // 接口不可用时自动降级，且避免反复请求 404
+    compareDraftApiReady.value = false
+    loadLocalDraftIndex()
+  }
+}
+
+const formatDraftTime = (timestamp) => {
+  if (!timestamp) return '-'
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString()
+}
+
+const openDraft = (row) => {
+  if (!row?.task_id) return
+  router.push({ name: 'IntelligentCompare', query: { taskId: row.task_id } })
+}
+
+const removeDraft = (row) => {
+  if (!row?.task_id) return
+  ElMessageBox.confirm('确定删除该草稿吗？', '提示', {
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    if (compareDraftApiReady.value && row.id) {
+      await deleteCompareDraft(row.id)
+      await loadCompareDraftRows()
+    } else {
+      removeLocalDraftByTaskId(row.task_id)
+    }
+    localStorage.removeItem(getLocalDraftKeyByTaskId(row.task_id))
+    ElMessage.success('草稿已删除')
+  }).catch(() => {})
+}
+
+const persistLocalDraft = () => {
+  const key = getLocalDraftKey()
+  if (!key || !materialsData.value.length) return
+
+  const draft = {
+    activeMaterialKey: activeMaterialKey.value,
+    materials: materialsData.value.map((material) => ({
+      reqId: material.reqId,
+      suppliers: (material.suppliers || []).map((supplier) => ({
+        code: supplier.code,
+        name: supplier.name,
+        grade: supplier.grade,
+        tax_rate: supplier.tax_rate,
+        tax_net_price: supplier.tax_net_price,
+        price: supplier.price,
+        qty: supplier.qty
+      }))
+    })),
+    allocations: { ...allocations.value },
+    savedAt: Date.now()
+  }
+
+  localStorage.setItem(key, JSON.stringify(draft))
+}
+
+const clearLocalDraft = () => {
+  const key = getLocalDraftKey()
+  if (key) {
+    localStorage.removeItem(key)
+  }
+}
+
+const restoreLocalDraft = () => {
+  const key = getLocalDraftKey()
+  if (!key) return
+
+  const raw = localStorage.getItem(key)
+  if (!raw) return
+
+  try {
+    const draft = JSON.parse(raw)
+    const draftMaterials = draft?.materials || []
+    const materialMap = new Map(materialsData.value.map(m => [String(m.reqId), m]))
+
+    draftMaterials.forEach((draftMaterial) => {
+      const targetMaterial = materialMap.get(String(draftMaterial.reqId))
+      if (!targetMaterial) return
+
+      const existingByCode = new Map((targetMaterial.suppliers || []).map(s => [s.code, s]))
+      ;(draftMaterial.suppliers || []).forEach((savedSupplier) => {
+        if (!savedSupplier?.code) return
+        if (existingByCode.has(savedSupplier.code)) {
+          const target = existingByCode.get(savedSupplier.code)
+          target.tax_net_price = savedSupplier.tax_net_price
+          target.price = savedSupplier.price
+          target.qty = savedSupplier.qty || target.qty
+          target.grade = savedSupplier.grade || target.grade
+          return
+        }
+
+        targetMaterial.suppliers.push({
+          code: savedSupplier.code,
+          name: savedSupplier.name || '未知供应商',
+          grade: savedSupplier.grade || '一般',
+          tax_rate: savedSupplier.tax_rate ?? 13,
+          tax_net_price: savedSupplier.tax_net_price,
+          price: savedSupplier.price,
+          qty: savedSupplier.qty || targetMaterial.qty || 1
+        })
+      })
+    })
+
+    if (draft?.activeMaterialKey) {
+      activeMaterialKey.value = String(draft.activeMaterialKey)
+    }
+    if (draft?.allocations && typeof draft.allocations === 'object') {
+      allocations.value = { ...draft.allocations }
+    }
+  } catch (error) {
+    console.error('Failed to restore local draft', error)
+  }
+}
 
 const filteredMaterialsData = computed(() => {
   const keyword = materialSearchKeyword.value.trim().toLowerCase()
@@ -283,6 +550,15 @@ const activeMaterial = computed(() => {
   return materialsData.value.find((item) => String(item.reqId) === activeMaterialKey.value) || null
 })
 const activeMaterialMenuKey = computed(() => activeMaterial.value ? String(activeMaterial.value.reqId) : '')
+const availableSuppliersForCurrentMaterial = computed(() => {
+  const existing = new Set(
+    (activeMaterial.value?.suppliers || []).map((s) => String(s.supplier_id || s.code || s.name || ''))
+  )
+  return (otherSuppliers.value || []).filter((s) => {
+    const key = String(s.id || s.code || s.name || '')
+    return key && !existing.has(key)
+  })
+})
 const allocationSum = computed(() => {
   return currentComparison.value.reduce((sum, supplier) => {
     const key = getAllocationKey(supplier)
@@ -331,14 +607,9 @@ watch(
   }
 )
 
-// Init from sessionStorage
-onMounted(async () => {
-  try {
-    const allSuppRes = await api.get('/supplier/list')
-    otherSuppliers.value = allSuppRes.data || []
-  } catch(e) {
-    console.error('Failed to load all suppliers', e)
-  }
+const loadWorkspaceDataByRoute = async () => {
+  activeMaterialKey.value = ''
+  materialsData.value = []
 
   if (route.query.taskId) {
     try {
@@ -356,6 +627,7 @@ onMounted(async () => {
           const tax_net_price = price ? Number((price * 1.13).toFixed(2)) : undefined;
           return {
             link_id: link.link_id,
+            supplier_id: link.supplier_id,
             code: link.supplier_code,
             name: link.supplier_name,
             grade: link.supplier_grade,
@@ -414,7 +686,32 @@ onMounted(async () => {
     // 直接通过侧边栏点击进入，清空数据展示空状态
     materialsData.value = []
   }
+
+  restoreLocalDraft()
+}
+
+// Init from sessionStorage
+onMounted(async () => {
+  await detectCompareDraftApi()
+  await loadCompareDraftRows()
+
+  try {
+    const allSuppRes = await api.get('/supplier/list')
+    otherSuppliers.value = allSuppRes.data || []
+  } catch(e) {
+    console.error('Failed to load all suppliers', e)
+  }
+
+  await loadWorkspaceDataByRoute()
 })
+
+watch(
+  () => `${route.query.taskId || ''}|${route.query.source || ''}`,
+  async (newKey, oldKey) => {
+    if (!newKey || newKey === oldKey) return
+    await loadWorkspaceDataByRoute()
+  }
+)
 
 const handleMaterialSelect = (materialKey) => {
   activeMaterialKey.value = materialKey
@@ -456,16 +753,55 @@ const getAllocationKey = (supplier) => {
   return String(supplier?.link_id ?? supplier?.code ?? supplier?.name ?? '')
 }
 
+const findMaterialSupplier = (supplierLike) => {
+  if (!activeMaterial.value) return null
+  const key = getAllocationKey(supplierLike)
+  return (activeMaterial.value.suppliers || []).find(s => getAllocationKey(s) === key) || null
+}
+
+const updateSupplierTaxNetPrice = (supplierLike, value) => {
+  const target = findMaterialSupplier(supplierLike)
+  if (!target) return
+  const numeric = Number(value || 0)
+  if (numeric > 0) {
+    target.tax_net_price = numeric
+    target.price = Number((numeric / 1.13).toFixed(2))
+  } else {
+    target.tax_net_price = undefined
+    target.price = undefined
+  }
+  isFormDirty.value = true
+  persistLocalDraft()
+}
+
+const updateSupplierPrice = (supplierLike, value) => {
+  const target = findMaterialSupplier(supplierLike)
+  if (!target) return
+  const numeric = Number(value || 0)
+  if (numeric > 0) {
+    target.price = numeric
+    target.tax_net_price = Number((numeric * 1.13).toFixed(2))
+  } else {
+    target.price = undefined
+    target.tax_net_price = undefined
+  }
+  isFormDirty.value = true
+  persistLocalDraft()
+}
+
 const initializeAllocations = () => {
+  isInitializingAllocations.value = true
+  const previousAllocations = { ...allocations.value }
   const nextAllocations = {}
   const suppliers = activeMaterial.value?.suppliers || []
   suppliers.forEach((supplier) => {
     const key = getAllocationKey(supplier)
     if (key) {
-      nextAllocations[key] = 0
+      nextAllocations[key] = Number(previousAllocations[key] || 0)
     }
   })
   allocations.value = nextAllocations
+  isInitializingAllocations.value = false
 }
 
 const getSupplierIdentityTags = (supplier) => {
@@ -491,6 +827,26 @@ watch(
     initializeAllocations()
   },
   { immediate: true }
+)
+
+watch(
+  allocations,
+  () => {
+    if (isInitializingAllocations.value || isSavingDraft.value || isSubmittingAllocation.value) return
+    isFormDirty.value = true
+    persistLocalDraft()
+  },
+  { deep: true }
+)
+
+watch(
+  () => (activeMaterial.value?.suppliers || []).map(s => `${getAllocationKey(s)}:${s.price ?? ''}:${s.tax_net_price ?? ''}:${s.qty ?? ''}`).join('|'),
+  (newVal, oldVal) => {
+    if (!oldVal || newVal === oldVal) return
+    if (isSavingDraft.value || isSubmittingAllocation.value) return
+    isFormDirty.value = true
+    persistLocalDraft()
+  }
 )
 
 const fetchHistoryStats = async () => {
@@ -600,6 +956,7 @@ const applyStrategy = (type) => {
       return
     }
     setAllocation(commonSupplier, 100)
+    isFormDirty.value = true
     return
   }
 
@@ -609,6 +966,7 @@ const applyStrategy = (type) => {
       return
     }
     setAllocation(lowestSupplier, 100)
+    isFormDirty.value = true
     return
   }
 
@@ -623,16 +981,81 @@ const applyStrategy = (type) => {
 
     if (commonKey && lowestKey && commonKey === lowestKey) {
       setAllocation(commonSupplier, 100)
+      isFormDirty.value = true
       return
     }
 
     if (commonSupplier && lowestSupplier) {
       setAllocation(commonSupplier, pressureCommonRatio.value)
       setAllocation(lowestSupplier, pressureLowestRatio.value)
+      isFormDirty.value = true
       return
     }
 
     setAllocation(commonSupplier || lowestSupplier, 100)
+    isFormDirty.value = true
+  }
+}
+
+const handleSaveDraft = async () => {
+  if (!route.query.taskId || !activeMaterial.value) return
+
+  const suppliersData = currentComparison.value
+    .filter(s => Number(s.tax_net_price || 0) > 0)
+    .map(s => ({
+      supplier_code: s.code || '',
+      supplier_name: s.name || '未知供应商',
+      price: Number(s.price || Number((Number(s.tax_net_price || 0) / 1.13).toFixed(2))),
+      tax_net_price: Number(s.tax_net_price || 0),
+      qty: Number(s.qty || activeMaterial.value.qty || 1)
+    }))
+
+  if (!suppliersData.length) {
+    ElMessage.warning('当前没有可保存的有效报价')
+    return
+  }
+
+  isSavingDraft.value = true
+  try {
+    await saveManualQuotes(route.query.taskId, {
+      material_code: activeMaterial.value.materialCode,
+      suppliers: suppliersData
+    })
+    const draftPayload = {
+      task_id: route.query.taskId,
+      task_title: materialsData.value?.[0]?.billNo || `询价任务#${route.query.taskId}`,
+      material_code: activeMaterial.value.materialCode,
+      material_name: activeMaterial.value.materialName,
+      supplier_count: suppliersData.length,
+      updated_at: Date.now()
+    }
+
+    if (compareDraftApiReady.value) {
+      try {
+        await saveCompareDraft(route.query.taskId, {
+          material_code: draftPayload.material_code,
+          material_name: draftPayload.material_name,
+          supplier_count: draftPayload.supplier_count,
+          task_title: draftPayload.task_title
+        })
+        await loadCompareDraftRows()
+      } catch {
+        compareDraftApiReady.value = false
+        upsertLocalDraftIndex(draftPayload)
+      }
+    } else {
+      upsertLocalDraftIndex(draftPayload)
+    }
+    ElMessage.success('报价草稿保存成功')
+    isFormDirty.value = false
+    clearLocalDraft()
+    skipLeaveGuardOnce.value = true
+    router.push({ name: 'IntelligentCompare' })
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('保存草稿失败')
+  } finally {
+    isSavingDraft.value = false
   }
 }
 
@@ -675,6 +1098,19 @@ const submitAllocation = async () => {
   try {
     await closeInquiryTask(route.query.taskId, payload)
     ElMessage.success('定标成功，合同生成流程已触发')
+    isFormDirty.value = false
+    if (compareDraftApiReady.value) {
+      try {
+        await deleteCompareDraftsByTask(route.query.taskId)
+        await loadCompareDraftRows()
+      } catch {
+        compareDraftApiReady.value = false
+        removeLocalDraftByTaskId(route.query.taskId)
+      }
+    } else {
+      removeLocalDraftByTaskId(route.query.taskId)
+    }
+    clearLocalDraft()
     router.push({ name: 'ContractManagement' })
   } catch (error) {
     console.error(error)
@@ -737,6 +1173,80 @@ const generateWechatScript = async () => {
     wechatLoading.value = false
   }
 }
+
+const openAddSupplierDialog = () => {
+  if (!activeMaterial.value) {
+    ElMessage.warning('请先选择物料')
+    return
+  }
+  if (!availableSuppliersForCurrentMaterial.value.length) {
+    ElMessage.warning('暂无可补充的供应商')
+    return
+  }
+  showAddSupplierDialog.value = true
+}
+
+const handleAddSupplier = () => {
+  if (!newSupplierId.value || !activeMaterial.value) return
+
+  const supplierToAdd = otherSuppliers.value.find(s => String(s.id) === String(newSupplierId.value))
+  if (!supplierToAdd) {
+    ElMessage.warning('未找到待添加的供应商')
+    return
+  }
+
+  const exists = (activeMaterial.value.suppliers || []).some(s => {
+    if (s.supplier_id && supplierToAdd.id) return String(s.supplier_id) === String(supplierToAdd.id)
+    if (s.code && supplierToAdd.code) return s.code === supplierToAdd.code
+    return s.name === supplierToAdd.name
+  })
+  if (exists) {
+    ElMessage.warning('该供应商已在比价列表中')
+    return
+  }
+
+  activeMaterial.value.suppliers.push({
+    supplier_id: supplierToAdd.id,
+    code: supplierToAdd.code,
+    name: supplierToAdd.name,
+    grade: supplierToAdd.grade || '一般',
+    tax_rate: 13,
+    tax_net_price: undefined,
+    price: undefined,
+    qty: activeMaterial.value.qty || 1
+  })
+
+  showAddSupplierDialog.value = false
+  newSupplierId.value = undefined
+  isFormDirty.value = true
+  persistLocalDraft()
+  ElMessage.success('供应商已加入比价列表')
+}
+
+onBeforeRouteLeave(async () => {
+  if (skipLeaveGuardOnce.value) {
+    skipLeaveGuardOnce.value = false
+    return true
+  }
+  if (!isFormDirty.value || isSubmittingAllocation.value) {
+    return true
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      '您有尚未保存的报价或份额分配数据，离开页面将会丢失。确定要离开吗？',
+      '警告',
+      {
+        confirmButtonText: '强制离开',
+        cancelButtonText: '留在当前页',
+        type: 'warning'
+      }
+    )
+    return true
+  } catch {
+    return false
+  }
+})
 </script>
 
 <style scoped>
@@ -868,6 +1378,12 @@ const generateWechatScript = async () => {
   align-items: center;
 }
 
+.comparison-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .custom-table {
   border: 1px solid #ebeef5;
   border-bottom: none;
@@ -967,6 +1483,12 @@ const generateWechatScript = async () => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.allocation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .allocation-summary {
@@ -1177,13 +1699,19 @@ const generateWechatScript = async () => {
 .mr-1 { margin-right: 6px; }
 .mb-3 { margin-bottom: 12px; }
 
-.empty-state {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 40px;
-  background: white;
+.workbench-empty-wrap {
+  padding: 12px;
+}
+
+.draft-list-card {
   border-radius: 6px;
+}
+
+.draft-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
 }
 
 :deep(.markdown-body) {

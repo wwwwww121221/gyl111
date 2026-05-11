@@ -48,6 +48,24 @@ def ensure_runtime_schema_columns():
         if "supplier_remark" not in warning_columns:
             alter_statements.append("ALTER TABLE warning_messages ADD COLUMN supplier_remark TEXT")
 
+    if "compare_drafts" not in table_names:
+        alter_statements.extend([
+            """
+            CREATE TABLE IF NOT EXISTS compare_drafts (
+                id SERIAL PRIMARY KEY,
+                task_id INTEGER NOT NULL REFERENCES inquiry_tasks (id),
+                buyer_id INTEGER NOT NULL REFERENCES users (id),
+                task_title VARCHAR,
+                material_code VARCHAR NOT NULL,
+                material_name VARCHAR,
+                supplier_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                UNIQUE (task_id, buyer_id, material_code)
+            )
+            """
+        ])
+
     if not alter_statements:
         return
 
@@ -303,6 +321,26 @@ class WarningMessage(Base):
     supplier_remark = Column(Text, nullable=True)
     
     supplier = relationship("Supplier")
+    buyer = relationship("User")
+
+class CompareDraft(Base):
+    """
+    智能比价工作台草稿：支持多端共享草稿列表
+    """
+    __tablename__ = "compare_drafts"
+    __table_args__ = (UniqueConstraint("task_id", "buyer_id", "material_code", name="uq_compare_drafts_task_buyer_material"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("inquiry_tasks.id"), nullable=False)
+    buyer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    task_title = Column(String, nullable=True)
+    material_code = Column(String, nullable=False, index=True)
+    material_name = Column(String, nullable=True)
+    supplier_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    task = relationship("InquiryTask")
     buyer = relationship("User")
 
 class OperationLog(Base):

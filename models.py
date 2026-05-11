@@ -37,6 +37,17 @@ def ensure_runtime_schema_columns():
         if "buyer_id" not in inquiry_task_columns:
             alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN buyer_id INTEGER")
 
+    if "warning_messages" in table_names:
+        warning_columns = {col["name"] for col in inspector.get_columns("warning_messages")}
+        if "buyer_id" not in warning_columns:
+            alter_statements.append("ALTER TABLE warning_messages ADD COLUMN buyer_id INTEGER")
+        if "is_read" not in warning_columns:
+            alter_statements.append("ALTER TABLE warning_messages ADD COLUMN is_read BOOLEAN DEFAULT FALSE")
+        if "read_at" not in warning_columns:
+            alter_statements.append("ALTER TABLE warning_messages ADD COLUMN read_at TIMESTAMP")
+        if "supplier_remark" not in warning_columns:
+            alter_statements.append("ALTER TABLE warning_messages ADD COLUMN supplier_remark TEXT")
+
     if not alter_statements:
         return
 

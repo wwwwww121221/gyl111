@@ -17,10 +17,10 @@
         <el-table-column prop="phone" label="联系电话" />
         <el-table-column prop="email" label="电子邮箱" />
         
-        <el-table-column prop="level" label="等级">
+        <el-table-column prop="grade" label="评级">
           <template #default="{ row }">
-            <el-tag :type="row.level === 'core' ? 'success' : 'info'">     
-              {{ row.level === 'core' ? '核心供应商' : '一般供应商' }}
+            <el-tag :type="row.grade === 'A级' ? 'success' : (row.grade === 'B级' ? 'warning' : (row.grade === 'C级' ? 'danger' : 'info'))">     
+              {{ row.grade || '一般' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -63,10 +63,12 @@
           </el-radio-group>
         </el-form-item>
 
-        <el-form-item label="供应商等级">
-          <el-radio-group v-model="editForm.level">
-            <el-radio label="general">一般</el-radio>
-            <el-radio label="core">核心</el-radio>
+        <el-form-item label="供应商评级">
+          <el-radio-group v-model="editForm.grade">
+            <el-radio value="A级">A级</el-radio>
+            <el-radio value="B级">B级</el-radio>
+            <el-radio value="C级">C级</el-radio>
+            <el-radio value="一般">一般</el-radio>
           </el-radio-group>
         </el-form-item>
       </el-form>
@@ -101,7 +103,7 @@ const submitLoading = ref(false)
 
 const editForm = ref({
   status: 'approved',
-  level: 'general'
+  grade: '一般'
 })
 
 const fetchSuppliers = async () => {
@@ -157,7 +159,7 @@ const handleEdit = (row) => {
   currentSupplierId.value = row.id
   currentSupplierName.value = row.name
   editForm.value.status = row.status || 'approved'
-  editForm.value.level = row.level || 'general'
+  editForm.value.grade = row.grade || '一般'
   dialogVisible.value = true
 }
 
@@ -166,7 +168,7 @@ const submitUpdate = async () => {
   try {
     await api.put(`/supplier/${currentSupplierId.value}`, {
       status: editForm.value.status,
-      level: editForm.value.level
+      grade: editForm.value.grade
     })
     ElMessage.success('更新成功')
     dialogVisible.value = false

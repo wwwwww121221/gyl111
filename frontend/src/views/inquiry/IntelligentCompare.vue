@@ -675,7 +675,7 @@ const submitAllocation = async () => {
   try {
     await closeInquiryTask(route.query.taskId, payload)
     ElMessage.success('定标成功，合同生成流程已触发')
-    router.push({ name: 'InquiryTasks' })
+    router.push({ name: 'ContractManagement' })
   } catch (error) {
     console.error(error)
   } finally {

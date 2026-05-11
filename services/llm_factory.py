@@ -1,8 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Any
 import httpx
+import logging
 from core.config import settings
 from schemas import ChatMessage, LLMResponse
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_http_error_message(response: httpx.Response) -> str:
@@ -23,6 +26,12 @@ def _extract_http_error_message(response: httpx.Response) -> str:
         pass
     return (response.text or "未知错误").strip()
 
+
+def _serialize_message(msg: ChatMessage) -> dict:
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump(exclude_none=True)
+    return msg.dict(exclude_none=True)
+
 class LLMProvider(ABC):
     @abstractmethod
     async def chat_completion(self, messages: List[ChatMessage], **kwargs) -> LLMResponse:
@@ -41,7 +50,7 @@ class OpenAIProvider(LLMProvider):
         }
         payload = {
             "model": self.model,
-            "messages": [msg.dict() for msg in messages],
+            "messages": [_serialize_message(msg) for msg in messages],
             **kwargs
         }
         
@@ -53,6 +62,12 @@ class OpenAIProvider(LLMProvider):
                 content = data["choices"][0]["message"]["content"]
                 return LLMResponse(content=content, raw_response=data)
             except httpx.HTTPStatusError as e:
+                logger.error(
+                    "[LLM HTTP %s] url=%s response=%s",
+                    e.response.status_code,
+                    str(e.request.url),
+                    e.response.text
+                )
                 error_message = _extract_http_error_message(e.response)
                 return LLMResponse(
                     content=f"LLM 服务调用失败（HTTP {e.response.status_code}）：{error_message}",
@@ -72,7 +87,7 @@ class OllamaProvider(LLMProvider):
     async def chat_completion(self, messages: List[ChatMessage], **kwargs) -> LLMResponse:
         payload = {
             "model": self.model,
-            "messages": [msg.dict() for msg in messages],
+            "messages": [_serialize_message(msg) for msg in messages],
             "stream": False,
             **kwargs
         }
@@ -85,6 +100,12 @@ class OllamaProvider(LLMProvider):
                 content = data["message"]["content"]
                 return LLMResponse(content=content, raw_response=data)
             except httpx.HTTPStatusError as e:
+                logger.error(
+                    "[LLM HTTP %s] url=%s response=%s",
+                    e.response.status_code,
+                    str(e.request.url),
+                    e.response.text
+                )
                 error_message = _extract_http_error_message(e.response)
                 return LLMResponse(
                     content=f"LLM 服务调用失败（HTTP {e.response.status_code}）：{error_message}",

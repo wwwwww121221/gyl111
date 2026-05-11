@@ -257,14 +257,17 @@ def update_supplier(
             supplier.reviewed_at = datetime.now()
     if supplier_update.level:
         supplier.level = supplier_update.level
+
+    if supplier_update.grade:
+        supplier.grade = supplier_update.grade
         
     db.commit()
     db.refresh(supplier)
     
     from routers.system import log_operation
-    log_operation(db, current_user.id, "UPDATE_SUPPLIER", f"更新供应商 {supplier.name} 状态为 {supplier.status}, 等级为 {supplier.level}")
+    log_operation(db, current_user.id, "UPDATE_SUPPLIER", f"更新供应商 {supplier.name} 状态为 {supplier.status}, 评级为 {supplier.grade}")
     
-    return {"message": "Supplier updated successfully", "id": supplier.id, "status": supplier.status, "level": supplier.level}
+    return {"message": "Supplier updated successfully", "id": supplier.id, "status": supplier.status, "grade": supplier.grade}
 
 @router.delete("/{supplier_id}")
 def delete_supplier(

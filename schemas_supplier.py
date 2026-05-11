@@ -21,6 +21,7 @@ class SupplierQuoteResponse(BaseModel):
 class SupplierUpdate(BaseModel):
     status: Optional[str] = None
     level: Optional[str] = None
+    grade: Optional[str] = None
 
 
 class SupplierContractInfoSubmit(BaseModel):

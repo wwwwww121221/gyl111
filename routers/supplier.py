@@ -10,15 +10,28 @@ from models import (
     get_db, SessionLocal, InquirySupplier, InquiryTaskItem,
     Quotation, LinkStatus, InquiryRequest, TaskStatus, InquiryTask, Supplier, User, Contract, SupplierMetric, PurchaseOrderHistory
 )
-from schemas_supplier import QuoteSubmission, SupplierQuoteResponse, SupplierUpdate, SupplierContractInfoSubmit
+from schemas_supplier import (
+    QuoteSubmission,
+    SupplierQuoteResponse,
+    SupplierUpdate,
+    SupplierContractInfoSubmit,
+    SupplierCreatePayload,
+    SupplierAccountUpdatePayload,
+)
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
 import logging
 from routers.inquiry import get_current_user
+from core.security import get_password_hash
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _require_admin_or_buyer(current_user: User) -> None:
+    if current_user.role not in ["admin", "buyer"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
 
 
 def _generate_contract_pdf_background(inquiry_id: int) -> None:
@@ -229,9 +242,79 @@ def get_supplier_list(db: Session = Depends(get_db)):
             "reviewer_id": s.reviewer_id,
             "reviewed_at": s.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if s.reviewed_at else None,
             "reviewer_name": s.reviewer.username if s.reviewer else None,
-            "transaction_count": count
+            "transaction_count": count,
+            "user_id": s.user_id,
+            "account_username": s.user.username if s.user else None
         })
     return result
+
+
+@router.post("/manage")
+def create_supplier_with_optional_account(
+    payload: SupplierCreatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    采购员/管理员创建供应商，可选同时创建登录账号。
+    """
+    _require_admin_or_buyer(current_user)
+
+    supplier_name = (payload.name or "").strip()
+    if not supplier_name:
+        raise HTTPException(status_code=400, detail="供应商名称不能为空")
+
+    existing_supplier = db.query(Supplier).filter(Supplier.name == supplier_name).first()
+    if existing_supplier:
+        raise HTTPException(status_code=400, detail="供应商名称已存在")
+
+    supplier_code = (payload.code or "").strip() or None
+    if supplier_code:
+        existing_code = db.query(Supplier).filter(Supplier.code == supplier_code).first()
+        if existing_code:
+            raise HTTPException(status_code=400, detail="供应商编码已存在")
+
+    username = (payload.username or "").strip() or None
+    password = payload.password
+    user = None
+    if username or password:
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="如需创建登录账号，请同时填写账号和密码")
+        if len(password) < 6:
+            raise HTTPException(status_code=400, detail="账号密码长度至少6位")
+        existing_user = db.query(User).filter(User.username == username).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="该登录账号已存在")
+        user = User(
+            username=username,
+            password_hash=get_password_hash(password),
+            role="supplier"
+        )
+        db.add(user)
+        db.flush()
+
+    supplier = Supplier(
+        name=supplier_name,
+        code=supplier_code,
+        contact_person=(payload.contact_person or "").strip() or None,
+        phone=(payload.phone or "").strip() or None,
+        email=(payload.email or "").strip() or None,
+        status=payload.status or "approved",
+        grade=payload.grade or "一般",
+        level=payload.level or "general",
+        user_id=user.id if user else None
+    )
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return {
+        "id": supplier.id,
+        "name": supplier.name,
+        "status": supplier.status,
+        "grade": supplier.grade,
+        "user_id": supplier.user_id,
+        "account_username": user.username if user else None
+    }
 
 @router.put("/{supplier_id}")
 def update_supplier(
@@ -243,8 +326,7 @@ def update_supplier(
     """
     采购员审核/定级供应商
     """
-    if current_user.role not in ["admin", "buyer"]:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    _require_admin_or_buyer(current_user)
         
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
@@ -268,6 +350,64 @@ def update_supplier(
     log_operation(db, current_user.id, "UPDATE_SUPPLIER", f"更新供应商 {supplier.name} 状态为 {supplier.status}, 评级为 {supplier.grade}")
     
     return {"message": "Supplier updated successfully", "id": supplier.id, "status": supplier.status, "grade": supplier.grade}
+
+
+@router.put("/{supplier_id}/account")
+def update_supplier_account(
+    supplier_id: int,
+    payload: SupplierAccountUpdatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    采购员/管理员更新供应商登录账号；若供应商尚无账号，可通过账号+密码创建并绑定。
+    """
+    _require_admin_or_buyer(current_user)
+
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    username = (payload.username or "").strip() or None
+    password = payload.password
+    if not username and not password:
+        raise HTTPException(status_code=400, detail="请至少填写一个账号信息字段")
+    if password and len(password) < 6:
+        raise HTTPException(status_code=400, detail="账号密码长度至少6位")
+
+    account_user = db.query(User).filter(User.id == supplier.user_id).first() if supplier.user_id else None
+    if not account_user:
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="当前供应商无登录账号，请同时填写账号和密码进行创建")
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="该登录账号已存在")
+        account_user = User(
+            username=username,
+            password_hash=get_password_hash(password),
+            role="supplier"
+        )
+        db.add(account_user)
+        db.flush()
+        supplier.user_id = account_user.id
+    else:
+        if username and username != account_user.username:
+            existing = db.query(User).filter(User.username == username, User.id != account_user.id).first()
+            if existing:
+                raise HTTPException(status_code=400, detail="该登录账号已存在")
+            account_user.username = username
+        if password:
+            account_user.password_hash = get_password_hash(password)
+
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return {
+        "message": "Supplier account updated successfully",
+        "supplier_id": supplier.id,
+        "user_id": supplier.user_id,
+        "account_username": account_user.username if account_user else None
+    }
 
 @router.delete("/{supplier_id}")
 def delete_supplier(

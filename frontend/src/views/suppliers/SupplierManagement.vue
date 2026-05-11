@@ -8,6 +8,9 @@
           clearable
           class="search-input"
         />
+        <el-button v-if="canManage" type="primary" @click="openAddDialog">
+          新增供应商
+        </el-button>
       </div>
 
       <el-table :data="filteredSuppliers" style="width: 100%" v-loading="loading">
@@ -36,18 +39,70 @@
         <el-table-column prop="reviewer_name" label="审核人" />
         <el-table-column prop="reviewed_at" label="审核时间" min-width="160" />
 
-        <el-table-column label="操作" width="220" v-if="userRole === 'admin'">
+        <el-table-column label="操作" width="320" v-if="canManage">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click="handleEdit(row)">
               管理等级/状态
             </el-button>
-            <el-button size="small" type="danger" plain @click="handleDelete(row)">
+            <el-button size="small" type="warning" plain @click="handleAccountEdit(row)">
+              编辑账号
+            </el-button>
+            <el-button v-if="userRole === 'admin'" size="small" type="danger" plain @click="handleDelete(row)">
               删除
             </el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
+
+    <el-dialog v-model="addDialogVisible" title="新增供应商" width="560px" @close="resetAddForm">
+      <el-form ref="addFormRef" :model="addForm" :rules="addRules" label-width="110px">
+        <el-form-item label="供应商名称" prop="name">
+          <el-input v-model="addForm.name" />
+        </el-form-item>
+        <el-form-item label="供应商编码">
+          <el-input v-model="addForm.code" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="联系人">
+          <el-input v-model="addForm.contact_person" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="联系电话">
+          <el-input v-model="addForm.phone" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="电子邮箱">
+          <el-input v-model="addForm.email" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-radio-group v-model="addForm.status">
+            <el-radio label="approved">正常/已通过</el-radio>
+            <el-radio label="rejected">停用/已拒绝</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="供应商评级">
+          <el-radio-group v-model="addForm.grade">
+            <el-radio value="A级">A级</el-radio>
+            <el-radio value="B级">B级</el-radio>
+            <el-radio value="C级">C级</el-radio>
+            <el-radio value="一般">一般</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-divider>登录账号（可选）</el-divider>
+        <el-form-item label="登录账号">
+          <el-input v-model="addForm.username" placeholder="选填；填写后需同时填写密码" />
+        </el-form-item>
+        <el-form-item label="初始密码">
+          <el-input v-model="addForm.password" type="password" show-password placeholder="选填；至少6位" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="addDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="submitAddSupplier" :loading="submitAddLoading">
+            确认创建
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
 
     <!-- Edit Dialog -->
     <el-dialog v-model="dialogVisible" title="供应商管理" width="500px">
@@ -82,6 +137,33 @@
         </span>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="accountDialogVisible" title="编辑供应商登录账号" width="500px" @close="resetAccountForm">
+      <el-form ref="accountFormRef" :model="accountForm" :rules="accountRules" label-width="100px">
+        <el-form-item label="供应商名称">
+          <el-input v-model="currentSupplierName" disabled />
+        </el-form-item>
+        <el-form-item label="登录账号" prop="username">
+          <el-input v-model="accountForm.username" placeholder="请输入登录账号" />
+        </el-form-item>
+        <el-form-item label="重置密码" prop="password">
+          <el-input
+            v-model="accountForm.password"
+            type="password"
+            show-password
+            placeholder="留空则不修改密码；填写需至少6位"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="accountDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="submitAccountUpdate" :loading="submitAccountLoading">
+            确认保存
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -95,16 +177,60 @@ const loading = ref(false)
 const searchQuery = ref('')
 
 const userRole = computed(() => localStorage.getItem('role') || '')
+const canManage = computed(() => ['admin', 'buyer'].includes(userRole.value))
 
 const dialogVisible = ref(false)
 const currentSupplierId = ref(null)
 const currentSupplierName = ref('')
 const submitLoading = ref(false)
+const addDialogVisible = ref(false)
+const submitAddLoading = ref(false)
+const addFormRef = ref(null)
+const accountDialogVisible = ref(false)
+const submitAccountLoading = ref(false)
+const accountFormRef = ref(null)
 
 const editForm = ref({
   status: 'approved',
   grade: '一般'
 })
+
+const addForm = ref({
+  name: '',
+  code: '',
+  contact_person: '',
+  phone: '',
+  email: '',
+  status: 'approved',
+  grade: '一般',
+  username: '',
+  password: ''
+})
+
+const accountForm = ref({
+  username: '',
+  password: ''
+})
+
+const addRules = {
+  name: [{ required: true, message: '请输入供应商名称', trigger: 'blur' }]
+}
+
+const accountRules = {
+  username: [{ required: true, message: '请输入登录账号', trigger: 'blur' }],
+  password: [
+    {
+      validator: (_, value, callback) => {
+        if (!value || value.length >= 6) {
+          callback()
+          return
+        }
+        callback(new Error('密码长度至少6位'))
+      },
+      trigger: 'blur'
+    }
+  ]
+}
 
 const fetchSuppliers = async () => {
   loading.value = true
@@ -161,6 +287,92 @@ const handleEdit = (row) => {
   editForm.value.status = row.status || 'approved'
   editForm.value.grade = row.grade || '一般'
   dialogVisible.value = true
+}
+
+const openAddDialog = () => {
+  resetAddForm()
+  addDialogVisible.value = true
+}
+
+const resetAddForm = () => {
+  if (addFormRef.value) {
+    addFormRef.value.resetFields()
+  }
+  addForm.value = {
+    name: '',
+    code: '',
+    contact_person: '',
+    phone: '',
+    email: '',
+    status: 'approved',
+    grade: '一般',
+    username: '',
+    password: ''
+  }
+}
+
+const submitAddSupplier = async () => {
+  if (!addFormRef.value) return
+  await addFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    if ((addForm.value.username && !addForm.value.password) || (!addForm.value.username && addForm.value.password)) {
+      ElMessage.warning('若要创建登录账号，请同时填写账号和密码')
+      return
+    }
+    if (addForm.value.password && addForm.value.password.length < 6) {
+      ElMessage.warning('密码长度至少6位')
+      return
+    }
+    submitAddLoading.value = true
+    try {
+      await api.post('/supplier/manage', addForm.value)
+      ElMessage.success('供应商创建成功')
+      addDialogVisible.value = false
+      fetchSuppliers()
+    } catch (error) {
+      console.error(error)
+      ElMessage.error(error.response?.data?.detail || '创建失败')
+    } finally {
+      submitAddLoading.value = false
+    }
+  })
+}
+
+const handleAccountEdit = (row) => {
+  currentSupplierId.value = row.id
+  currentSupplierName.value = row.name
+  accountForm.value.username = row.account_username || ''
+  accountForm.value.password = ''
+  accountDialogVisible.value = true
+}
+
+const resetAccountForm = () => {
+  if (accountFormRef.value) {
+    accountFormRef.value.clearValidate()
+  }
+  accountForm.value.password = ''
+}
+
+const submitAccountUpdate = async () => {
+  if (!accountFormRef.value) return
+  await accountFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    submitAccountLoading.value = true
+    try {
+      await api.put(`/supplier/${currentSupplierId.value}/account`, {
+        username: accountForm.value.username,
+        password: accountForm.value.password || undefined
+      })
+      ElMessage.success('账号信息更新成功')
+      accountDialogVisible.value = false
+      fetchSuppliers()
+    } catch (error) {
+      console.error(error)
+      ElMessage.error(error.response?.data?.detail || '账号更新失败')
+    } finally {
+      submitAccountLoading.value = false
+    }
+  })
 }
 
 const submitUpdate = async () => {

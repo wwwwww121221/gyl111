@@ -24,6 +24,24 @@ class SupplierUpdate(BaseModel):
     grade: Optional[str] = None
 
 
+class SupplierCreatePayload(BaseModel):
+    name: str
+    code: Optional[str] = None
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    status: Optional[str] = "approved"
+    grade: Optional[str] = "一般"
+    level: Optional[str] = "general"
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+class SupplierAccountUpdatePayload(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
 class SupplierContractInfoSubmit(BaseModel):
     address: str = Field(..., min_length=1)
     legal_representative: str = Field(..., min_length=1)

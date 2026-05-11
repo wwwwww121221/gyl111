@@ -128,7 +128,7 @@
         <el-form-item label="任务标题">
           <el-input v-model="taskForm.title" placeholder="例如：3月份电子元器件采购" />
         </el-form-item>
-        <el-form-item label="截止日期" prop="deadline">
+        <el-form-item v-if="taskForm.type === 'auto'" label="截止日期" prop="deadline">
           <el-date-picker
             v-model="taskForm.deadline"
             type="datetime"
@@ -375,6 +375,10 @@ const taskForm = reactive({
 })
 
 const validateDeadline = (_, value, callback) => {
+  if (taskForm.type !== 'auto') {
+    callback()
+    return
+  }
   if (!value) {
     callback(new Error('请选择截止日期'))
     return
@@ -396,6 +400,12 @@ const taskFormRules = {
     { validator: validateDeadline, trigger: 'change' }
   ]
 }
+
+watch(() => taskForm.type, (newType) => {
+  if (newType === 'manual') {
+    taskForm.deadline = ''
+  }
+})
 
 const fetchSuppliers = async () => {
   try {
@@ -568,7 +578,7 @@ const confirmCreateTask = async () => {
     const payload = {
       title: taskForm.title,
       type: taskForm.type,
-      deadline: taskForm.deadline || null,
+      deadline: taskForm.type === 'auto' ? (taskForm.deadline || null) : null,
       strategy_config: taskForm.strategy_config,
       raw_requests: selectedRequestsForTask.value.map(item => ({
         ...item,

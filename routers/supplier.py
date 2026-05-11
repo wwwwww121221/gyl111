@@ -629,7 +629,7 @@ async def submit_quote(
             "ai_feedback": link.latest_ai_feedback
         }
 
-    # === 新增：统一秒杀检查 ===
+    # === 命中秒杀条件时，不再自动单家成交，而是提前结束自动谈判并交由采购员做份额分配 ===
     kill_candidates = []
     for l in all_links:
         if l.status != LinkStatus.QUOTED:
@@ -656,42 +656,33 @@ async def submit_quote(
             kill_candidates.append(l)
 
     if kill_candidates:
-        today = datetime.now().date()
-        score_input = []
+        link_task.status = TaskStatus.AWAITING_AWARD
+        qualified_supplier_names = []
         for c_link in kill_candidates:
-            c_quotes = db.query(Quotation).filter(
-                Quotation.inquiry_supplier_id == c_link.id,
-                Quotation.round == c_link.current_round
-            ).all()
-            s_items = []
-            for q in c_quotes:
-                d_days = 0.0
-                if isinstance(q.delivery_date, (datetime, date)):
-                    d_date = q.delivery_date.date() if isinstance(q.delivery_date, datetime) else q.delivery_date
-                    d_days = float((d_date - today).days)
-                if d_days < 0:
-                    d_days = 0.0
-                s_items.append({"price": float(q.price or 0), "qty": float(q.qty or 0), "delivery_days": d_days})
-            score_input.append({"supplier_id": c_link.id, "items": s_items})
+            if c_link.supplier and c_link.supplier.name:
+                qualified_supplier_names.append(c_link.supplier.name)
 
-        score_rows = calculate_supplier_scores(score_input)
-        best_supplier_id = (
-            max(score_rows, key=lambda r: float(r.get("total_score", 0))).get("supplier_id")
-            if score_rows
-            else kill_candidates[0].id
+        summary_names = "、".join(qualified_supplier_names[:3])
+        if len(qualified_supplier_names) > 3:
+            summary_names += "等"
+        if not summary_names:
+            summary_names = "候选供应商"
+
+        buyer_feedback = (
+            f"已有供应商报价达到目标价区间（{summary_names}），系统已提前结束自动谈判。"
+            "请前往智能比价页面，结合常用供应商、最低价与最高价关系，执行份额分配或拆单定标。"
         )
 
-        best_link = next(l for l in kill_candidates if l.id == best_supplier_id)
-        best_link.status = LinkStatus.DEAL
-        best_link.latest_ai_feedback = "您的报价已满足期望目标，系统已触发提前成交机制！"
-        link_task.status = TaskStatus.CLOSED
+        for l in all_links:
+            if l.status == LinkStatus.QUOTED:
+                l.latest_ai_feedback = buyer_feedback
 
-        for ol in all_links:
-            if ol.id != best_link.id:
-                ol.status = LinkStatus.REJECT
-                ol.latest_ai_feedback = "有其他供应商报价达到期望目标，本次询价已提前结束。"
         db.commit()
-        return {"message": "触发秒杀条件，系统已自动成交！", "next_action": "deal", "ai_feedback": link.latest_ai_feedback}
+        return {
+            "message": "触发秒杀条件，系统已提前结束自动谈判，请采购员进行智能比价与份额分配。",
+            "next_action": "wait",
+            "ai_feedback": buyer_feedback
+        }
 
     # 3. 所有供应商均已报价，统一处理下一轮逻辑或结束
     strategy = link_task.strategy_config or {}

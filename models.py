@@ -60,6 +60,7 @@ class TaskStatus(str, enum.Enum):
     DRAFT = "draft"
     ACTIVE = "active"
     CLOSED = "closed"
+    AWAITING_AWARD = "awaiting_award"
     # 手动询价相关状态
     PENDING_FILL = "pending_fill"  # 待填写
     ANALYZING = "analyzing"        # 分析中

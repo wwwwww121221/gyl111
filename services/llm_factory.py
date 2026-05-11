@@ -4,6 +4,25 @@ import httpx
 from core.config import settings
 from schemas import ChatMessage, LLMResponse
 
+
+def _extract_http_error_message(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            error_obj = payload.get("error")
+            if isinstance(error_obj, dict):
+                code = error_obj.get("code")
+                message = error_obj.get("message")
+                if code == "Arrearage":
+                    return "LLM 服务账号余额不足或欠费，请先在模型平台充值/续费后重试。"
+                if message:
+                    return str(message)
+            if payload.get("message"):
+                return str(payload.get("message"))
+    except Exception:
+        pass
+    return (response.text or "未知错误").strip()
+
 class LLMProvider(ABC):
     @abstractmethod
     async def chat_completion(self, messages: List[ChatMessage], **kwargs) -> LLMResponse:
@@ -33,8 +52,14 @@ class OpenAIProvider(LLMProvider):
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
                 return LLMResponse(content=content, raw_response=data)
+            except httpx.HTTPStatusError as e:
+                error_message = _extract_http_error_message(e.response)
+                return LLMResponse(
+                    content=f"LLM 服务调用失败（HTTP {e.response.status_code}）：{error_message}",
+                    raw_response=e.response.text
+                )
             except Exception as e:
-                return LLMResponse(content=f"Error: {str(e)}", raw_response=None)
+                return LLMResponse(content=f"LLM 服务连接异常：{str(e)}", raw_response=None)
 
 class OllamaProvider(LLMProvider):
     """
@@ -59,8 +84,14 @@ class OllamaProvider(LLMProvider):
                 data = response.json()
                 content = data["message"]["content"]
                 return LLMResponse(content=content, raw_response=data)
+            except httpx.HTTPStatusError as e:
+                error_message = _extract_http_error_message(e.response)
+                return LLMResponse(
+                    content=f"LLM 服务调用失败（HTTP {e.response.status_code}）：{error_message}",
+                    raw_response=e.response.text
+                )
             except Exception as e:
-                return LLMResponse(content=f"Error connecting to local LLM: {str(e)}", raw_response=None)
+                return LLMResponse(content=f"LLM 服务连接异常：{str(e)}", raw_response=None)
 
 # Factory
 def get_llm_service() -> LLMProvider:

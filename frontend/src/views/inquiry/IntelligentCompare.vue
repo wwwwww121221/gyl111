@@ -1,23 +1,31 @@
 <template>
   <div class="intelligent-compare-container">
-    <div class="main-content" v-if="materialsData.length > 0 && activeMaterial">
+    <div class="main-content" v-if="materialsData.length > 0">
       <!-- Left Panel: Material List -->
       <div class="material-list-panel">
         <el-card shadow="never" class="list-card" body-style="padding: 0;">
           <div class="card-header-search">
-            <el-input placeholder="请输入物料名称" size="small" prefix-icon="Search" class="material-search" clearable></el-input>
+            <el-input
+              v-model="materialSearchKeyword"
+              placeholder="请输入物料名称"
+              size="small"
+              prefix-icon="Search"
+              class="material-search"
+              clearable
+            />
           </div>
-          <el-menu :default-active="activeIndex.toString()" class="material-menu" @select="handleMaterialSelect">
-            <el-menu-item v-for="(item, index) in materialsData" :key="item.reqId" :index="index.toString()">
+          <el-menu :default-active="activeMaterialMenuKey" class="material-menu" @select="handleMaterialSelect">
+            <el-menu-item v-for="item in filteredMaterialsData" :key="item.reqId" :index="String(item.reqId)">
               <span class="text-truncate" :title="item.materialName">{{ item.materialName }}</span>
             </el-menu-item>
           </el-menu>
+          <div v-if="filteredMaterialsData.length === 0" class="material-empty-state">未找到匹配的物料</div>
         </el-card>
       </div>
 
       <!-- Right Panel: Wide Display Area -->
       <div class="right-panel">
-        <el-card shadow="never" class="result-card mb-3" body-style="padding: 16px 20px;">
+        <el-card v-if="activeMaterial" shadow="never" class="result-card mb-3" body-style="padding: 16px 20px;">
           
           <div class="page-header">
             <h2 class="page-main-title">智能比价看板 - {{ activeMaterial.materialName }}</h2>
@@ -220,6 +228,9 @@
           </el-card>
           
         </el-card>
+        <el-card v-else shadow="never" class="result-card empty-material-card" body-style="padding: 40px 20px;">
+          <el-empty description="未找到匹配的比价物料，请调整搜索条件" :image-size="140" />
+        </el-card>
       </div>
     </div>
     
@@ -237,6 +248,7 @@ import { DataAnalysis, MagicStick, Histogram, TrendCharts, Opportunity, Menu, Go
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../../api/index'
+import { closeInquiryTask } from '../../api/inquiry'
 import { marked } from 'marked'
 
 const route = useRoute()
@@ -244,7 +256,8 @@ const router = useRouter()
 
 // State
 const materialsData = ref([])
-const activeIndex = ref(0)
+const activeMaterialKey = ref('')
+const materialSearchKeyword = ref('')
 const historicalSuppliers = ref([])
 const otherSuppliers = ref([])
 const historyLoading = ref(false)
@@ -258,7 +271,18 @@ const wechatTargetPrice = ref(undefined)
 const wechatLoading = ref(false)
 const wechatScriptResult = ref('')
 
-const activeMaterial = computed(() => materialsData.value[activeIndex.value] || null)
+const filteredMaterialsData = computed(() => {
+  const keyword = materialSearchKeyword.value.trim().toLowerCase()
+  if (!keyword) return materialsData.value
+  return materialsData.value.filter((item) =>
+    (item.materialName || '').toLowerCase().includes(keyword)
+  )
+})
+const activeMaterial = computed(() => {
+  if (!activeMaterialKey.value) return null
+  return materialsData.value.find((item) => String(item.reqId) === activeMaterialKey.value) || null
+})
+const activeMaterialMenuKey = computed(() => activeMaterial.value ? String(activeMaterial.value.reqId) : '')
 const allocationSum = computed(() => {
   return currentComparison.value.reduce((sum, supplier) => {
     const key = getAllocationKey(supplier)
@@ -282,6 +306,30 @@ watch(pressureLowestRatio, (value) => {
   pressureCommonRatio.value = Math.max(0, 100 - Number(value || 0))
   syncingPressureRatios = false
 })
+
+watch(
+  filteredMaterialsData,
+  (list) => {
+    if (!list.length) {
+      activeMaterialKey.value = ''
+      return
+    }
+
+    const currentVisible = list.some((item) => String(item.reqId) === activeMaterialKey.value)
+    if (!currentVisible) {
+      activeMaterialKey.value = String(list[0].reqId)
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => activeMaterial.value?.reqId,
+  async (newReqId, oldReqId) => {
+    if (!newReqId || newReqId === oldReqId) return
+    await loadActiveMaterialContext()
+  }
+)
 
 // Init from sessionStorage
 onMounted(async () => {
@@ -335,11 +383,7 @@ onMounted(async () => {
       })
       
       if (materialsData.value.length > 0) {
-        await loadSuppliersForMaterial(materialsData.value[0].materialCode)
-        await fetchHistoryStats() // fetch history for the initial suppliers
-        if (!activeMaterial.value.aiAnalysisResult) {
-          generateAnalysis(true)
-        }
+        activeMaterialKey.value = String(materialsData.value[0].reqId)
       }
     } catch (e) {
       console.error('Failed to load task details', e)
@@ -360,7 +404,7 @@ onMounted(async () => {
         }))
         
         if (materialsData.value.length > 0) {
-          loadSuppliersForMaterial(materialsData.value[0].materialCode)
+          activeMaterialKey.value = String(materialsData.value[0].reqId)
         }
       } catch (e) {
         console.error('Failed to parse compare data', e)
@@ -372,14 +416,16 @@ onMounted(async () => {
   }
 })
 
-const handleMaterialSelect = async (indexStr) => {
-  activeIndex.value = parseInt(indexStr)
-  if (activeMaterial.value) {
-    await loadSuppliersForMaterial(activeMaterial.value.materialCode)
-    await fetchHistoryStats()
-    if (!activeMaterial.value.aiAnalysisResult) {
-      generateAnalysis(true)
-    }
+const handleMaterialSelect = (materialKey) => {
+  activeMaterialKey.value = materialKey
+}
+
+const loadActiveMaterialContext = async () => {
+  if (!activeMaterial.value) return
+  await loadSuppliersForMaterial(activeMaterial.value.materialCode)
+  await fetchHistoryStats()
+  if (!activeMaterial.value.aiAnalysisResult) {
+    generateAnalysis(true)
   }
 }
 
@@ -627,7 +673,7 @@ const submitAllocation = async () => {
 
   isSubmittingAllocation.value = true
   try {
-    await api.post(`/inquiry/tasks/${route.query.taskId}/close`, payload)
+    await closeInquiryTask(route.query.taskId, payload)
     ElMessage.success('定标成功，合同生成流程已触发')
     router.push({ name: 'InquiryTasks' })
   } catch (error) {
@@ -1029,6 +1075,13 @@ const generateWechatScript = async () => {
   border-right: none;
 }
 
+.material-empty-state {
+  padding: 24px 12px;
+  text-align: center;
+  color: #909399;
+  font-size: 12px;
+}
+
 .text-truncate {
   display: inline-block;
   max-width: 90px;
@@ -1088,6 +1141,10 @@ const generateWechatScript = async () => {
 .result-card {
   border-radius: 6px;
   margin-bottom: 12px;
+}
+
+.empty-material-card {
+  min-height: 240px;
 }
 
 .ai-card {

@@ -121,8 +121,8 @@
       <el-form ref="taskFormRef" :model="taskForm" :rules="taskFormRules" label-width="100px" size="default">
         <el-form-item label="任务类型" prop="type">
           <el-radio-group v-model="taskForm.type">
-            <el-radio label="auto">自动询价 (系统自动多轮谈判)</el-radio>
-            <el-radio label="manual">手动询价 (人工线下录入报价比价)</el-radio>
+            <el-radio value="auto">自动询价 (系统自动多轮谈判)</el-radio>
+            <el-radio value="manual">手动询价 (人工线下录入报价比价)</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="任务标题">
@@ -591,8 +591,8 @@ const confirmCreateTask = async () => {
             const supplier = supplierList.value.find(s => s.id === supplierId)
             if (supplier) {
               suppliersQuotes.push({
-                supplier_code: supplier.code,
-                supplier_name: supplier.name,
+                supplier_code: supplier.code || '',
+                supplier_name: supplier.name || '未知',
                 tax_net_price: Number(taxNetPrice),
                 price: Number((taxNetPrice / 1.13).toFixed(2)),
                 qty: Number(item.qty) || 1

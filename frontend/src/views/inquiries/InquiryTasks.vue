@@ -50,7 +50,7 @@
               {{ formatDateTime(scope.row.created_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="250" align="center">
+          <el-table-column label="操作" width="320" align="center">
             <template #default="scope">
               <template v-if="scope.row.type === 'manual'">
                 <el-button size="small" type="warning" plain @click="openEditQuotesDialog(scope.row)">
@@ -72,6 +72,14 @@
               <template v-else>
                 <el-button size="small" type="primary" @click="viewTaskDetails(scope.row)">
                   详情 / 管理
+                </el-button>
+                <el-button
+                  v-if="scope.row.status === 'awaiting_award'"
+                  size="small"
+                  type="warning"
+                  @click="goToCompare(scope.row)"
+                >
+                  智能比价 / 定标
                 </el-button>
               </template>
 
@@ -108,6 +116,13 @@
                 </el-tag>
               </div>
               <div class="header-actions">
+                <el-button
+                  v-if="currentTaskDetails.status === 'awaiting_award'"
+                  type="warning"
+                  @click="goToCompare(currentTaskDetails)"
+                >
+                  前往智能比价 / 定标
+                </el-button>
                 <el-button v-if="currentTaskDetails.status === 'active'" type="danger" plain @click="handleCloseTask()">
                   终止任务 (流标)
                 </el-button>
@@ -135,11 +150,33 @@
           </el-descriptions>
         </el-card>
 
+        <el-alert
+          v-if="isAwaitingAwardTask"
+          title="自动谈判已提前结束：当前任务进入“待份额分配”状态，请前往智能比价页面完成拆单定标。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="awaiting-award-alert"
+        />
+
         <!-- Main Content Tabs -->
         <el-tabs v-model="detailsActiveTab" class="details-tabs" type="border-card">
           
           <!-- Tab 1: Suppliers -->
-          <el-tab-pane label="供应商与报价动态" name="suppliers">
+          <el-tab-pane name="suppliers">
+            <template #label>
+              <span class="tab-label-with-status">
+                <span>供应商与报价动态</span>
+                <el-tag
+                  v-if="isAwaitingAwardTask"
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                >
+                  待份额分配
+                </el-tag>
+              </span>
+            </template>
             <div class="tab-toolbar">
               <el-form :inline="true" :model="supplierForm" class="supplier-form" size="default">
                 <el-form-item label="新增供应商">
@@ -679,14 +716,18 @@ const hasTaskExpired = (task) => {
 }
 
 const detailCountdownMeta = computed(() => getCountdownMeta(currentTaskDetails.value?.deadline))
-const detailCountdownText = computed(() => detailCountdownMeta.value.text)
-const isDetailDeadlineUrgent = computed(() => detailCountdownMeta.value.urgent)
+const isAwaitingAwardTask = computed(() => currentTaskDetails.value?.status === 'awaiting_award')
+const detailCountdownText = computed(() =>
+  isAwaitingAwardTask.value ? '自动谈判已结束，等待采购员完成份额定标' : detailCountdownMeta.value.text
+)
+const isDetailDeadlineUrgent = computed(() => !isAwaitingAwardTask.value && detailCountdownMeta.value.urgent)
 
 const getTaskStatusType = (status) => {
   const map = {
     'draft': 'info',
     'active': 'success',
     'closed': 'info',
+    'awaiting_award': 'warning',
     'cancelled': 'danger',
     'pending_fill': 'warning',
     'analyzing': 'primary'
@@ -699,6 +740,7 @@ const getTaskStatusLabel = (status) => {
     'draft': '草稿',
     'active': '进行中',
     'closed': '已结束',
+    'awaiting_award': '待份额分配',
     'cancelled': '已取消',
     'pending_fill': '待填写',
     'analyzing': '分析中'
@@ -787,6 +829,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.awaiting-award-alert {
+  margin-top: -8px;
+}
+
+.tab-label-with-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .info-card {

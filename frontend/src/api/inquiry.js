@@ -26,10 +26,14 @@ export const getTaskDetails = (taskId) => {
   return api.get(`${INQUIRY_BASE}/tasks/${taskId}/details`)
 }
 
-export const closeInquiryTask = (taskId, selectedLinkId = null) => {
-  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/close`, null, {
-    params: selectedLinkId ? { selected_link_id: selectedLinkId } : {}
-  })
+export const closeInquiryTask = (taskId, closeData = null) => {
+  if (typeof closeData === 'number' || closeData === null) {
+    return api.post(`${INQUIRY_BASE}/tasks/${taskId}/close`, null, {
+      params: closeData ? { selected_link_id: closeData } : {}
+    })
+  }
+
+  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/close`, closeData)
 }
 
 export const syncErpRequisitions = (params = {}) => {

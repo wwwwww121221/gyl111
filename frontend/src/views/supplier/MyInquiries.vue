@@ -236,6 +236,7 @@ const isMobile = ref(window.innerWidth <= 768)
 const getDisplayStatus = (row) => {
   if (row.status === 'deal') return 'deal'
   if (row.task_status === 'closed' || row.task_status === 'cancelled') return 'cancelled'
+  if (row.task_status === 'awaiting_award') return 'confirmed'
   if (row.status === 'sent') return 'unconfirmed'
   return 'confirmed'
 }
@@ -480,7 +481,7 @@ const isDeadlinePassed = computed(() => deadlineMeta.value.passed)
 
 const canQuote = computed(() => {
   if (!currentInquiry.value) return false
-  if (currentInquiry.value.task_status === 'closed' || currentInquiry.value.task_status === 'cancelled') return false
+  if (['closed', 'cancelled', 'awaiting_award'].includes(currentInquiry.value.task_status)) return false
   if (isDeadlinePassed.value) return false
   return ['sent', 'negotiation'].includes(currentInquiry.value.status) && new Date() < new Date(currentInquiry.value.deadline)
 })

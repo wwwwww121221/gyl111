@@ -134,9 +134,14 @@
             <div class="ai-box-header">
               <el-icon class="ai-icon"><Opportunity /></el-icon>
               <span>智能分析结论</span>
-              <el-button type="primary" link size="small" class="refresh-btn" @click="() => generateAnalysis(false)" :disabled="activeMaterial.suppliers.length < 2">
-                <el-icon><Refresh /></el-icon> 重新分析
-              </el-button>
+              <div class="ai-box-actions">
+                <el-button v-if="activeMaterial.aiAnalysisResult" type="primary" link size="small" @click="toggleAnalysisExpanded">
+                  {{ isAnalysisExpanded ? '收起' : '展开' }}
+                </el-button>
+                <el-button type="primary" link size="small" class="refresh-btn" @click="() => generateAnalysis(false)" :disabled="activeMaterial.suppliers.length < 2">
+                  <el-icon><Refresh /></el-icon> 重新分析
+                </el-button>
+              </div>
             </div>
             <div class="ai-box-content">
               <div v-if="activeMaterial.aiAnalysisResult" class="markdown-body" v-html="formattedAnalysis"></div>
@@ -320,6 +325,123 @@ import api from '../../api/index'
 import { closeInquiryTask, saveManualQuotes, saveCompareDraft, getCompareDrafts, deleteCompareDraft, deleteCompareDraftsByTask } from '../../api/inquiry'
 import { marked } from 'marked'
 
+const escapeHtml = (value = '') => {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+const sanitizeUrl = (href) => {
+  const raw = String(href || '').trim()
+  if (!raw) return '#'
+  if (raw.startsWith('#') || raw.startsWith('/') || raw.startsWith('./') || raw.startsWith('../')) return raw
+  try {
+    const url = new URL(raw, window.location.origin)
+    const protocol = (url.protocol || '').toLowerCase()
+    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:' || protocol === 'tel:') return url.toString()
+  } catch {}
+  return '#'
+}
+
+const stripEmptyListHtml = (html) => {
+  const source = String(html || '')
+  if (typeof window !== 'undefined' && typeof DOMParser !== 'undefined') {
+    try {
+      const parser = new DOMParser()
+      const doc = parser.parseFromString(source, 'text/html')
+      const isEffectivelyEmpty = (el) => {
+        const text = (el?.textContent || '').replace(/[\u00a0\u200b\uFEFF]/g, '').trim()
+        return text.length === 0
+      }
+
+      doc.querySelectorAll('li').forEach((li) => {
+        if (isEffectivelyEmpty(li)) {
+          li.remove()
+        }
+      })
+
+      let changed = true
+      while (changed) {
+        changed = false
+        doc.querySelectorAll('ul,ol').forEach((list) => {
+          if (!list.querySelector('li')) {
+            list.remove()
+            changed = true
+          }
+        })
+      }
+
+      return doc.body.innerHTML
+    } catch {
+      return source
+    }
+  }
+
+  let out = source
+  let prev = ''
+  while (out !== prev) {
+    prev = out
+    out = out.replace(/<li>\s*(?:<p>)?\s*(?:&nbsp;|&#160;|\u00a0|\s|<br\s*\/?>)*\s*(?:<\/p>)?\s*<\/li>/g, '')
+    out = out.replace(/<li>\s*<\/li>/g, '')
+    out = out.replace(/<(ul|ol)>\s*<\/\1>/g, '')
+  }
+  return out
+}
+
+const normalizeAiMarkdown = (input) => {
+  const text = String(input || '').replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+  const lines = text.split('\n')
+  let inFence = false
+  const out = []
+
+  for (const rawLine of lines) {
+    const line = String(rawLine ?? '')
+    const trimmed = line.trim()
+    if (trimmed.startsWith('```')) {
+      inFence = !inFence
+      out.push('```')
+      continue
+    }
+    if (inFence) {
+      out.push(line)
+      continue
+    }
+
+    let next = line.replaceAll('\t', '  ').replace(/\s+$/g, '')
+    const leadingSpaces = (next.match(/^\s+/)?.[0]?.length) || 0
+    if (leadingSpaces >= 4) {
+      const compact = next.slice(leadingSpaces)
+      const isList = /^([-*+]|\d+\.)\s+/.test(compact)
+      next = `${isList ? '  ' : ''}${compact}`
+    }
+    const normalizedTrimmed = next.replace(/[\u00a0\u200b\uFEFF]/g, '').trim()
+    const isEmptyListMarker = /^(?:[-*+]|•|●|○|·)\s*$/.test(normalizedTrimmed) || /^\d+\.\s*$/.test(normalizedTrimmed)
+    if (isEmptyListMarker) continue
+    out.push(next)
+  }
+
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+const renderer = new marked.Renderer()
+renderer.html = (html) => escapeHtml(html)
+renderer.link = (href, title, text) => {
+  const safeHref = sanitizeUrl(href)
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : ''
+  return `<a href="${escapeHtml(safeHref)}"${titleAttr} target="_blank" rel="nofollow noopener noreferrer">${text}</a>`
+}
+renderer.image = (href, title, text) => escapeHtml(text || '')
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+  headerIds: false,
+  mangle: false,
+  renderer
+})
+
 const route = useRoute()
 const router = useRouter()
 
@@ -343,6 +465,8 @@ const isInitializingAllocations = ref(false)
 const compareDraftRows = ref([])
 const compareDraftApiChecked = ref(false)
 const compareDraftApiReady = ref(false)
+
+const analysisExpandedMap = ref({})
 
 const wechatTargetSupplier = ref('')
 const wechatTargetPrice = ref(undefined)
@@ -550,6 +674,21 @@ const activeMaterial = computed(() => {
   return materialsData.value.find((item) => String(item.reqId) === activeMaterialKey.value) || null
 })
 const activeMaterialMenuKey = computed(() => activeMaterial.value ? String(activeMaterial.value.reqId) : '')
+const isAnalysisExpanded = computed(() => {
+  const reqId = activeMaterial.value?.reqId
+  if (!reqId) return false
+  return Boolean(analysisExpandedMap.value[String(reqId)])
+})
+
+const setAnalysisExpanded = (expanded) => {
+  const reqId = activeMaterial.value?.reqId
+  if (!reqId) return
+  analysisExpandedMap.value[String(reqId)] = Boolean(expanded)
+}
+
+const toggleAnalysisExpanded = () => {
+  setAnalysisExpanded(!isAnalysisExpanded.value)
+}
 const availableSuppliersForCurrentMaterial = computed(() => {
   const existing = new Set(
     (activeMaterial.value?.suppliers || []).map((s) => String(s.supplier_id || s.code || s.name || ''))
@@ -1132,6 +1271,7 @@ const generateAnalysis = async (isAuto = false) => {
   
   activeMaterial.value.loadingAnalysis = true
   activeMaterial.value.aiAnalysisResult = ''
+  setAnalysisExpanded(false)
   
   try {
     const payload = {
@@ -1149,8 +1289,19 @@ const generateAnalysis = async (isAuto = false) => {
   }
 }
 
+const truncateMarkdownByLines = (text, maxLines) => {
+  const lines = String(text || '').split('\n')
+  if (lines.length <= maxLines) return text
+  return `${lines.slice(0, maxLines).join('\n')}\n\n…（展开查看全部）`
+}
+
 const formattedAnalysis = computed(() => {
-  return activeMaterial.value?.aiAnalysisResult ? marked(activeMaterial.value.aiAnalysisResult) : ''
+  const raw = activeMaterial.value?.aiAnalysisResult
+  if (!raw) return ''
+  const normalized = normalizeAiMarkdown(raw)
+  const preview = truncateMarkdownByLines(normalized, 5)
+  const html = marked(isAnalysisExpanded.value ? normalized : preview)
+  return stripEmptyListHtml(html)
 })
 
 const generateWechatScript = async () => {
@@ -1533,7 +1684,14 @@ onBeforeRouteLeave(async () => {
 }
 
 .refresh-btn {
+  margin-left: 0;
+}
+
+.ai-box-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .ai-box-content {
@@ -1717,6 +1875,8 @@ onBeforeRouteLeave(async () => {
 :deep(.markdown-body) {
   font-size: 13px;
   line-height: 1.5;
+  max-width: 100%;
+  word-break: break-word;
 }
 :deep(.markdown-body h1), :deep(.markdown-body h2), :deep(.markdown-body h3) {
   margin-top: 12px;
@@ -1725,5 +1885,23 @@ onBeforeRouteLeave(async () => {
 }
 :deep(.markdown-body p) {
   margin-bottom: 8px;
+}
+:deep(.markdown-body ul) {
+  list-style: none;
+  padding-left: 0;
+  margin: 6px 0 10px;
+}
+:deep(.markdown-body ol) {
+  padding-left: 18px;
+  margin: 6px 0 10px;
+}
+:deep(.markdown-body li) {
+  margin: 4px 0;
+}
+:deep(.markdown-body pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

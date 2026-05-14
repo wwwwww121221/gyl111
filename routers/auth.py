@@ -13,6 +13,20 @@ from jose import jwt, JWTError
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
+
+def _find_user_for_login(db: Session, login_value: str):
+    user = db.query(User).filter(User.username == login_value).first()
+    if user:
+        return user
+
+    from models import Supplier
+
+    supplier = db.query(Supplier).filter(Supplier.phone == login_value).first()
+    if supplier and supplier.user_id:
+        return db.query(User).filter(User.id == supplier.user_id).first()
+
+    return None
+
 def get_current_user_auth(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -39,7 +53,8 @@ def login_access_token(
     """
     OAuth2 兼容的 token 登录接口，获取 Access Token
     """
-    user = db.query(User).filter(User.username == form_data.username).first()
+    login_value = (form_data.username or "").strip()
+    user = _find_user_for_login(db, login_value)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

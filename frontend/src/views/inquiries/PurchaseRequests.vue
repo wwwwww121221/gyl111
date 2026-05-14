@@ -129,13 +129,25 @@
           <el-input v-model="taskForm.title" placeholder="例如：3月份电子元器件采购" />
         </el-form-item>
         <el-form-item v-if="taskForm.type === 'auto'" label="截止日期" prop="deadline">
-          <el-date-picker
-            v-model="taskForm.deadline"
-            type="datetime"
-            placeholder="请选择截止时间"
-            style="width: 100%"
-            value-format="YYYY-MM-DDTHH:mm:ss"
-          />
+          <div class="deadline-inputs">
+            <el-date-picker
+              v-model="taskForm.deadlineDate"
+              type="date"
+              placeholder="请选择日期"
+              value-format="YYYY-MM-DD"
+              :teleported="false"
+              style="width: 100%"
+            />
+            <el-time-select
+              v-model="taskForm.deadlineTime"
+              placeholder="请选择时间"
+              start="00:00"
+              step="00:30"
+              end="23:30"
+              :teleported="false"
+              style="width: 100%"
+            />
+          </div>
         </el-form-item>
         
         <el-row :gutter="20" v-if="taskForm.type === 'auto'">
@@ -366,6 +378,8 @@ const taskForm = reactive({
   title: '',
   type: 'auto',
   deadline: '',
+  deadlineDate: '',
+  deadlineTime: '',
   supplier_ids: [],
   strategy_config: {
     max_rounds: 3,
@@ -373,6 +387,20 @@ const taskForm = reactive({
     target_total_price: undefined
   }
 })
+
+const DEFAULT_DEADLINE_TIME = '00:00'
+
+const syncDeadlineValue = () => {
+  if (taskForm.type !== 'auto') {
+    taskForm.deadline = ''
+    return
+  }
+  if (!taskForm.deadlineDate || !taskForm.deadlineTime) {
+    taskForm.deadline = ''
+    return
+  }
+  taskForm.deadline = `${taskForm.deadlineDate}T${taskForm.deadlineTime}:00`
+}
 
 const validateDeadline = (_, value, callback) => {
   if (taskForm.type !== 'auto') {
@@ -404,8 +432,21 @@ const taskFormRules = {
 watch(() => taskForm.type, (newType) => {
   if (newType === 'manual') {
     taskForm.deadline = ''
+    taskForm.deadlineDate = ''
+    taskForm.deadlineTime = ''
+    return
+  }
+  if (!taskForm.deadlineTime) {
+    taskForm.deadlineTime = DEFAULT_DEADLINE_TIME
   }
 })
+
+watch(
+  () => [taskForm.deadlineDate, taskForm.deadlineTime, taskForm.type],
+  () => {
+    syncDeadlineValue()
+  }
+)
 
 const fetchSuppliers = async () => {
   try {
@@ -550,6 +591,8 @@ const showCreateTaskDialog = (isJump = false) => {
   taskForm.title = `${date} 批量询价 (${selectedRequestsForTask.value.length}项物料)`
   taskForm.type = isJump === true ? 'manual' : 'auto'
   taskForm.deadline = ''
+  taskForm.deadlineDate = ''
+  taskForm.deadlineTime = isJump === true ? '' : DEFAULT_DEADLINE_TIME
   taskForm.supplier_ids = []
   
   fetchSuppliers()
@@ -724,6 +767,13 @@ onMounted(() => {
 .advanced-search-form .el-form-item {
   margin-bottom: 0;
   margin-right: 0;
+}
+
+.deadline-inputs {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  gap: 12px;
 }
 
 .pagination-container {

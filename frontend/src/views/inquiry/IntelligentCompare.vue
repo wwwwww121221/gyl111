@@ -473,6 +473,43 @@ const wechatTargetPrice = ref(undefined)
 const wechatLoading = ref(false)
 const wechatScriptResult = ref('')
 const DRAFT_INDEX_KEY = 'intelligent_compare_draft_index'
+const PRESSURE_RATIO_KEY = 'intelligent_compare_pressure_ratio'
+
+let pressurePersistTimer = undefined
+const persistPressureRatios = () => {
+  try {
+    const common = Math.max(0, Math.min(100, Number(pressureCommonRatio.value || 0)))
+    const lowest = Math.max(0, Math.min(100, Number(pressureLowestRatio.value || 0)))
+    localStorage.setItem(PRESSURE_RATIO_KEY, JSON.stringify({ common, lowest }))
+  } catch {}
+}
+
+const schedulePersistPressureRatios = () => {
+  if (pressurePersistTimer) {
+    clearTimeout(pressurePersistTimer)
+  }
+  pressurePersistTimer = setTimeout(() => {
+    pressurePersistTimer = undefined
+    persistPressureRatios()
+  }, 200)
+}
+
+const loadPressureRatios = () => {
+  try {
+    const raw = localStorage.getItem(PRESSURE_RATIO_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    const commonRaw = Number(parsed?.common)
+    const lowestRaw = Number(parsed?.lowest)
+    if (!Number.isFinite(commonRaw) && !Number.isFinite(lowestRaw)) return
+    const common = Number.isFinite(commonRaw) ? Math.max(0, Math.min(100, commonRaw)) : 80
+    const lowest = Number.isFinite(lowestRaw) ? Math.max(0, Math.min(100, lowestRaw)) : Math.max(0, 100 - common)
+    syncingPressureRatios = true
+    pressureCommonRatio.value = common
+    pressureLowestRatio.value = common + lowest === 100 ? lowest : Math.max(0, 100 - common)
+    syncingPressureRatios = false
+  } catch {}
+}
 
 const getLocalDraftKey = () => {
   const taskId = route.query.taskId
@@ -713,6 +750,7 @@ watch(pressureCommonRatio, (value) => {
   syncingPressureRatios = true
   pressureLowestRatio.value = Math.max(0, 100 - Number(value || 0))
   syncingPressureRatios = false
+  schedulePersistPressureRatios()
 })
 
 watch(pressureLowestRatio, (value) => {
@@ -720,6 +758,7 @@ watch(pressureLowestRatio, (value) => {
   syncingPressureRatios = true
   pressureCommonRatio.value = Math.max(0, 100 - Number(value || 0))
   syncingPressureRatios = false
+  schedulePersistPressureRatios()
 })
 
 watch(
@@ -831,6 +870,7 @@ const loadWorkspaceDataByRoute = async () => {
 
 // Init from sessionStorage
 onMounted(async () => {
+  loadPressureRatios()
   await detectCompareDraftApi()
   await loadCompareDraftRows()
 
@@ -1077,10 +1117,18 @@ const applyStrategy = (type) => {
     return
   }
 
-  initializeAllocations()
-
   const commonSupplier = currentComparison.value.find(item => item.is_common)
   const lowestSupplier = currentComparison.value.find(item => item.is_lowest)
+
+  const resetAllocationsToZero = () => {
+    initializeAllocations()
+    currentComparison.value.forEach((supplier) => {
+      const key = getAllocationKey(supplier)
+      if (key) {
+        allocations.value[key] = 0
+      }
+    })
+  }
 
   const setAllocation = (supplier, ratio) => {
     if (!supplier) return
@@ -1094,6 +1142,7 @@ const applyStrategy = (type) => {
       ElMessage.warning('未识别到常用供应商')
       return
     }
+    resetAllocationsToZero()
     setAllocation(commonSupplier, 100)
     isFormDirty.value = true
     return
@@ -1104,6 +1153,7 @@ const applyStrategy = (type) => {
       ElMessage.warning('未识别到最低价供应商')
       return
     }
+    resetAllocationsToZero()
     setAllocation(lowestSupplier, 100)
     isFormDirty.value = true
     return
@@ -1119,18 +1169,21 @@ const applyStrategy = (type) => {
     const lowestKey = lowestSupplier ? getAllocationKey(lowestSupplier) : null
 
     if (commonKey && lowestKey && commonKey === lowestKey) {
+      resetAllocationsToZero()
       setAllocation(commonSupplier, 100)
       isFormDirty.value = true
       return
     }
 
     if (commonSupplier && lowestSupplier) {
+      resetAllocationsToZero()
       setAllocation(commonSupplier, pressureCommonRatio.value)
       setAllocation(lowestSupplier, pressureLowestRatio.value)
       isFormDirty.value = true
       return
     }
 
+    resetAllocationsToZero()
     setAllocation(commonSupplier || lowestSupplier, 100)
     isFormDirty.value = true
   }

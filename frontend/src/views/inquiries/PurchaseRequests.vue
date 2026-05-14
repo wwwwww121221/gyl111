@@ -120,10 +120,9 @@
     <el-dialog v-model="dialogVisible" title="创建新询价任务" width="800px" @close="isJumpToCompare = false">
       <el-form ref="taskFormRef" :model="taskForm" :rules="taskFormRules" label-width="100px" size="default">
         <el-form-item label="任务类型" prop="type">
-          <el-radio-group v-model="taskForm.type">
-            <el-radio value="auto">自动询价 (系统自动多轮谈判)</el-radio>
-            <el-radio value="manual">手动询价 (人工线下录入报价比价)</el-radio>
-          </el-radio-group>
+          <el-tag :type="lockedTaskType === 'manual' ? 'warning' : 'success'" effect="dark">
+            {{ lockedTaskType === 'manual' ? '手动询价 (人工线下录入报价比价)' : '自动询价 (系统自动多轮谈判)' }}
+          </el-tag>
         </el-form-item>
         <el-form-item label="任务标题">
           <el-input v-model="taskForm.title" placeholder="例如：3月份电子元器件采购" />
@@ -529,6 +528,7 @@ const handleSelectionChange = (val) => {
 }
 
 const isJumpToCompare = ref(false)
+const lockedTaskType = ref('auto')
 
 const handleIntelligentCompare = async () => {
   if (selectedRequests.value.length === 0) {
@@ -540,6 +540,7 @@ const handleIntelligentCompare = async () => {
 
 const showCreateTaskDialog = (isJump = false) => {
   isJumpToCompare.value = isJump === true
+  lockedTaskType.value = isJump === true ? 'manual' : 'auto'
   const aggregatedMap = new Map()
   
   if (selectedRequests.value && selectedRequests.value.length > 0) {
@@ -589,7 +590,7 @@ const showCreateTaskDialog = (isJump = false) => {
   
   const date = new Date().toISOString().slice(0, 10)
   taskForm.title = `${date} 批量询价 (${selectedRequestsForTask.value.length}项物料)`
-  taskForm.type = isJump === true ? 'manual' : 'auto'
+  taskForm.type = lockedTaskType.value
   taskForm.deadline = ''
   taskForm.deadlineDate = ''
   taskForm.deadlineTime = isJump === true ? '' : DEFAULT_DEADLINE_TIME

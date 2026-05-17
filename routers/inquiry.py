@@ -4,6 +4,7 @@ from typing import List, Any, Optional
 from pydantic import BaseModel
 import uuid
 from datetime import datetime, date
+from decimal import Decimal, ROUND_FLOOR
 
 from models import (
     get_db, User, InquiryRequest, InquiryTask, InquiryTaskItem,
@@ -42,9 +43,134 @@ def _load_link_quotes(db: Session, link: InquirySupplier):
     return quotes
 
 
+def _parse_link_item_allocations(link: InquirySupplier) -> dict:
+    parsed = {}
+    for row in (link.item_allocations or []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            item_id = int(row.get("item_id"))
+        except (TypeError, ValueError):
+            continue
+        parsed[item_id] = {
+            "allocated_ratio": float(row.get("allocated_ratio")) if row.get("allocated_ratio") is not None else None,
+            "allocated_qty": float(row.get("allocated_qty")) if row.get("allocated_qty") is not None else None,
+        }
+    return parsed
+
+
+def _build_link_quote_rows(db: Session, link: InquirySupplier) -> list:
+    quote_rows = []
+    for quote in _load_link_quotes(db, link):
+        task_item = db.query(InquiryTaskItem).filter(InquiryTaskItem.id == quote.item_id).first()
+        request = db.query(InquiryRequest).filter(InquiryRequest.id == task_item.request_id).first() if task_item else None
+        base_qty = _to_decimal(request.qty if request and request.qty is not None else (quote.qty or 0))
+        quote_rows.append({
+            "quote": quote,
+            "task_item": task_item,
+            "request": request,
+            "base_qty": base_qty,
+        })
+    return quote_rows
+
+
+def _build_item_level_allocated_qty_map(task: InquiryTask, quote_rows: list, link: InquirySupplier) -> dict:
+    current_item_allocations = _parse_link_item_allocations(link)
+    if not current_item_allocations:
+        return {}
+
+    deal_links = [l for l in (task.suppliers or []) if l.status == LinkStatus.DEAL]
+    parsed_by_link_id = {deal_link.id: _parse_link_item_allocations(deal_link) for deal_link in deal_links}
+    result_for_current = {}
+
+    for row in quote_rows:
+        task_item = row["task_item"]
+        item_id = int(task_item.id if task_item else row["quote"].item_id)
+        current_cfg = current_item_allocations.get(item_id)
+        if not current_cfg:
+            continue
+
+        quote_id = row["quote"].id
+        base_qty = row["base_qty"]
+
+        if current_cfg.get("allocated_qty") is not None:
+            result_for_current[quote_id] = _to_decimal(current_cfg["allocated_qty"])
+            continue
+
+        item_level_configs = {}
+        has_item_level_config = False
+        has_explicit_qty = False
+        for deal_link in deal_links:
+            cfg = parsed_by_link_id.get(deal_link.id, {}).get(item_id)
+            if not cfg:
+                continue
+            has_item_level_config = True
+            if cfg.get("allocated_qty") is not None:
+                has_explicit_qty = True
+            item_level_configs[deal_link.id] = cfg
+
+        if has_item_level_config:
+            if has_explicit_qty:
+                current_qty = item_level_configs.get(link.id, {}).get("allocated_qty")
+                result_for_current[quote_id] = _to_decimal(current_qty)
+                continue
+
+            current_ratio = _to_decimal(item_level_configs.get(link.id, {}).get("allocated_ratio")) / Decimal("100")
+            if current_ratio <= 0:
+                result_for_current[quote_id] = Decimal("0")
+                continue
+            if base_qty != base_qty.to_integral_value():
+                result_for_current[quote_id] = base_qty * current_ratio
+                continue
+
+            total_int = int(base_qty)
+            floors = {}
+            remainders = []
+            sum_floor = 0
+            for deal_link in deal_links:
+                ratio = _to_decimal(item_level_configs.get(deal_link.id, {}).get("allocated_ratio")) / Decimal("100")
+                exact = Decimal(str(total_int)) * ratio
+                floor_val = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+                frac = exact - Decimal(str(floor_val))
+                floors[deal_link.id] = floor_val
+                remainders.append((frac, deal_link.id))
+                sum_floor += floor_val
+
+            leftover = total_int - sum_floor
+            remainders.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+            for idx in range(leftover):
+                _, deal_link_id = remainders[idx % len(remainders)]
+                floors[deal_link_id] = floors.get(deal_link_id, 0) + 1
+
+            result_for_current[quote_id] = Decimal(str(floors.get(link.id, 0)))
+            continue
+
+        ratio = _to_decimal(current_cfg.get("allocated_ratio")) / Decimal("100")
+        result_for_current[quote_id] = base_qty * ratio
+
+    return result_for_current
+
+
 def _build_allocated_qty_map(db: Session, link: InquirySupplier, quotes: List[Quotation]) -> dict:
     quote_rows = []
     total_base_qty = 0.0
+    item_level_map = _parse_link_item_allocations(link)
+    if item_level_map:
+        for q in quotes:
+            task_item = db.query(InquiryTaskItem).filter(InquiryTaskItem.id == q.item_id).first()
+            req = db.query(InquiryRequest).filter(InquiryRequest.id == task_item.request_id).first() if task_item else None
+            base_qty = float(req.qty if req and req.qty is not None else (q.qty or 0))
+            item_cfg = item_level_map.get(int(task_item.id if task_item else q.item_id))
+            if not item_cfg:
+                quote_rows.append({"quote_id": q.id, "allocated_qty": 0.0})
+                continue
+            if item_cfg.get("allocated_qty") is not None:
+                quote_rows.append({"quote_id": q.id, "allocated_qty": float(item_cfg["allocated_qty"] or 0)})
+            else:
+                ratio = float(item_cfg.get("allocated_ratio") or 0) / 100.0
+                quote_rows.append({"quote_id": q.id, "allocated_qty": base_qty * ratio})
+        return {row["quote_id"]: row["allocated_qty"] for row in quote_rows}
+
     for q in quotes:
         task_item = db.query(InquiryTaskItem).filter(InquiryTaskItem.id == q.item_id).first()
         req = db.query(InquiryRequest).filter(InquiryRequest.id == task_item.request_id).first() if task_item else None
@@ -81,13 +207,126 @@ def _build_allocated_qty_map(db: Session, link: InquirySupplier, quotes: List[Qu
 
 
 def _calc_link_total_amount(db: Session, link: InquirySupplier) -> float:
-    quotes = _load_link_quotes(db, link)
-    allocated_qty_map = _build_allocated_qty_map(db, link, quotes)
-    total_amount = 0.0
-    for q in quotes:
-        qty = allocated_qty_map.get(q.id, 0.0)
-        total_amount += float(q.price or 0) * float(qty or 0)
-    return total_amount
+    task = db.query(InquiryTask).filter(InquiryTask.id == link.task_id).first()
+    quote_rows = _build_link_quote_rows(db, link)
+    allocated_qty_map = _build_task_split_allocated_qty_map(task, quote_rows, link) if task else {}
+    if not allocated_qty_map:
+        allocated_qty_map = {
+            quote_id: _to_decimal(qty)
+            for quote_id, qty in _build_allocated_qty_map(db, link, [row["quote"] for row in quote_rows]).items()
+        }
+
+    total_amount = Decimal("0")
+    for row in quote_rows:
+        qty = allocated_qty_map.get(row["quote"].id, Decimal("0"))
+        total_amount += _to_decimal(row["quote"].price) * qty
+    return float(total_amount)
+
+
+def _to_decimal(value) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    return Decimal(str(value))
+
+
+def _format_decimal_number(value: Decimal) -> float | int:
+    if value == value.to_integral_value():
+        return int(value)
+    return float(value)
+
+
+def _build_task_split_allocated_qty_map(task: InquiryTask, quote_rows: list, link: InquirySupplier) -> dict:
+    item_level_allocated_qty_map = _build_item_level_allocated_qty_map(task, quote_rows, link)
+    if item_level_allocated_qty_map:
+        return item_level_allocated_qty_map
+
+    deal_links = [l for l in (task.suppliers or []) if l.status == LinkStatus.DEAL]
+    if len(deal_links) <= 1:
+        return {}
+
+    ratios = {}
+    for deal_link in deal_links:
+        if deal_link.allocated_ratio is None:
+            ratios[deal_link.id] = Decimal("0")
+        else:
+            ratios[deal_link.id] = _to_decimal(deal_link.allocated_ratio) / Decimal("100")
+
+    result_for_current = {}
+    current_ratio = ratios.get(link.id, Decimal("0"))
+    for row in quote_rows:
+        quote_id = row["quote"].id
+        base_qty = row["base_qty"]
+        if current_ratio <= 0:
+            result_for_current[quote_id] = Decimal("0")
+            continue
+        if base_qty != base_qty.to_integral_value():
+            result_for_current[quote_id] = base_qty * current_ratio
+            continue
+
+        total_int = int(base_qty)
+        floors = {}
+        remainders = []
+        sum_floor = 0
+        for deal_link in deal_links:
+            exact = Decimal(str(total_int)) * ratios.get(deal_link.id, Decimal("0"))
+            floor_val = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+            frac = exact - Decimal(str(floor_val))
+            floors[deal_link.id] = floor_val
+            remainders.append((frac, deal_link.id))
+            sum_floor += floor_val
+
+        leftover = total_int - sum_floor
+        remainders.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        for idx in range(leftover):
+            _, deal_link_id = remainders[idx % len(remainders)]
+            floors[deal_link_id] = floors.get(deal_link_id, 0) + 1
+
+        result_for_current[quote_id] = Decimal(str(floors.get(link.id, 0)))
+
+    return result_for_current
+
+
+def _build_link_material_allocations(db: Session, task: InquiryTask, link: InquirySupplier) -> list:
+    if link.status != LinkStatus.DEAL:
+        return []
+
+    quote_rows = _build_link_quote_rows(db, link)
+    if not quote_rows:
+        return []
+
+    allocated_qty_map = _build_task_split_allocated_qty_map(task, quote_rows, link)
+    if not allocated_qty_map:
+        allocated_qty_map = {
+            quote_id: _to_decimal(qty)
+            for quote_id, qty in _build_allocated_qty_map(db, link, [row["quote"] for row in quote_rows]).items()
+        }
+
+    material_allocations = []
+    for row in quote_rows:
+        quote = row["quote"]
+        request = row["request"]
+        base_qty = row["base_qty"]
+        allocated_qty = allocated_qty_map.get(quote.id, Decimal("0"))
+        if allocated_qty <= 0:
+            continue
+
+        price = _to_decimal(quote.price)
+        amount = allocated_qty * price
+        allocated_ratio = (allocated_qty / base_qty * Decimal("100")) if base_qty > 0 else Decimal("0")
+        material_allocations.append({
+            "item_id": row["task_item"].id if row["task_item"] else None,
+            "request_id": row["task_item"].request_id if row["task_item"] else None,
+            "material_code": request.material_code if request else "",
+            "material_name": request.material_name if request else "",
+            "base_qty": _format_decimal_number(base_qty),
+            "allocated_qty": _format_decimal_number(allocated_qty),
+            "allocated_ratio": round(float(allocated_ratio), 2),
+            "price": float(price),
+            "amount": round(float(amount), 2),
+            "delivery_date": quote.delivery_date,
+        })
+
+    return material_allocations
 
 
 def _get_task_total_requested_qty(task: InquiryTask) -> float:
@@ -96,6 +335,54 @@ def _get_task_total_requested_qty(task: InquiryTask) -> float:
         if item.request and item.request.qty is not None:
             total_qty += float(item.request.qty)
     return total_qty
+
+
+def _build_auto_compare_meta(task: InquiryTask) -> dict:
+    meta = {
+        "compare_ready": False,
+        "compare_ready_reason": None,
+        "effective_status": task.status,
+    }
+    if task.type != "auto":
+        return meta
+
+    if task.status == TaskStatus.AWAITING_AWARD:
+        meta["compare_ready"] = True
+        meta["compare_ready_reason"] = "awaiting_award"
+        meta["effective_status"] = TaskStatus.AWAITING_AWARD
+        return meta
+
+    if task.status != TaskStatus.ACTIVE:
+        return meta
+
+    strategy = task.strategy_config or {}
+    try:
+        max_rounds = int(strategy.get("max_rounds") or 0)
+    except (TypeError, ValueError):
+        max_rounds = 0
+    if max_rounds <= 0:
+        return meta
+
+    active_links = [
+        link for link in (task.suppliers or [])
+        if link.status not in [LinkStatus.REJECT, LinkStatus.DEAL, LinkStatus.LOCKED]
+    ]
+    if not active_links:
+        if any(link.status == LinkStatus.LOCKED for link in (task.suppliers or [])):
+            meta["compare_ready"] = True
+            meta["compare_ready_reason"] = "all_candidates_locked"
+            meta["effective_status"] = TaskStatus.AWAITING_AWARD
+        return meta
+
+    if any(link.status in [LinkStatus.SENT, LinkStatus.NEGOTIATION] for link in active_links):
+        return meta
+
+    if all(int(link.current_round or 0) >= max_rounds for link in active_links):
+        meta["compare_ready"] = True
+        meta["compare_ready_reason"] = "max_rounds_reached"
+        meta["effective_status"] = TaskStatus.AWAITING_AWARD
+
+    return meta
 
 
 def _normalize_close_allocations(
@@ -111,41 +398,103 @@ def _normalize_close_allocations(
         raw_allocations = []
 
     task_link_map = {link.id: link for link in task.suppliers}
+    task_item_map = {item.id: item for item in task.items}
     task_total_qty = _get_task_total_requested_qty(task)
     normalized_allocations = []
     seen_link_ids = set()
     effective_total_qty = 0.0
+    has_item_level_allocations = False
+    item_total_ratio_map = {item.id: 0.0 for item in task.items}
+    item_total_qty_map = {item.id: 0.0 for item in task.items}
+    item_allocation_mode_map = {item.id: None for item in task.items}
 
     for allocation in raw_allocations:
         link_id = allocation["link_id"] if isinstance(allocation, dict) else allocation.link_id
         allocated_ratio = allocation.get("allocated_ratio") if isinstance(allocation, dict) else allocation.allocated_ratio
         allocated_qty = allocation.get("allocated_qty") if isinstance(allocation, dict) else allocation.allocated_qty
+        item_allocations = allocation.get("item_allocations") if isinstance(allocation, dict) else getattr(allocation, "item_allocations", None)
 
         if link_id in seen_link_ids:
             raise HTTPException(status_code=400, detail=f"Duplicate allocation for link_id={link_id}")
         if link_id not in task_link_map:
             raise HTTPException(status_code=404, detail=f"Supplier link {link_id} not found in this task")
-        if allocated_ratio is None and allocated_qty is None:
-            raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} must provide ratio or quantity")
-        if allocated_ratio is not None and allocated_qty is not None:
-            raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} cannot provide both ratio and quantity")
-        if allocated_ratio is not None and allocated_ratio <= 0:
-            raise HTTPException(status_code=400, detail=f"Allocation ratio for link_id={link_id} must be greater than 0")
-        if allocated_qty is not None and allocated_qty <= 0:
-            raise HTTPException(status_code=400, detail=f"Allocation quantity for link_id={link_id} must be greater than 0")
+        normalized_item_allocations = []
 
-        effective_qty = float(allocated_qty) if allocated_qty is not None else (
-            task_total_qty * float(allocated_ratio) / 100.0 if task_total_qty > 0 else 0.0
-        )
-        effective_total_qty += effective_qty
+        if item_allocations:
+            has_item_level_allocations = True
+            if allocated_ratio is not None or allocated_qty is not None:
+                raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} cannot mix task-level and item-level values")
+            for item_allocation in item_allocations:
+                item_id = item_allocation.get("item_id") if isinstance(item_allocation, dict) else item_allocation.item_id
+                item_ratio = item_allocation.get("allocated_ratio") if isinstance(item_allocation, dict) else item_allocation.allocated_ratio
+                item_qty = item_allocation.get("allocated_qty") if isinstance(item_allocation, dict) else item_allocation.allocated_qty
+
+                if item_id not in task_item_map:
+                    raise HTTPException(status_code=404, detail=f"Task item {item_id} not found in this task")
+                if item_ratio is None and item_qty is None:
+                    raise HTTPException(status_code=400, detail=f"Item allocation for item_id={item_id} must provide ratio or quantity")
+                if item_ratio is not None and item_qty is not None:
+                    raise HTTPException(status_code=400, detail=f"Item allocation for item_id={item_id} cannot provide both ratio and quantity")
+                if item_ratio is not None and item_ratio <= 0:
+                    raise HTTPException(status_code=400, detail=f"Item allocation ratio for item_id={item_id} must be greater than 0")
+                if item_qty is not None and item_qty <= 0:
+                    raise HTTPException(status_code=400, detail=f"Item allocation quantity for item_id={item_id} must be greater than 0")
+
+                current_mode = item_allocation_mode_map[item_id]
+                next_mode = "qty" if item_qty is not None else "ratio"
+                if current_mode and current_mode != next_mode:
+                    raise HTTPException(status_code=400, detail=f"Item {item_id} allocation mode must be consistent across suppliers")
+                item_allocation_mode_map[item_id] = next_mode
+
+                if item_qty is not None:
+                    item_total_qty_map[item_id] += float(item_qty)
+                    effective_total_qty += float(item_qty)
+                else:
+                    item_total_ratio_map[item_id] += float(item_ratio)
+                    base_qty = float(task_item_map[item_id].request.qty or 0) if task_item_map[item_id].request else 0.0
+                    effective_total_qty += base_qty * float(item_ratio) / 100.0
+
+                normalized_item_allocations.append({
+                    "item_id": int(item_id),
+                    "allocated_ratio": float(item_ratio) if item_ratio is not None else None,
+                    "allocated_qty": float(item_qty) if item_qty is not None else None,
+                })
+        else:
+            if allocated_ratio is None and allocated_qty is None:
+                raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} must provide ratio or quantity")
+            if allocated_ratio is not None and allocated_qty is not None:
+                raise HTTPException(status_code=400, detail=f"Allocation for link_id={link_id} cannot provide both ratio and quantity")
+            if allocated_ratio is not None and allocated_ratio <= 0:
+                raise HTTPException(status_code=400, detail=f"Allocation ratio for link_id={link_id} must be greater than 0")
+            if allocated_qty is not None and allocated_qty <= 0:
+                raise HTTPException(status_code=400, detail=f"Allocation quantity for link_id={link_id} must be greater than 0")
+
+            effective_qty = float(allocated_qty) if allocated_qty is not None else (
+                task_total_qty * float(allocated_ratio) / 100.0 if task_total_qty > 0 else 0.0
+            )
+            effective_total_qty += effective_qty
         seen_link_ids.add(link_id)
         normalized_allocations.append({
             "link_id": link_id,
             "allocated_ratio": float(allocated_ratio) if allocated_ratio is not None else None,
             "allocated_qty": float(allocated_qty) if allocated_qty is not None else None,
+            "item_allocations": normalized_item_allocations,
         })
 
-    if task_total_qty > 0 and effective_total_qty - task_total_qty > 1e-6:
+    if has_item_level_allocations:
+        for item in task.items:
+            item_id = item.id
+            request_qty = float(item.request.qty or 0) if item.request else 0.0
+            mode = item_allocation_mode_map[item_id]
+            if mode == "ratio":
+                if abs(item_total_ratio_map[item_id] - 100.0) > 1e-6:
+                    raise HTTPException(status_code=400, detail=f"Item {item.request.material_name if item.request else item_id} allocation ratio must total 100%")
+            elif mode == "qty":
+                if request_qty > 0 and abs(item_total_qty_map[item_id] - request_qty) > 1e-6:
+                    raise HTTPException(status_code=400, detail=f"Item {item.request.material_name if item.request else item_id} allocation quantity must equal requested quantity")
+            else:
+                raise HTTPException(status_code=400, detail=f"Item {item.request.material_name if item.request else item_id} has no allocation result")
+    elif task_total_qty > 0 and effective_total_qty - task_total_qty > 1e-6:
         raise HTTPException(status_code=400, detail="Allocated quantity exceeds task requested quantity")
 
     return normalized_allocations
@@ -182,10 +531,21 @@ def create_inquiry_task(
     3. 创建任务并关联这些需求
     """
     request_ids = []
+    raw_request_supplier_ids_by_erp_id = {}
+    task_level_supplier_ids = set(int(sid) for sid in (getattr(task_in, "supplier_ids", None) or []) if sid)
     
     # 1. 处理原始需求数据（如果提供）
     if task_in.raw_requests:
         for raw_req in task_in.raw_requests:
+            raw_supplier_ids = []
+            for supplier_id in (getattr(raw_req, "supplier_ids", None) or []):
+                try:
+                    supplier_id_int = int(supplier_id)
+                except (TypeError, ValueError):
+                    continue
+                raw_supplier_ids.append(supplier_id_int)
+                task_level_supplier_ids.add(supplier_id_int)
+            raw_request_supplier_ids_by_erp_id[str(raw_req.erp_request_id)] = raw_supplier_ids
             # 检查是否存在
             existing = db.query(InquiryRequest).filter(
                 InquiryRequest.erp_request_id == raw_req.erp_request_id
@@ -229,10 +589,12 @@ def create_inquiry_task(
     ensure_runtime_schema_columns()
 
     # 2. 创建任务
+    strategy_config = dict(task_in.strategy_config.dict()) if task_in.strategy_config else {}
+    item_supplier_map = {}
     new_task = InquiryTask(
         title=task_in.title,
         type=task_in.type,
-        strategy_config=task_in.strategy_config.dict() if task_in.strategy_config else {},
+        strategy_config=strategy_config,
         deadline=task_in.deadline,
         status=TaskStatus.PENDING_FILL if task_in.type == "manual" else TaskStatus.ACTIVE,
         buyer_id=current_user.id,
@@ -266,10 +628,22 @@ def create_inquiry_task(
             request_id=rid
         )
         db.add(item)
+        db.flush()
+
+        if req:
+            supplier_ids_for_item = raw_request_supplier_ids_by_erp_id.get(str(req.erp_request_id), [])
+            if supplier_ids_for_item:
+                item_supplier_map[str(item.id)] = supplier_ids_for_item
     
     # 4. 如果传了供应商ID，自动创建关联
-    if getattr(task_in, 'supplier_ids', None):
-        for sup_id in task_in.supplier_ids:
+    if item_supplier_map:
+        new_task.strategy_config = {
+            **(new_task.strategy_config or {}),
+            "item_supplier_map": item_supplier_map
+        }
+
+    if task_level_supplier_ids:
+        for sup_id in sorted(task_level_supplier_ids):
             supplier = db.query(Supplier).get(sup_id)
             if supplier:
                 link = InquirySupplier(
@@ -331,7 +705,14 @@ def add_supplier_to_task(
     db.add(new_link)
     db.commit()
     
-    return {"message": "Supplier added successfully"}
+    return {
+        "message": "Supplier added successfully",
+        "link_id": new_link.id,
+        "supplier_id": supplier.id,
+        "supplier_name": supplier.name,
+        "supplier_code": supplier.code,
+        "supplier_grade": supplier.grade
+    }
 
 @router.get("/tasks")
 def get_my_tasks(
@@ -356,11 +737,15 @@ def get_my_tasks(
     
     result = []
     for task in tasks:
+        compare_meta = _build_auto_compare_meta(task)
         task_dict = {
             "id": task.id,
             "title": task.title,
             "type": task.type,
             "status": task.status,
+            "effective_status": compare_meta["effective_status"],
+            "compare_ready": compare_meta["compare_ready"],
+            "compare_ready_reason": compare_meta["compare_ready_reason"],
             "deadline": task.deadline,
             "created_at": task.created_at,
             "buyer_id": task.buyer_id,
@@ -384,6 +769,7 @@ def get_task_details(
     task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    compare_meta = _build_auto_compare_meta(task)
 
     items = []
     for item in task.items:
@@ -486,6 +872,7 @@ def get_task_details(
             })
 
         score_info = score_map.get(link.id, {})
+        material_allocations = _build_link_material_allocations(db, task, link)
         
         grade = "一般"
         if getattr(link.supplier, 'grade', None):
@@ -502,6 +889,8 @@ def get_task_details(
             "status": link.status,
             "allocated_ratio": link.allocated_ratio,
             "allocated_qty": link.allocated_qty,
+            "item_allocations": link.item_allocations or [],
+            "material_allocations": material_allocations,
             "current_round": link.current_round,
             "quotes": quotes_by_round,
             "total_price": float(score_info.get("total_price", 0)),
@@ -518,6 +907,9 @@ def get_task_details(
         "type": task.type,
         "deadline": task.deadline,
         "status": task.status,
+        "effective_status": compare_meta["effective_status"],
+        "compare_ready": compare_meta["compare_ready"],
+        "compare_ready_reason": compare_meta["compare_ready_reason"],
         "strategy_config": task.strategy_config,
         "items": items,
         "links": links
@@ -639,12 +1031,13 @@ def save_manual_quotes(
             db.flush()
         else:
             link.status = LinkStatus.QUOTED
+        target_round = int(link.current_round or 1)
 
         # 3. 查找或创建报价记录
         quote = db.query(Quotation).filter(
             Quotation.inquiry_supplier_id == link.id,
             Quotation.item_id == item.id,
-            Quotation.round == 1
+            Quotation.round == target_round
         ).first()
         
         if quote:
@@ -654,7 +1047,7 @@ def save_manual_quotes(
             quote = Quotation(
                 inquiry_supplier_id=link.id,
                 item_id=item.id,
-                round=1,
+                round=target_round,
                 price=supp.price,
                 qty=supp.qty
             )
@@ -786,29 +1179,48 @@ def close_inquiry_task(
     normalized_allocations = _normalize_close_allocations(task, payload, selected_link_id)
     allocation_map = {allocation["link_id"]: allocation for allocation in normalized_allocations}
     task_total_qty = _get_task_total_requested_qty(task)
+    task_item_map = {item.id: item for item in task.items}
 
     task.status = TaskStatus.CLOSED
     for link in task.suppliers:
         allocation = allocation_map.get(link.id)
         if allocation:
             link.status = LinkStatus.DEAL
-            if allocation["allocated_ratio"] is not None:
+            if allocation.get("item_allocations"):
+                allocated_total_qty = 0.0
+                for item_allocation in allocation["item_allocations"]:
+                    task_item = task_item_map.get(item_allocation["item_id"])
+                    base_qty = float(task_item.request.qty or 0) if task_item and task_item.request else 0.0
+                    if item_allocation["allocated_qty"] is not None:
+                        allocated_total_qty += float(item_allocation["allocated_qty"] or 0)
+                    else:
+                        allocated_total_qty += base_qty * float(item_allocation["allocated_ratio"] or 0) / 100.0
+                link.allocated_qty = allocated_total_qty
+                link.allocated_ratio = (
+                    allocated_total_qty / task_total_qty * 100.0
+                    if task_total_qty > 0 else None
+                )
+                link.item_allocations = allocation["item_allocations"]
+            elif allocation["allocated_ratio"] is not None:
                 link.allocated_ratio = allocation["allocated_ratio"]
                 link.allocated_qty = (
                     task_total_qty * allocation["allocated_ratio"] / 100.0
                     if task_total_qty > 0 else None
                 )
+                link.item_allocations = None
             else:
                 link.allocated_qty = allocation["allocated_qty"]
                 link.allocated_ratio = (
                     allocation["allocated_qty"] / task_total_qty * 100.0
                     if task_total_qty > 0 else None
                 )
+                link.item_allocations = None
             link.latest_ai_feedback = "恭喜，采购员已确认您中标，本次询价已达成合作。"
         else:
             link.status = LinkStatus.REJECT
             link.allocated_ratio = None
             link.allocated_qty = None
+            link.item_allocations = None
             if not allocation_map:
                 link.latest_ai_feedback = "本次询价任务已终止（流标），所有报价已作废，感谢您的参与。"
             else:

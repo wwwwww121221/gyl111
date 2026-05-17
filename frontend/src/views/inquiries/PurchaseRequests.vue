@@ -88,6 +88,7 @@
           </el-table-column>
           <el-table-column prop="material_name" label="物料名称" min-width="150" show-overflow-tooltip />
           <el-table-column prop="material_code" label="物料编码" width="120" show-overflow-tooltip />
+          <el-table-column prop="material_model" label="规格型号" width="160" show-overflow-tooltip />
           <el-table-column prop="qty" label="数量" width="80" align="right" />
           <el-table-column prop="delivery_date" label="需求日期" width="100" align="center">
             <template #default="scope">
@@ -162,43 +163,13 @@
           </el-col>
         </el-row>
 
-        <el-form-item label="指定供应商">
-          <el-select v-model="taskForm.supplier_ids" multiple filterable placeholder="请选择要派发的供应商（选填，不选则后续手动添加）" style="width: 100%">
-            <el-option v-for="s in supplierList" :key="s.id" :label="s.name" :value="s.id">
-              <span style="float: left">{{ s.name }}</span>
-              <span style="float: right; color: var(--el-text-color-secondary); font-size: 13px">
-                {{ getGradeLabel(s) }} | 历史交易: {{ s.transaction_count || 0 }} 次
-              </span>
-            </el-option>
-          </el-select>
-        </el-form-item>
-
-        <!-- Quote Input Grid for Manual Tasks -->
-        <div v-if="taskForm.type === 'manual' && taskForm.supplier_ids.length > 0 && selectedRequestsForTask.length > 0" style="margin-top: 20px;">
-          <span style="font-size: 14px; color: #606266; font-weight: bold;">直接录入报价 (选填)</span>
-          <el-divider style="margin: 8px 0;"></el-divider>
-          <el-table :data="selectedRequestsForTask" border size="small" style="margin-bottom: 10px;">
-            <el-table-column label="物料名称" min-width="150" prop="material_name" />
-            <el-table-column v-for="supplierId in taskForm.supplier_ids" :key="supplierId" :label="getSupplierName(supplierId) + ' (含税单价)'" min-width="150" align="center">
-              <template #default="scope">
-                <el-input-number 
-                  v-model="scope.row.quotes[supplierId]" 
-                  :precision="2" :step="1" :min="0" :controls="false"
-                  size="small" style="width: 100%; text-align: center;" 
-                  placeholder="请输入单价"
-                ></el-input-number>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-
         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px;">
           <span style="font-size: 14px; color: #606266; font-weight: bold;">询价物料清单</span>
           <el-button type="primary" link @click="addCustomMaterial">+ 添加自定义物料</el-button>
         </div>
         <el-divider style="margin: 8px 0;"></el-divider>
         
-        <el-table :data="selectedRequestsForTask" border size="small" style="margin-bottom: 10px;">
+        <el-table :data="selectedRequestsForTask" v-loading="recommendationLoading" border size="small" style="margin-bottom: 10px;">
           <el-table-column label="物料编码" width="120">
             <template #default="scope">
               <el-input v-if="scope.row.is_custom" v-model="scope.row.material_code" size="small" placeholder="选填" />
@@ -209,6 +180,12 @@
             <template #default="scope">
               <el-input v-if="scope.row.is_custom" v-model="scope.row.material_name" size="small" placeholder="必填" />
               <span v-else>{{ scope.row.material_name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="规格型号" min-width="160">
+            <template #default="scope">
+              <el-input v-if="scope.row.is_custom" v-model="scope.row.material_model" size="small" placeholder="选填" />
+              <span v-else>{{ scope.row.material_model || '-' }}</span>
             </template>
           </el-table-column>
           <el-table-column label="需求数量" width="120">
@@ -224,6 +201,62 @@
           <el-table-column label="期望单价(¥)" width="130">
             <template #default="scope">
               <el-input-number v-model="scope.row.target_price" :min="0" :precision="2" :step="0.1" size="small" placeholder="不设限" style="width: 100%" controls-position="right" />
+            </template>
+          </el-table-column>
+          <el-table-column label="默认供应商" min-width="260">
+            <template #default="scope">
+              <el-select
+                v-model="scope.row.recommended_supplier_ids"
+                multiple
+                filterable
+                remote
+                reserve-keyword
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="按该物料选择供应商"
+                style="width: 100%"
+                @visible-change="(visible) => handleMaterialSupplierDropdownVisible(scope.row, visible)"
+                :remote-method="(query) => handleMaterialSupplierSearch(scope.row, query)"
+              >
+                <template v-if="!getMaterialSupplierOptions(scope.row).length" #empty>
+                  <span>未查询到历史供应商，请采购员手动填写</span>
+                </template>
+                <el-option
+                  v-for="supplier in getMaterialSupplierOptions(scope.row)"
+                  :key="supplier.id"
+                  :label="getSupplierOptionLabel(supplier, scope.row)"
+                  :value="supplier.id"
+                >
+                  <span style="float: left">{{ supplier.name }}</span>
+                  <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">
+                    {{ getSupplierOptionMeta(supplier, scope.row) }}
+                  </span>
+                </el-option>
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="taskForm.type === 'manual'" label="报价录入" min-width="280">
+            <template #default="scope">
+              <div v-if="scope.row.recommended_supplier_ids?.length" class="material-quote-editor">
+                <div
+                  v-for="supplierId in scope.row.recommended_supplier_ids"
+                  :key="`${scope.row.erp_request_id || scope.row.material_code}_${supplierId}`"
+                  class="material-quote-row"
+                >
+                  <span class="material-quote-name">{{ getSupplierName(supplierId) }}</span>
+                  <el-input-number
+                    v-model="scope.row.quotes[supplierId]"
+                    :precision="2"
+                    :step="1"
+                    :min="0"
+                    :controls="false"
+                    size="small"
+                    style="width: 140px"
+                    placeholder="含税单价"
+                  />
+                </div>
+              </div>
+              <span v-else style="color: #909399;">请先为该物料选择供应商</span>
             </template>
           </el-table-column>
           <el-table-column label="操作" width="60" align="center">
@@ -250,6 +283,7 @@
       </div>
       <el-table v-else :data="selectedRequests" style="width: 100%" size="small" border>
         <el-table-column prop="material_name" label="物料名称" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
         <el-table-column prop="qty" label="数量" width="80" align="right" />
         <el-table-column prop="delivery_date" label="需求日期" width="100">
           <template #default="scope">
@@ -372,6 +406,10 @@ const handleCurrentChange = (val) => {
 const dialogVisible = ref(false)
 const creatingTask = ref(false)
 const supplierList = ref([])
+const supplierListLoaded = ref(false)
+const recommendationLoading = ref(false)
+const recommendedSupplierCache = ref({})
+const latestTargetPriceCache = ref({})
 const taskFormRef = ref(null)
 const taskForm = reactive({
   title: '',
@@ -379,7 +417,6 @@ const taskForm = reactive({
   deadline: '',
   deadlineDate: '',
   deadlineTime: '',
-  supplier_ids: [],
   strategy_config: {
     max_rounds: 3,
     bargain_ratio: 0.05,
@@ -387,7 +424,36 @@ const taskForm = reactive({
   }
 })
 
-const DEFAULT_DEADLINE_TIME = '00:00'
+const formatDatePart = (date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const formatTimePart = (date) => {
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${hours}:${minutes}`
+}
+
+const getDefaultAutoDeadlineParts = () => {
+  const now = new Date()
+  const rounded = new Date(now.getTime())
+  const minutes = rounded.getMinutes()
+  const roundedMinutes = minutes <= 30 ? 30 : 60
+  rounded.setSeconds(0, 0)
+  if (roundedMinutes === 60) {
+    rounded.setHours(rounded.getHours() + 1, 0, 0, 0)
+  } else {
+    rounded.setMinutes(30, 0, 0)
+  }
+  rounded.setDate(rounded.getDate() + 1)
+  return {
+    date: formatDatePart(rounded),
+    time: formatTimePart(rounded)
+  }
+}
 
 const syncDeadlineValue = () => {
   if (taskForm.type !== 'auto') {
@@ -436,7 +502,9 @@ watch(() => taskForm.type, (newType) => {
     return
   }
   if (!taskForm.deadlineTime) {
-    taskForm.deadlineTime = DEFAULT_DEADLINE_TIME
+    const defaultDeadline = getDefaultAutoDeadlineParts()
+    taskForm.deadlineDate = taskForm.deadlineDate || defaultDeadline.date
+    taskForm.deadlineTime = defaultDeadline.time
   }
 })
 
@@ -448,20 +516,229 @@ watch(
 )
 
 const fetchSuppliers = async () => {
+  if (supplierListLoaded.value && supplierList.value.length) {
+    return supplierList.value
+  }
   try {
     const res = await api.get('/supplier/list')
     const list = res.data || []
     // Sort suppliers by transaction_count in descending order
     list.sort((a, b) => (b.transaction_count || 0) - (a.transaction_count || 0))
     supplierList.value = list
+    supplierListLoaded.value = true
+    return list
   } catch (error) {
     console.error('Failed to fetch suppliers:', error)
+    return []
+  }
+}
+
+const normalizeMaterialCode = (materialCode) => String(materialCode || '').trim()
+
+const fetchLatestTargetPricesBatch = async (materialCodes) => {
+  const normalizedCodes = Array.from(new Set(
+    (Array.isArray(materialCodes) ? materialCodes : [])
+      .map((code) => normalizeMaterialCode(code))
+      .filter(Boolean)
+  ))
+
+  const missingCodes = normalizedCodes.filter((code) => !(code in latestTargetPriceCache.value))
+  if (missingCodes.length) {
+    try {
+      const res = await api.post('/compare/latest-prices/batch', {
+        material_codes: missingCodes
+      })
+      const batchResult = res.data || {}
+      const nextCache = { ...latestTargetPriceCache.value }
+      missingCodes.forEach((code) => {
+        nextCache[code] = batchResult[code] || { latest_price: null, latest_date: null }
+      })
+      latestTargetPriceCache.value = nextCache
+    } catch (error) {
+      console.error('Failed to batch fetch latest target prices:', error)
+      const nextCache = { ...latestTargetPriceCache.value }
+      missingCodes.forEach((code) => {
+        nextCache[code] = { latest_price: null, latest_date: null }
+      })
+      latestTargetPriceCache.value = nextCache
+    }
+  }
+
+  return normalizedCodes.reduce((result, code) => {
+    result[code] = latestTargetPriceCache.value[code] || { latest_price: null, latest_date: null }
+    return result
+  }, {})
+}
+
+const fetchRecommendedSuppliersBatch = async (materialCodes) => {
+  const normalizedCodes = Array.from(new Set(
+    (Array.isArray(materialCodes) ? materialCodes : [])
+      .map((code) => normalizeMaterialCode(code))
+      .filter(Boolean)
+  ))
+
+  const missingCodes = normalizedCodes.filter((code) => !(code in recommendedSupplierCache.value))
+  if (missingCodes.length) {
+    try {
+      const res = await api.post('/compare/suppliers/batch', {
+        material_codes: missingCodes
+      })
+      const batchResult = res.data || {}
+      const nextCache = { ...recommendedSupplierCache.value }
+      missingCodes.forEach((code) => {
+        nextCache[code] = Array.isArray(batchResult[code]) ? batchResult[code].slice(0, 3) : []
+      })
+      recommendedSupplierCache.value = nextCache
+    } catch (error) {
+      console.error('Failed to batch fetch recommended suppliers:', error)
+      const nextCache = { ...recommendedSupplierCache.value }
+      missingCodes.forEach((code) => {
+        nextCache[code] = []
+      })
+      recommendedSupplierCache.value = nextCache
+    }
+  }
+
+  return normalizedCodes.reduce((result, code) => {
+    result[code] = Array.isArray(recommendedSupplierCache.value[code]) ? recommendedSupplierCache.value[code] : []
+    return result
+  }, {})
+}
+
+const applyMaterialSpecificRecommendedSuppliers = async () => {
+  if (!selectedRequestsForTask.value.length) {
+    return
+  }
+
+  recommendationLoading.value = true
+  try {
+    const recommendationMap = await fetchRecommendedSuppliersBatch(
+      selectedRequestsForTask.value.map((item) => item.material_code)
+    )
+    const latestPriceMap = await fetchLatestTargetPricesBatch(
+      selectedRequestsForTask.value.map((item) => item.material_code)
+    )
+
+    const noHistoryMaterials = []
+    selectedRequestsForTask.value.forEach((item) => {
+      item.material_code = normalizeMaterialCode(item.material_code)
+      const recommendedSuppliers = recommendationMap[item.material_code] || []
+      const latestPriceInfo = latestPriceMap[item.material_code] || {}
+      const recommendedIds = recommendedSuppliers
+        .map((supplier) => Number(supplier.id))
+        .filter((supplierId) => Number.isFinite(supplierId) && supplierId > 0)
+      item.recommended_supplier_ids = recommendedIds
+      item.recommended_suppliers = recommendedSuppliers
+      item.search_supplier_options = []
+      if (latestPriceInfo.latest_price != null && latestPriceInfo.latest_price > 0) {
+        item.target_price = Number(Number(latestPriceInfo.latest_price).toFixed(2))
+      }
+      if (!recommendedSuppliers.length) {
+        noHistoryMaterials.push(item.material_name || item.material_code || '未命名物料')
+      }
+    })
+
+    if (noHistoryMaterials.length) {
+      const previewNames = noHistoryMaterials.slice(0, 5).join('、')
+      const suffix = noHistoryMaterials.length > 5 ? '等物料' : ''
+      ElMessage.warning(`以下物料未查询到历史供应商，请采购员手动填写：${previewNames}${suffix}`)
+    }
+  } finally {
+    recommendationLoading.value = false
   }
 }
 
 const getSupplierName = (supplierId) => {
   const s = supplierList.value.find(s => s.id === supplierId)
   return s ? s.name : '未知供应商'
+}
+
+const getMaterialSupplierOptions = (material) => {
+  const recommended = Array.isArray(material?.recommended_suppliers) ? material.recommended_suppliers : []
+  const searched = Array.isArray(material?.search_supplier_options) ? material.search_supplier_options : []
+  const selectedIds = Array.isArray(material?.recommended_supplier_ids) ? material.recommended_supplier_ids : []
+  const optionsMap = new Map()
+
+  ;[...recommended, ...searched].forEach((supplier) => {
+    if (supplier?.id) {
+      optionsMap.set(Number(supplier.id), {
+        ...supplier,
+        id: Number(supplier.id),
+        isRecommended: true
+      })
+    }
+  })
+
+  selectedIds.forEach((supplierId) => {
+    const normalizedId = Number(supplierId)
+    if (!Number.isFinite(normalizedId) || optionsMap.has(normalizedId)) return
+    const matchedSupplier = supplierList.value.find((supplier) => Number(supplier?.id) === normalizedId)
+    optionsMap.set(normalizedId, {
+      id: normalizedId,
+      code: matchedSupplier?.code || '',
+      name: getSupplierName(normalizedId),
+      grade: matchedSupplier?.grade || (matchedSupplier?.level === 'core' ? 'A级' : '一般'),
+      transaction_count: Number(matchedSupplier?.transaction_count || 0),
+      isRecommended: false
+    })
+  })
+
+  return Array.from(optionsMap.values())
+}
+
+const handleMaterialSupplierSearch = (material, query) => {
+  const keyword = String(query || '').trim().toLowerCase()
+  if (!keyword) {
+    material.search_supplier_options = []
+    return
+  }
+  material.search_supplier_options = supplierList.value
+    .filter((supplier) => {
+      const name = String(supplier?.name || '').toLowerCase()
+      const code = String(supplier?.code || '').toLowerCase()
+      return name.includes(keyword) || code.includes(keyword)
+    })
+    .slice(0, 50)
+}
+
+const handleMaterialSupplierDropdownVisible = (material, visible) => {
+  if (!visible) {
+    material.search_supplier_options = []
+    return
+  }
+  if (!Array.isArray(material.search_supplier_options)) {
+    material.search_supplier_options = []
+  }
+}
+
+const getSupplierOptionLabel = (supplier, material) => {
+  const supplierId = Number(supplier?.id)
+  const selectedIds = Array.isArray(material?.recommended_supplier_ids) ? material.recommended_supplier_ids.map((id) => Number(id)) : []
+  const isRecommended = (Array.isArray(material?.recommended_suppliers) ? material.recommended_suppliers : []).some((item) => Number(item?.id) === supplierId)
+  const isSelected = selectedIds.includes(supplierId)
+  if (isRecommended) return `${supplier.name}（默认推荐）`
+  if (isSelected) return `${supplier.name}（已选）`
+  return supplier.name
+}
+
+const getSupplierOptionMeta = (supplier, material) => {
+  const supplierId = Number(supplier?.id)
+  const recommendedItem = (Array.isArray(material?.recommended_suppliers) ? material.recommended_suppliers : []).find((item) => Number(item?.id) === supplierId)
+  const tradeCount = Number(recommendedItem?.count ?? supplier?.transaction_count ?? 0)
+  return `${getGradeLabel(supplier)} | 历史交易: ${tradeCount} 次`
+}
+
+const getUnionSupplierIdsForTask = () => {
+  const supplierIds = new Set()
+  selectedRequestsForTask.value.forEach((item) => {
+    ;(Array.isArray(item?.recommended_supplier_ids) ? item.recommended_supplier_ids : []).forEach((supplierId) => {
+      const normalizedId = Number(supplierId)
+      if (Number.isFinite(normalizedId) && normalizedId > 0) {
+        supplierIds.add(normalizedId)
+      }
+    })
+  })
+  return Array.from(supplierIds)
 }
 
 const getGradeType = (grade, level) => {
@@ -482,9 +759,12 @@ const addCustomMaterial = () => {
     erp_request_id: `MANUAL-${Math.random().toString(36).substr(2, 9)}`,
     material_code: '',
     material_name: '',
+    material_model: '',
     qty: 1,
     target_price: undefined,
-    quotes: {}
+    quotes: {},
+    recommended_supplier_ids: [],
+    recommended_suppliers: []
   })
 }
 
@@ -538,7 +818,7 @@ const handleIntelligentCompare = async () => {
   showCreateTaskDialog(true)
 }
 
-const showCreateTaskDialog = (isJump = false) => {
+const showCreateTaskDialog = async (isJump = false) => {
   isJumpToCompare.value = isJump === true
   lockedTaskType.value = isJump === true ? 'manual' : 'auto'
   const aggregatedMap = new Map()
@@ -546,7 +826,8 @@ const showCreateTaskDialog = (isJump = false) => {
   if (selectedRequests.value && selectedRequests.value.length > 0) {
     selectedRequests.value.forEach(item => {
       const dateStr = item.delivery_date ? String(item.delivery_date).substring(0, 10) : 'none'
-      const key = `${item.material_code}_${dateStr}`
+      const normalizedMaterialCode = normalizeMaterialCode(item.material_code)
+      const key = `${normalizedMaterialCode}_${dateStr}`
       
       if (aggregatedMap.has(key)) {
         const existing = aggregatedMap.get(key)
@@ -574,9 +855,13 @@ const showCreateTaskDialog = (isJump = false) => {
         }
       } else {
         const newItem = JSON.parse(JSON.stringify(item))
+        newItem.material_code = normalizeMaterialCode(newItem.material_code)
         newItem.qty = Number(newItem.qty) || 0
         newItem.target_price = undefined
         newItem.quotes = {} // Initialize quotes object
+        newItem.recommended_supplier_ids = []
+        newItem.recommended_suppliers = []
+        newItem.search_supplier_options = []
         aggregatedMap.set(key, newItem)
       }
     })
@@ -592,12 +877,18 @@ const showCreateTaskDialog = (isJump = false) => {
   taskForm.title = `${date} 批量询价 (${selectedRequestsForTask.value.length}项物料)`
   taskForm.type = lockedTaskType.value
   taskForm.deadline = ''
-  taskForm.deadlineDate = ''
-  taskForm.deadlineTime = isJump === true ? '' : DEFAULT_DEADLINE_TIME
-  taskForm.supplier_ids = []
+  if (isJump === true) {
+    taskForm.deadlineDate = ''
+    taskForm.deadlineTime = ''
+  } else {
+    const defaultDeadline = getDefaultAutoDeadlineParts()
+    taskForm.deadlineDate = defaultDeadline.date
+    taskForm.deadlineTime = defaultDeadline.time
+  }
   
-  fetchSuppliers()
   dialogVisible.value = true
+  await fetchSuppliers()
+  await applyMaterialSpecificRecommendedSuppliers()
 }
 
 const confirmCreateTask = async () => {
@@ -626,20 +917,21 @@ const confirmCreateTask = async () => {
       strategy_config: taskForm.strategy_config,
       raw_requests: selectedRequestsForTask.value.map(item => ({
         ...item,
-        delivery_date: item.delivery_date ? (item.delivery_date.length === 10 ? item.delivery_date + 'T00:00:00' : item.delivery_date) : null
+        delivery_date: item.delivery_date ? (item.delivery_date.length === 10 ? item.delivery_date + 'T00:00:00' : item.delivery_date) : null,
+        supplier_ids: Array.isArray(item.recommended_supplier_ids) ? item.recommended_supplier_ids : []
       })),
-      supplier_ids: taskForm.supplier_ids
+      supplier_ids: getUnionSupplierIdsForTask()
     }
     const res = await createInquiryTask(payload)
     const createdTaskId = res.data?.id || res.id
 
     // 保存手动录入的报价 (如果有)
-    if (taskForm.type === 'manual' && taskForm.supplier_ids.length > 0) {
+    if (taskForm.type === 'manual') {
       for (const item of selectedRequestsForTask.value) {
         if (!item.material_code) continue; // 必须有物料编码才能保存报价
         
         const suppliersQuotes = []
-        for (const supplierId of taskForm.supplier_ids) {
+        for (const supplierId of (Array.isArray(item.recommended_supplier_ids) ? item.recommended_supplier_ids : [])) {
           const taxNetPrice = item.quotes ? item.quotes[supplierId] : undefined
           if (taxNetPrice > 0) {
             const supplier = supplierList.value.find(s => s.id === supplierId)
@@ -782,6 +1074,28 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   flex-shrink: 0;
+}
+
+.material-quote-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.material-quote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.material-quote-name {
+  flex: 1;
+  min-width: 0;
+  color: #606266;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 :deep(.el-table .cell) {

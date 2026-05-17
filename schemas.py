@@ -39,11 +39,13 @@ class InquiryRequestBase(BaseModel):
     project_info: Optional[dict] = None
     material_code: str
     material_name: str
+    material_model: Optional[str] = None
     qty: float
     delivery_date: Optional[datetime] = None
 
 class InquiryRequestCreate(InquiryRequestBase):
     target_price: Optional[float] = None
+    supplier_ids: Optional[List[int]] = None
 
 class InquiryRequest(InquiryRequestBase):
     id: Optional[int] = None # Make id optional for non-persisted data
@@ -85,10 +87,17 @@ class InquiryTask(InquiryTaskBase):
         from_attributes = True
 
 
+class TaskCloseItemAllocation(BaseModel):
+    item_id: int
+    allocated_ratio: Optional[float] = Field(default=None, ge=0, le=100)
+    allocated_qty: Optional[float] = Field(default=None, ge=0)
+
+
 class TaskCloseAllocation(BaseModel):
     link_id: int
     allocated_ratio: Optional[float] = Field(default=None, ge=0, le=100)
     allocated_qty: Optional[float] = Field(default=None, ge=0)
+    item_allocations: Optional[List[TaskCloseItemAllocation]] = None
 
 
 class TaskClosePayload(BaseModel):

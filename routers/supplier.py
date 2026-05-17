@@ -17,11 +17,12 @@ from schemas_supplier import (
     SupplierContractInfoSubmit,
     SupplierCreatePayload,
     SupplierAccountUpdatePayload,
+    SupplierChangePasswordPayload,
 )
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
 import logging
-from routers.inquiry import get_current_user
+from routers.inquiry import get_current_user, _build_link_material_allocations
 from core.security import get_password_hash
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,36 @@ router = APIRouter()
 def _require_admin_or_buyer(current_user: User) -> None:
     if current_user.role not in ["admin", "buyer"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplier) -> list[InquiryTaskItem]:
+    item_supplier_map = (task.strategy_config or {}).get("item_supplier_map") or {}
+    supplier_id = int(link.supplier_id)
+    allowed_items = []
+
+    for item in (task.items or []):
+        supplier_ids = item_supplier_map.get(str(item.id))
+        if isinstance(supplier_ids, list) and supplier_ids:
+            normalized_ids = set()
+            for raw_supplier_id in supplier_ids:
+                try:
+                    normalized_ids.add(int(raw_supplier_id))
+                except (TypeError, ValueError):
+                    continue
+            if supplier_id in normalized_ids:
+                allowed_items.append(item)
+            continue
+
+        has_quote = any(q.item_id == item.id for q in (link.quotations or []))
+        has_allocation = any(
+            int(allocation.get("item_id") or 0) == int(item.id)
+            for allocation in (link.item_allocations or [])
+            if isinstance(allocation, dict)
+        )
+        if has_quote or has_allocation or not item_supplier_map:
+            allowed_items.append(item)
+
+    return allowed_items
 
 
 def _generate_contract_pdf_background(inquiry_id: int) -> None:
@@ -316,6 +347,96 @@ def create_supplier_with_optional_account(
         "account_username": user.username if user else None
     }
 
+@router.post("/reset-all-accounts")
+def reset_all_supplier_accounts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    _require_admin_or_buyer(current_user)
+
+    suppliers = db.query(Supplier).filter(Supplier.status == "approved").all()
+    updated_count = 0
+    errors = []
+
+    for supplier in suppliers:
+        try:
+            new_username = supplier.name
+            new_password = "123456"
+
+            if supplier.user_id:
+                user = db.query(User).filter(User.id == supplier.user_id).first()
+                if user:
+                    existing_user = db.query(User).filter(
+                        User.username == new_username,
+                        User.id != user.id
+                    ).first()
+                    if existing_user:
+                        errors.append(f"供应商 {supplier.name}: 账号 {new_username} 已被占用")
+                        continue
+
+                    user.username = new_username
+                    user.password_hash = get_password_hash(new_password)
+                    db.add(user)
+                    updated_count += 1
+            else:
+                existing_user = db.query(User).filter(User.username == new_username).first()
+                if existing_user:
+                    errors.append(f"供应商 {supplier.name}: 账号 {new_username} 已被占用")
+                    continue
+
+                user = User(
+                    username=new_username,
+                    password_hash=get_password_hash(new_password),
+                    role="supplier"
+                )
+                db.add(user)
+                db.flush()
+                supplier.user_id = user.id
+                updated_count += 1
+
+        except Exception as e:
+            errors.append(f"供应商 {supplier.name}: {str(e)}")
+
+    db.commit()
+
+    from routers.system import log_operation
+    log_operation(db, current_user.id, "RESET_SUPPLIER_ACCOUNTS", f"批量重置供应商账号密码: 成功{updated_count}个, 失败{len(errors)}个")
+
+    return {
+        "message": f"批量重置完成: 成功更新 {updated_count} 个供应商账号",
+        "updated_count": updated_count,
+        "total_count": len(suppliers),
+        "errors": errors[:10] if len(errors) > 10 else errors,
+        "errors_count": len(errors)
+    }
+
+@router.put("/change-password")
+def change_password(
+    payload: SupplierChangePasswordPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    if current_user.role != "supplier":
+        raise HTTPException(status_code=403, detail="仅供应商可修改密码")
+
+    from core.security import verify_password
+
+    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="未找到供应商信息")
+
+    if not verify_password(payload.old_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="原密码不正确")
+
+    current_user.password_hash = get_password_hash(payload.new_password)
+    db.add(current_user)
+    db.commit()
+
+    from routers.system import log_operation
+    log_operation(db, current_user.id, "CHANGE_PASSWORD", f"供应商 {supplier.name} 修改了登录密码")
+
+    return {"message": "密码修改成功"}
+
 @router.put("/{supplier_id}")
 def update_supplier(
     supplier_id: int, 
@@ -559,7 +680,7 @@ def get_inquiry_details(
     
     last_round_quotes = {}
     preload_round = None
-    if link.status == LinkStatus.QUOTED:
+    if link.status in [LinkStatus.QUOTED, LinkStatus.LOCKED]:
         preload_round = link.current_round
     elif link.current_round > 1:
         preload_round = link.current_round - 1
@@ -572,8 +693,10 @@ def get_inquiry_details(
         for q in prev_quotes:
             last_round_quotes[q.item_id] = q
 
+    allowed_task_items = _get_allowed_task_items_for_supplier(task, link)
+
     items = []
-    for item in task.items:
+    for item in allowed_task_items:
         prev_q = last_round_quotes.get(item.id)
         default_delivery = prev_q.delivery_date if prev_q and prev_q.delivery_date else item.request.delivery_date
 
@@ -599,6 +722,7 @@ def get_inquiry_details(
         "contract_pdf": contract_pdf_path,
         "contract_pdf_path": contract_pdf_path,
         "contract_no": contract_no,
+        "material_allocations": _build_link_material_allocations(db, task, link),
         "items": items
     }
 
@@ -662,6 +786,40 @@ def confirm_contract(
     background_tasks.add_task(_generate_contract_pdf_background, link.id)
     return {"message": "合同信息已提交，正在生成合同", "inquiry_id": link.id}
 
+@router.get("/last-contract-info")
+def get_last_contract_info(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    if current_user.role != "supplier":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier profile not found")
+
+    last_contract = db.query(Contract).filter(
+        Contract.inquiry_supplier_id.in_(
+            db.query(InquirySupplier.id).filter(InquirySupplier.supplier_id == supplier.id)
+        ),
+        Contract.address.isnot(None)
+    ).order_by(Contract.updated_at.desc()).first()
+
+    if not last_contract:
+        return {}
+
+    return {
+        "address": last_contract.address or "",
+        "legal_representative": last_contract.legal_representative or "",
+        "agent": last_contract.agent or "",
+        "contact_phone": last_contract.contact_phone or "",
+        "bank_name": last_contract.bank_name or "",
+        "bank_account": last_contract.bank_account or "",
+        "tax_id": last_contract.tax_id or "",
+        "fax": last_contract.fax or "",
+        "postal_code": last_contract.postal_code or ""
+    }
+
 @router.post("/inquiry/{inquiry_supplier_id}/quote", response_model=SupplierQuoteResponse)
 async def submit_quote(
     inquiry_supplier_id: int,
@@ -689,10 +847,19 @@ async def submit_quote(
     if not link_task:
         raise HTTPException(status_code=404, detail="Inquiry task not found")
 
+    allowed_task_items = _get_allowed_task_items_for_supplier(link_task, link)
+    allowed_request_ids = {
+        int(item.request_id)
+        for item in allowed_task_items
+        if item and item.request_id is not None
+    }
+    if not allowed_request_ids:
+        raise HTTPException(status_code=400, detail="No materials are assigned to this supplier in the current inquiry.")
+
     if link_task.deadline and datetime.now() > link_task.deadline:
         raise HTTPException(status_code=400, detail="Inquiry deadline has passed. Quotation submission is closed.")
         
-    if link.status == LinkStatus.DEAL or link.status == LinkStatus.REJECT:
+    if link.status in [LinkStatus.DEAL, LinkStatus.REJECT, LinkStatus.LOCKED]:
         raise HTTPException(status_code=400, detail="Inquiry is already closed for you.")
 
     if link.status == LinkStatus.QUOTED:
@@ -729,6 +896,8 @@ async def submit_quote(
 
         quote_items = []
         for item in submission.items:
+            if int(item.request_id) not in allowed_request_ids:
+                raise HTTPException(status_code=400, detail="You can only quote for materials assigned to you.")
             task_item = db.query(InquiryTaskItem).filter(
                 InquiryTaskItem.task_id == link.task_id,
                 InquiryTaskItem.request_id == item.request_id
@@ -772,8 +941,8 @@ async def submit_quote(
             "ai_feedback": link.latest_ai_feedback
         }
 
-    # === 命中秒杀条件时，不再自动单家成交，而是提前结束自动谈判并交由采购员做份额分配 ===
-    kill_candidates = []
+    # === 达到目标价的供应商会被锁定，剩余供应商继续进入后续轮次 ===
+    locked_candidates = []
     for l in all_links:
         if l.status != LinkStatus.QUOTED:
             continue
@@ -796,36 +965,23 @@ async def submit_quote(
                 is_kill = False
                 break
         if has_target and is_kill:
-            kill_candidates.append(l)
+            locked_candidates.append(l)
 
-    if kill_candidates:
-        link_task.status = TaskStatus.AWAITING_AWARD
-        qualified_supplier_names = []
-        for c_link in kill_candidates:
-            if c_link.supplier and c_link.supplier.name:
-                qualified_supplier_names.append(c_link.supplier.name)
-
-        summary_names = "、".join(qualified_supplier_names[:3])
-        if len(qualified_supplier_names) > 3:
-            summary_names += "等"
-        if not summary_names:
-            summary_names = "候选供应商"
-
-        buyer_feedback = (
-            f"已有供应商报价达到目标价区间（{summary_names}），系统已提前结束自动谈判。"
-            "请前往智能比价页面，结合常用供应商、最低价与最高价关系，执行份额分配或拆单定标。"
+    locked_supplier_names = []
+    for locked_link in locked_candidates:
+        locked_link.status = LinkStatus.LOCKED
+        if locked_link.supplier and locked_link.supplier.name:
+            locked_supplier_names.append(locked_link.supplier.name)
+        locked_link.latest_ai_feedback = (
+            "您的报价已达到采购目标区间，系统已将您锁定为候选供应商。"
+            "后续无需继续报价，系统会在自动谈判结束后统一进行综合排名并进入份额分配。"
         )
 
-        for l in all_links:
-            if l.status == LinkStatus.QUOTED:
-                l.latest_ai_feedback = buyer_feedback
-
-        db.commit()
-        return {
-            "message": "触发秒杀条件，系统已提前结束自动谈判，请采购员进行智能比价与份额分配。",
-            "next_action": "wait",
-            "ai_feedback": buyer_feedback
-        }
+    locked_summary_names = "、".join(locked_supplier_names[:3])
+    if len(locked_supplier_names) > 3:
+        locked_summary_names += "等"
+    if not locked_summary_names:
+        locked_summary_names = "已达标供应商"
 
     # 3. 所有供应商均已报价，统一处理下一轮逻辑或结束
     strategy = link_task.strategy_config or {}
@@ -885,25 +1041,66 @@ async def submit_quote(
             l.status = LinkStatus.NEGOTIATION
 
         quoted_links = [l for l in all_links if l.status == LinkStatus.QUOTED]
+        if not quoted_links:
+            link_task.status = TaskStatus.AWAITING_AWARD
+            final_feedback = (
+                "自动谈判已结束，系统已汇总所有有效报价并生成综合排名。"
+                "采购方将直接在询价任务中完成份额分配，请耐心等待结果通知。"
+            )
+            for l in all_links:
+                if l.status in [LinkStatus.QUOTED, LinkStatus.LOCKED]:
+                    if l.status == LinkStatus.LOCKED:
+                        l.latest_ai_feedback = (
+                            "您的报价已达到采购目标区间并被锁定。"
+                            "自动谈判现已结束，采购方将根据综合排名尽快完成份额分配。"
+                        )
+                    else:
+                        l.latest_ai_feedback = final_feedback
+            db.commit()
+            return {
+                "message": "已无待继续谈判的供应商，系统已转入最终评审与份额分配流程。",
+                "next_action": "wait",
+                "ai_feedback": final_feedback
+            }
         for l in quoted_links:
             process_link(l)
+        if locked_candidates:
+            continue_feedback = (
+                "本轮谈判已结束，系统已锁定达到目标区间的候选供应商。"
+                "您将进入下一轮自动谈判，请根据系统建议继续报价。"
+            )
+        else:
+            continue_feedback = link.latest_ai_feedback
         db.commit()
         
         return {
-            "message": "所有供应商报价已完成，已触发下一轮谈判。",
+            "message": locked_candidates and "部分供应商已锁定，其余供应商已触发下一轮谈判。" or "所有供应商报价已完成，已触发下一轮谈判。",
             "next_action": "re-quote",
-            "ai_feedback": link.latest_ai_feedback
+            "ai_feedback": continue_feedback
         }
         
     else:
-        # 达到最大轮数，等待采购员手动定标
-        final_feedback = "最终轮报价已结束，系统已生成综合评分与排名，请等待采购员手动审批定标。"
+        # 达到最大轮数后，列出所有有效供应商排名，再进入智能比价/定标流程
+        link_task.status = TaskStatus.AWAITING_AWARD
+        if locked_candidates:
+            final_feedback = (
+                "自动谈判已达到最大轮次，系统已汇总所有有效供应商当前轮次与锁定轮次报价并生成综合排名。"
+                "采购方将直接在询价任务中完成份额分配，请耐心等待结果通知。"
+            )
+        else:
+            final_feedback = "自动谈判已达到最大轮次，系统已汇总所有有效供应商报价并生成综合排名。采购方将直接在询价任务中完成份额分配，请耐心等待结果通知。"
         for l in all_links:
-            if l.status == LinkStatus.QUOTED:
-                l.latest_ai_feedback = final_feedback
+            if l.status in [LinkStatus.QUOTED, LinkStatus.LOCKED]:
+                if l.status == LinkStatus.LOCKED:
+                    l.latest_ai_feedback = (
+                        "您的报价已达到采购目标区间并被锁定。"
+                        "自动谈判现已结束，采购方将根据综合排名尽快完成份额分配。"
+                    )
+                else:
+                    l.latest_ai_feedback = final_feedback
         db.commit()
         return {
-            "message": "谈判轮次已达上限，等待采购员审批",
+            "message": "谈判轮次已达上限，系统已转入最终评审与份额分配流程。",
             "next_action": "wait",
             "ai_feedback": final_feedback
         }

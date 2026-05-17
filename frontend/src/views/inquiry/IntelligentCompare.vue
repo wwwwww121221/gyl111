@@ -32,6 +32,15 @@
           </div>
           <el-divider class="header-divider" />
 
+          <el-alert
+            v-if="isCompareReadOnly"
+            :title="readonlyAlertTitle"
+            type="info"
+            :closable="false"
+            show-icon
+            class="mb-4"
+          />
+
           <!-- 1. 历史价格 (放在最前) -->
           <div class="section-header">
             <h3 class="section-title">历史价格</h3>
@@ -59,7 +68,7 @@
           <!-- 2. 本次报价明细 -->
           <div class="section-header mt-4 comparison-header">
             <h3 class="section-title">本次报价明细</h3>
-            <el-button type="primary" link size="small" @click="openAddSupplierDialog">
+            <el-button v-if="!isCompareReadOnly" type="primary" link size="small" @click="openAddSupplierDialog">
               <el-icon><Plus /></el-icon>
               补充供应商
             </el-button>
@@ -92,6 +101,7 @@
                   :step="0.1"
                   :controls="false"
                   placeholder="请输入"
+                  :disabled="isCompareReadOnly"
                   @change="(val) => updateSupplierTaxNetPrice(scope.row, val)"
                 />
               </template>
@@ -106,6 +116,7 @@
                   :step="0.1"
                   :controls="false"
                   placeholder="请输入"
+                  :disabled="isCompareReadOnly"
                   @change="(val) => updateSupplierPrice(scope.row, val)"
                 />
               </template>
@@ -138,19 +149,19 @@
                 <el-button v-if="activeMaterial.aiAnalysisResult" type="primary" link size="small" @click="toggleAnalysisExpanded">
                   {{ isAnalysisExpanded ? '收起' : '展开' }}
                 </el-button>
-                <el-button type="primary" link size="small" class="refresh-btn" @click="() => generateAnalysis(false)" :disabled="activeMaterial.suppliers.length < 2">
+                <el-button type="primary" link size="small" class="refresh-btn" @click="() => generateAnalysis(false)" :disabled="isCompareReadOnly || activeMaterial.suppliers.length < 2">
                   <el-icon><Refresh /></el-icon> 重新分析
                 </el-button>
               </div>
             </div>
             <div class="ai-box-content">
               <div v-if="activeMaterial.aiAnalysisResult" class="markdown-body" v-html="formattedAnalysis"></div>
-              <div v-else class="empty-ai-text">请确保上方有至少两家供应商含税报价，系统将自动进行智能比价分析。</div>
+              <div v-else class="empty-ai-text">{{ isCompareReadOnly ? '当前任务为历史只读模式，仅展示当时的报价与分配结果。' : '请确保上方有至少两家供应商含税报价，系统将自动进行智能比价分析。' }}</div>
             </div>
           </div>
 
           <!-- 4. 谈判话术 -->
-          <div class="wechat-box mt-4" v-if="activeMaterial?.aiAnalysisResult">
+          <div class="wechat-box mt-4" v-if="activeMaterial?.aiAnalysisResult && !isCompareReadOnly">
             <div class="wechat-box-header">
               <el-icon><ChatDotRound /></el-icon> 一键生成谈判话术 (微信)
             </div>
@@ -170,15 +181,15 @@
             <template #header>
               <div class="allocation-card-header">
                 <span>采购份额分配策略</span>
-                <span class="allocation-card-subtitle">支持一键策略与手工微调，分配总和需为 100%</span>
+                <span class="allocation-card-subtitle">{{ isCompareReadOnly ? '历史结果只读展示，不可修改' : '支持一键策略与手工微调，分配总和需为 100%' }}</span>
               </div>
             </template>
 
             <div class="allocation-strategy-toolbar">
-              <el-button @click="applyStrategy('common')">全额给常用 (100%)</el-button>
+              <el-button @click="applyStrategy('common')" :disabled="isCompareReadOnly">全额给常用 (100%)</el-button>
 
               <div class="pressure-strategy-group">
-                <el-button type="warning" @click="applyStrategy('pressure')">价格压迫策略</el-button>
+                <el-button type="warning" @click="applyStrategy('pressure')" :disabled="isCompareReadOnly">价格压迫策略</el-button>
                 <div class="pressure-ratio-group">
                   <span class="pressure-ratio-label">常用占%</span>
                   <el-input-number
@@ -187,6 +198,7 @@
                     :min="0"
                     :max="100"
                     :controls="false"
+                    :disabled="isCompareReadOnly"
                   />
                   <span class="pressure-ratio-label">最低价占%</span>
                   <el-input-number
@@ -195,11 +207,17 @@
                     :min="0"
                     :max="100"
                     :controls="false"
+                    :disabled="isCompareReadOnly"
                   />
                 </div>
               </div>
 
-              <el-button type="success" @click="applyStrategy('lowest')">价低者得 (100%)</el-button>
+              <el-button type="success" @click="applyStrategy('lowest')" :disabled="isCompareReadOnly">价低者得 (100%)</el-button>
+            </div>
+
+            <div class="allocation-qty-info">
+              <span class="qty-label">当前物料总量：</span>
+              <span class="qty-value">{{ activeMaterial?.qty || 0 }}</span>
             </div>
 
             <el-table :data="currentComparison" class="custom-table allocation-table" style="width: 100%">
@@ -233,14 +251,22 @@
               <el-table-column label="分配比例 (%)" width="180" align="center">
                 <template #default="scope">
                   <el-input-number
-                    v-model="allocations[getAllocationKey(scope.row)]"
+                    v-model="currentMaterialAllocations[getAllocationKey(scope.row)]"
                     size="small"
                     :min="0"
                     :max="100"
                     :precision="0"
                     :step="5"
                     controls-position="right"
+                    :disabled="isCompareReadOnly"
                   />
+                </template>
+              </el-table-column>
+              <el-table-column label="分配数量" width="120" align="center">
+                <template #default="scope">
+                  <span class="table-text-value" :class="{ 'text-success': currentMaterialAllocations[getAllocationKey(scope.row)] > 0 }">
+                    {{ getAllocatedQty(scope.row) }}
+                  </span>
                 </template>
               </el-table-column>
             </el-table>
@@ -248,9 +274,11 @@
             <div class="allocation-footer">
               <div class="allocation-summary">
                 <span class="allocation-sum-text">当前分配总和：{{ allocationSum }} %</span>
-                <span v-if="allocationSum !== 100" class="allocation-warning">分配比例总和必须等于 100%</span>
+                <span v-if="!isCompareReadOnly && allocationSum !== 100" class="allocation-warning">分配比例总和必须等于 100%</span>
+                <span v-else-if="isCompareReadOnly && allocationSum > 0" class="text-success">当前展示为任务结束时的历史分配结果</span>
+                <span v-else-if="isCompareReadOnly" class="text-muted">该任务已流标或未形成最终份额分配</span>
               </div>
-              <div class="allocation-actions">
+              <div v-if="!isCompareReadOnly" class="allocation-actions">
                 <el-button @click="handleSaveDraft" :loading="isSavingDraft">保存报价草稿</el-button>
                 <el-button type="primary" :disabled="!canSubmit" :loading="isSubmittingAllocation" @click="submitAllocation">确认并生成合同</el-button>
               </div>
@@ -266,31 +294,14 @@
     
     <div v-else class="workbench-empty-wrap">
       <el-card shadow="never" class="draft-list-card">
-        <template #header>
-          <div class="draft-list-header">
-            <span>智能比价草稿列表</span>
-            <el-button type="primary" link @click="router.push('/inquiries/requests')">前往询价池创建任务</el-button>
-          </div>
-        </template>
-        <el-table v-if="compareDraftRows.length > 0" :data="compareDraftRows" class="custom-table" style="width: 100%">
-          <el-table-column type="index" label="#" width="60" align="center" />
-          <el-table-column prop="task_title" label="询价任务" min-width="220" />
-          <el-table-column prop="material_name" label="物料名称" min-width="180" />
-          <el-table-column prop="material_code" label="物料编码" min-width="140" />
-          <el-table-column prop="supplier_count" label="报价供应商数" width="120" align="center" />
-          <el-table-column label="保存时间" min-width="170" align="center">
-            <template #default="scope">
-              {{ formatDraftTime(scope.row.updated_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="180" align="center" fixed="right">
-            <template #default="scope">
-              <el-button type="primary" link @click="openDraft(scope.row)">继续编辑</el-button>
-              <el-button type="danger" link @click="removeDraft(scope.row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <el-empty v-else description="暂无保存的比价草稿" :image-size="140" />
+        <el-empty description="请从询价任务进入智能比价" :image-size="140">
+          <template #default>
+            <div class="compare-entry-guide">
+              <p class="text-muted">未结束任务可继续编辑，已结束任务可查看比价结果。</p>
+              <el-button type="primary" @click="router.push({ name: 'InquiryTasks' })">前往询价任务</el-button>
+            </div>
+          </template>
+        </el-empty>
       </el-card>
     </div>
 
@@ -322,7 +333,7 @@ import { DataAnalysis, MagicStick, Histogram, TrendCharts, Opportunity, Menu, Go
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../api/index'
-import { closeInquiryTask, saveManualQuotes, saveCompareDraft, getCompareDrafts, deleteCompareDraft, deleteCompareDraftsByTask } from '../../api/inquiry'
+import { closeInquiryTask, saveManualQuotes, addSupplierToTask } from '../../api/inquiry'
 import { marked } from 'marked'
 
 const escapeHtml = (value = '') => {
@@ -462,9 +473,7 @@ const skipLeaveGuardOnce = ref(false)
 const showAddSupplierDialog = ref(false)
 const newSupplierId = ref(undefined)
 const isInitializingAllocations = ref(false)
-const compareDraftRows = ref([])
-const compareDraftApiChecked = ref(false)
-const compareDraftApiReady = ref(false)
+const compareTaskMeta = ref({})
 
 const analysisExpandedMap = ref({})
 
@@ -472,8 +481,8 @@ const wechatTargetSupplier = ref('')
 const wechatTargetPrice = ref(undefined)
 const wechatLoading = ref(false)
 const wechatScriptResult = ref('')
-const DRAFT_INDEX_KEY = 'intelligent_compare_draft_index'
 const PRESSURE_RATIO_KEY = 'intelligent_compare_pressure_ratio'
+const syncingQuoteKeys = new Set()
 
 let pressurePersistTimer = undefined
 const persistPressureRatios = () => {
@@ -520,102 +529,6 @@ const getLocalDraftKeyByTaskId = (taskId) => {
   return taskId ? `intelligent_compare_draft_${taskId}` : ''
 }
 
-const loadLocalDraftIndex = () => {
-  try {
-    const raw = localStorage.getItem(DRAFT_INDEX_KEY)
-    compareDraftRows.value = raw ? JSON.parse(raw) : []
-  } catch {
-    compareDraftRows.value = []
-  }
-}
-
-const saveLocalDraftIndex = (rows) => {
-  compareDraftRows.value = rows
-  localStorage.setItem(DRAFT_INDEX_KEY, JSON.stringify(rows))
-}
-
-const upsertLocalDraftIndex = (entry) => {
-  const rows = [...compareDraftRows.value]
-  const idx = rows.findIndex(item => String(item.task_id) === String(entry.task_id))
-  if (idx >= 0) {
-    rows[idx] = { ...rows[idx], ...entry }
-  } else {
-    rows.unshift(entry)
-  }
-  saveLocalDraftIndex(rows)
-}
-
-const removeLocalDraftByTaskId = (taskId) => {
-  const rows = compareDraftRows.value.filter(item => String(item.task_id) !== String(taskId))
-  saveLocalDraftIndex(rows)
-}
-
-const detectCompareDraftApi = async () => {
-  try {
-    const res = await api.get('/openapi.json')
-    const paths = res?.data?.paths || {}
-    compareDraftApiReady.value = Boolean(
-      paths['/api/inquiry/compare-drafts'] &&
-      paths['/api/inquiry/tasks/{task_id}/compare-draft']
-    )
-  } catch {
-    compareDraftApiReady.value = false
-  } finally {
-    compareDraftApiChecked.value = true
-  }
-}
-
-const loadCompareDraftRows = async () => {
-  if (!compareDraftApiChecked.value) {
-    await detectCompareDraftApi()
-  }
-  if (!compareDraftApiReady.value) {
-    loadLocalDraftIndex()
-    return
-  }
-  try {
-    const res = await getCompareDrafts()
-    compareDraftRows.value = (res.data || []).map(item => ({
-      ...item,
-      supplier_count: Number(item.supplier_count || 0)
-    }))
-  } catch (error) {
-    // 接口不可用时自动降级，且避免反复请求 404
-    compareDraftApiReady.value = false
-    loadLocalDraftIndex()
-  }
-}
-
-const formatDraftTime = (timestamp) => {
-  if (!timestamp) return '-'
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return '-'
-  return date.toLocaleString()
-}
-
-const openDraft = (row) => {
-  if (!row?.task_id) return
-  router.push({ name: 'IntelligentCompare', query: { taskId: row.task_id } })
-}
-
-const removeDraft = (row) => {
-  if (!row?.task_id) return
-  ElMessageBox.confirm('确定删除该草稿吗？', '提示', {
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    if (compareDraftApiReady.value && row.id) {
-      await deleteCompareDraft(row.id)
-      await loadCompareDraftRows()
-    } else {
-      removeLocalDraftByTaskId(row.task_id)
-    }
-    localStorage.removeItem(getLocalDraftKeyByTaskId(row.task_id))
-    ElMessage.success('草稿已删除')
-  }).catch(() => {})
-}
-
 const persistLocalDraft = () => {
   const key = getLocalDraftKey()
   if (!key || !materialsData.value.length) return
@@ -625,9 +538,12 @@ const persistLocalDraft = () => {
     materials: materialsData.value.map((material) => ({
       reqId: material.reqId,
       suppliers: (material.suppliers || []).map((supplier) => ({
+        link_id: supplier.link_id,
+        supplier_id: supplier.supplier_id,
         code: supplier.code,
         name: supplier.name,
         grade: supplier.grade,
+        is_compare_added: supplier.is_compare_added,
         tax_rate: supplier.tax_rate,
         tax_net_price: supplier.tax_net_price,
         price: supplier.price,
@@ -677,9 +593,12 @@ const restoreLocalDraft = () => {
         }
 
         targetMaterial.suppliers.push({
+          link_id: savedSupplier.link_id,
+          supplier_id: savedSupplier.supplier_id,
           code: savedSupplier.code,
           name: savedSupplier.name || '未知供应商',
           grade: savedSupplier.grade || '一般',
+          is_compare_added: Boolean(savedSupplier.is_compare_added),
           tax_rate: savedSupplier.tax_rate ?? 13,
           tax_net_price: savedSupplier.tax_net_price,
           price: savedSupplier.price,
@@ -692,7 +611,7 @@ const restoreLocalDraft = () => {
       activeMaterialKey.value = String(draft.activeMaterialKey)
     }
     if (draft?.allocations && typeof draft.allocations === 'object') {
-      allocations.value = { ...draft.allocations }
+      allocations.value = normalizeAllocationState(draft.allocations, String(draft?.activeMaterialKey || ''))
     }
   } catch (error) {
     console.error('Failed to restore local draft', error)
@@ -711,6 +630,16 @@ const activeMaterial = computed(() => {
   return materialsData.value.find((item) => String(item.reqId) === activeMaterialKey.value) || null
 })
 const activeMaterialMenuKey = computed(() => activeMaterial.value ? String(activeMaterial.value.reqId) : '')
+const isCompareReadOnly = computed(() => {
+  const status = String(compareTaskMeta.value?.status || '').toLowerCase()
+  return status === 'closed' || status === 'cancelled'
+})
+const readonlyAlertTitle = computed(() => {
+  if (String(compareTaskMeta.value?.status || '').toLowerCase() === 'cancelled') {
+    return '当前任务已流标，仅可查看当时的供应商报价与分配结果，不能再修改。'
+  }
+  return '当前任务已结束，仅可查看当时的供应商报价与分配结果，不能再修改。'
+})
 const isAnalysisExpanded = computed(() => {
   const reqId = activeMaterial.value?.reqId
   if (!reqId) return false
@@ -735,10 +664,16 @@ const availableSuppliersForCurrentMaterial = computed(() => {
     return key && !existing.has(key)
   })
 })
+const getMaterialAllocationBucketKey = (materialLike = activeMaterial.value) => String(materialLike?.reqId || '')
+const currentMaterialAllocations = computed(() => {
+  const bucketKey = getMaterialAllocationBucketKey()
+  if (!bucketKey) return {}
+  return allocations.value[bucketKey] || {}
+})
 const allocationSum = computed(() => {
   return currentComparison.value.reduce((sum, supplier) => {
     const key = getAllocationKey(supplier)
-    return sum + Number(allocations.value[key] || 0)
+    return sum + Number(currentMaterialAllocations.value[key] || 0)
   }, 0)
 })
 const canSubmit = computed(() => allocationSum.value === 100)
@@ -794,27 +729,55 @@ const loadWorkspaceDataByRoute = async () => {
       const taskRes = await api.get(`/inquiry/tasks/${route.query.taskId}/details`)
       const items = taskRes.data.items || []
       const links = taskRes.data.links || []
+      compareTaskMeta.value = {
+        id: taskRes.data.id,
+        status: taskRes.data.status,
+        effective_status: taskRes.data.effective_status,
+        compare_ready: taskRes.data.compare_ready
+      }
+
+      const resolveQuoteRound = (link) => {
+        const quoteRounds = Object.keys(link.quotes || {})
+          .map((round) => Number(round))
+          .filter((round) => Number.isFinite(round))
+          .sort((a, b) => b - a)
+        const preferredRound = Number(link.current_round || 1)
+        if (!quoteRounds.length) return preferredRound
+        if (quoteRounds.includes(preferredRound)) return preferredRound
+        const matchedRound = quoteRounds.find((round) => round <= preferredRound)
+        return matchedRound || quoteRounds[0]
+      }
       
-      const supplierCodes = links.map(link => link.supplier_code)
+      const itemSupplierMap = taskRes.data?.strategy_config?.item_supplier_map || {}
       materialsData.value = items.map(item => {
-        const initSuppliers = links.map(link => {
-          const round = link.current_round || 1;
-          const quotesRound = link.quotes ? (link.quotes[round] || link.quotes['1'] || []) : [];
-          const quote = quotesRound.find(q => q.item_id === item.id);
-          const price = quote ? quote.price : undefined;
-          const tax_net_price = price ? Number((price * 1.13).toFixed(2)) : undefined;
+        const allowedSupplierIds = new Set(
+          ((itemSupplierMap[String(item.id)] || [])).map((supplierId) => Number(supplierId)).filter((supplierId) => Number.isFinite(supplierId) && supplierId > 0)
+        )
+        const visibleLinks = allowedSupplierIds.size > 0
+          ? links.filter((link) => doesLinkBelongToItem(link, item, allowedSupplierIds))
+          : links
+        const initSuppliers = visibleLinks.map(link => {
+          const round = resolveQuoteRound(link)
+          const quotesRound = link.quotes ? (link.quotes[round] || link.quotes[String(round)] || []) : []
+          const quote = quotesRound.find(q => q.item_id === item.id)
+          const price = quote ? quote.price : undefined
+          const tax_net_price = price ? Number((price * 1.13).toFixed(2)) : undefined
           return {
             link_id: link.link_id,
             supplier_id: link.supplier_id,
             code: link.supplier_code,
             name: link.supplier_name,
             grade: link.supplier_grade,
+            status: link.status,
+            allocated_ratio: link.allocated_ratio,
+            allocated_qty: link.allocated_qty,
+            material_allocations: link.material_allocations || [],
             tax_rate: 13,
             tax_net_price: tax_net_price,
             price: price,
             qty: quote ? quote.qty : (item.qty || 1)
-          };
-        });
+          }
+        })
 
         return {
           reqId: item.id,
@@ -824,12 +787,12 @@ const loadWorkspaceDataByRoute = async () => {
           billNo: taskRes.data.title,
           billType: taskRes.data.type === 'auto' ? '自动询价' : '手动询价',
           projectNumber: '',
-          selectedSupplierCodes: [...supplierCodes],
+          selectedSupplierCodes: visibleLinks.map(link => link.supplier_code),
           suppliers: initSuppliers,
           historyStats: [],
           aiAnalysisResult: '',
           loadingAnalysis: false
-        };
+        }
       })
       
       if (materialsData.value.length > 0) {
@@ -844,6 +807,7 @@ const loadWorkspaceDataByRoute = async () => {
     if (stored) {
       try {
         const parsed = JSON.parse(stored)
+        compareTaskMeta.value = {}
         materialsData.value = parsed.map(item => ({
           ...item,
           selectedSupplierCodes: [],
@@ -862,17 +826,20 @@ const loadWorkspaceDataByRoute = async () => {
     }
   } else {
     // 直接通过侧边栏点击进入，清空数据展示空状态
+    compareTaskMeta.value = {}
     materialsData.value = []
   }
 
-  restoreLocalDraft()
+  if (isCompareReadOnly.value) {
+    clearLocalDraft()
+  } else {
+    restoreLocalDraft()
+  }
 }
 
 // Init from sessionStorage
 onMounted(async () => {
   loadPressureRatios()
-  await detectCompareDraftApi()
-  await loadCompareDraftRows()
 
   try {
     const allSuppRes = await api.get('/supplier/list')
@@ -900,7 +867,7 @@ const loadActiveMaterialContext = async () => {
   if (!activeMaterial.value) return
   await loadSuppliersForMaterial(activeMaterial.value.materialCode)
   await fetchHistoryStats()
-  if (!activeMaterial.value.aiAnalysisResult) {
+  if (!isCompareReadOnly.value && !activeMaterial.value.aiAnalysisResult) {
     generateAnalysis(true)
   }
 }
@@ -932,13 +899,154 @@ const getAllocationKey = (supplier) => {
   return String(supplier?.link_id ?? supplier?.code ?? supplier?.name ?? '')
 }
 
+const normalizeAllocationState = (rawAllocations, fallbackMaterialKey = '') => {
+  if (!rawAllocations || typeof rawAllocations !== 'object' || Array.isArray(rawAllocations)) {
+    return {}
+  }
+
+  const values = Object.values(rawAllocations)
+  const looksNested = values.some((value) => value && typeof value === 'object' && !Array.isArray(value))
+  if (looksNested) {
+    const normalized = {}
+    Object.entries(rawAllocations).forEach(([materialKey, supplierMap]) => {
+      if (!supplierMap || typeof supplierMap !== 'object' || Array.isArray(supplierMap)) return
+      normalized[String(materialKey)] = {}
+      Object.entries(supplierMap).forEach(([supplierKey, ratio]) => {
+        normalized[String(materialKey)][String(supplierKey)] = Number(ratio || 0)
+      })
+    })
+    return normalized
+  }
+
+  if (!fallbackMaterialKey) return {}
+  const normalized = {}
+  normalized[String(fallbackMaterialKey)] = {}
+  Object.entries(rawAllocations).forEach(([supplierKey, ratio]) => {
+    normalized[String(fallbackMaterialKey)][String(supplierKey)] = Number(ratio || 0)
+  })
+  return normalized
+}
+
+const ensureAllocationBucket = (materialLike = activeMaterial.value) => {
+  const bucketKey = getMaterialAllocationBucketKey(materialLike)
+  if (!bucketKey) return {}
+  const existing = allocations.value[bucketKey]
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    allocations.value = {
+      ...allocations.value,
+      [bucketKey]: {}
+    }
+  }
+  return allocations.value[bucketKey]
+}
+
+const getAllocatedQty = (supplier) => {
+  const totalQty = activeMaterial.value?.qty || 0
+  const ratio = Number(currentMaterialAllocations.value[getAllocationKey(supplier)] || 0)
+  if (totalQty <= 0 || ratio <= 0) return '-'
+  const allocatedQty = Math.round(totalQty * ratio / 100)
+  return `${allocatedQty}`
+}
+
+const getHistoricalAllocatedRatio = (supplier) => {
+  const materialCode = String(activeMaterial.value?.materialCode || '')
+  const materialAllocation = (supplier?.material_allocations || []).find((item) => String(item?.material_code || '') === materialCode)
+  if (materialAllocation && materialAllocation.allocated_ratio != null) {
+    return Number(materialAllocation.allocated_ratio || 0)
+  }
+  if (supplier?.allocated_ratio != null) {
+    return Number(supplier.allocated_ratio || 0)
+  }
+  return 0
+}
+
 const findMaterialSupplier = (supplierLike) => {
   if (!activeMaterial.value) return null
   const key = getAllocationKey(supplierLike)
   return (activeMaterial.value.suppliers || []).find(s => getAllocationKey(s) === key) || null
 }
 
-const updateSupplierTaxNetPrice = (supplierLike, value) => {
+const getHistoryPriceForSupplier = (supplierLike) => {
+  if (!activeMaterial.value?.historyStats?.length) return null
+  const supplierCode = String(supplierLike?.code || '')
+  const supplierName = String(supplierLike?.name || '')
+  return activeMaterial.value.historyStats.find((item) => {
+    const itemCode = String(item?.supplier_code || '')
+    const itemName = String(item?.supplier_name || '')
+    return (supplierCode && itemCode && supplierCode === itemCode) || (supplierName && itemName && supplierName === itemName)
+  }) || null
+}
+
+const doesLinkBelongToItem = (link, item, allowedSupplierIds = null) => {
+  const supplierId = Number(link?.supplier_id)
+  if (allowedSupplierIds && allowedSupplierIds.size > 0 && Number.isFinite(supplierId) && allowedSupplierIds.has(supplierId)) {
+    return true
+  }
+
+  const itemId = Number(item?.id)
+  const materialCode = String(item?.material_code || '')
+  const rounds = Object.values(link?.quotes || {})
+  const hasQuoteForItem = rounds.some((quotesRound) =>
+    Array.isArray(quotesRound) && quotesRound.some((quote) => Number(quote?.item_id) === itemId)
+  )
+  if (hasQuoteForItem) return true
+
+  return (link?.material_allocations || []).some((allocation) => {
+    return (
+      Number(allocation?.item_id) === itemId ||
+      (materialCode && String(allocation?.material_code || '') === materialCode)
+    )
+  })
+}
+
+const buildQuotePayloadForSupplier = (material, supplier) => {
+  const taxNetPrice = Number(supplier?.tax_net_price || 0)
+  const price = Number(supplier?.price || 0)
+  if (!material?.materialCode || taxNetPrice <= 0 || price <= 0) return null
+  return {
+    material_code: material.materialCode,
+    suppliers: [{
+      supplier_code: supplier.code || '',
+      supplier_name: supplier.name || '未知供应商',
+      price,
+      tax_net_price: taxNetPrice,
+      qty: Number(supplier.qty || material.qty || 1)
+    }]
+  }
+}
+
+const syncSupplierQuoteToBackend = async (supplierLike, options = {}) => {
+  if (!route.query.taskId || !activeMaterial.value) return false
+  const target = findMaterialSupplier(supplierLike)
+  if (!target) return false
+
+  const payload = buildQuotePayloadForSupplier(activeMaterial.value, target)
+  if (!payload) return false
+
+  const syncKey = `${route.query.taskId}:${activeMaterial.value.materialCode}:${getAllocationKey(target)}`
+  if (syncingQuoteKeys.has(syncKey)) return false
+
+  syncingQuoteKeys.add(syncKey)
+  try {
+    await saveManualQuotes(route.query.taskId, payload)
+    if (options.successMessage) {
+      ElMessage.success(options.successMessage)
+    }
+    return true
+  } catch (error) {
+    console.error(error)
+    if (!options.silent) {
+      const detail = error?.response?.data?.detail
+      ElMessage.error(detail || options.errorMessage || '同步供应商报价失败')
+    }
+    return false
+  } finally {
+    syncingQuoteKeys.delete(syncKey)
+  }
+}
+
+const updateSupplierTaxNetPrice = async (supplierLike, value) => {
+  if (isCompareReadOnly.value) return
   const target = findMaterialSupplier(supplierLike)
   if (!target) return
   const numeric = Number(value || 0)
@@ -951,9 +1059,13 @@ const updateSupplierTaxNetPrice = (supplierLike, value) => {
   }
   isFormDirty.value = true
   persistLocalDraft()
+  if (target.is_compare_added) {
+    await syncSupplierQuoteToBackend(target, { errorMessage: `供应商 ${target.name || ''} 报价保存失败` })
+  }
 }
 
-const updateSupplierPrice = (supplierLike, value) => {
+const updateSupplierPrice = async (supplierLike, value) => {
+  if (isCompareReadOnly.value) return
   const target = findMaterialSupplier(supplierLike)
   if (!target) return
   const numeric = Number(value || 0)
@@ -966,20 +1078,29 @@ const updateSupplierPrice = (supplierLike, value) => {
   }
   isFormDirty.value = true
   persistLocalDraft()
+  if (target.is_compare_added) {
+    await syncSupplierQuoteToBackend(target, { errorMessage: `供应商 ${target.name || ''} 报价保存失败` })
+  }
 }
 
 const initializeAllocations = () => {
   isInitializingAllocations.value = true
-  const previousAllocations = { ...allocations.value }
+  const materialKey = getMaterialAllocationBucketKey()
+  const previousAllocations = { ...ensureAllocationBucket() }
   const nextAllocations = {}
   const suppliers = activeMaterial.value?.suppliers || []
   suppliers.forEach((supplier) => {
     const key = getAllocationKey(supplier)
     if (key) {
-      nextAllocations[key] = Number(previousAllocations[key] || 0)
+      nextAllocations[key] = isCompareReadOnly.value ? getHistoricalAllocatedRatio(supplier) : Number(previousAllocations[key] || 0)
     }
   })
-  allocations.value = nextAllocations
+  if (materialKey) {
+    allocations.value = {
+      ...allocations.value,
+      [materialKey]: nextAllocations
+    }
+  }
   isInitializingAllocations.value = false
 }
 
@@ -1011,7 +1132,7 @@ watch(
 watch(
   allocations,
   () => {
-    if (isInitializingAllocations.value || isSavingDraft.value || isSubmittingAllocation.value) return
+    if (isCompareReadOnly.value || isInitializingAllocations.value || isSavingDraft.value || isSubmittingAllocation.value) return
     isFormDirty.value = true
     persistLocalDraft()
   },
@@ -1022,7 +1143,7 @@ watch(
   () => (activeMaterial.value?.suppliers || []).map(s => `${getAllocationKey(s)}:${s.price ?? ''}:${s.tax_net_price ?? ''}:${s.qty ?? ''}`).join('|'),
   (newVal, oldVal) => {
     if (!oldVal || newVal === oldVal) return
-    if (isSavingDraft.value || isSubmittingAllocation.value) return
+    if (isCompareReadOnly.value || isSavingDraft.value || isSubmittingAllocation.value) return
     isFormDirty.value = true
     persistLocalDraft()
   }
@@ -1112,6 +1233,7 @@ const currentComparison = computed(() => {
 })
 
 const applyStrategy = (type) => {
+  if (isCompareReadOnly.value) return
   if (!currentComparison.value.length) {
     ElMessage.warning('当前暂无可分配的供应商')
     return
@@ -1125,7 +1247,7 @@ const applyStrategy = (type) => {
     currentComparison.value.forEach((supplier) => {
       const key = getAllocationKey(supplier)
       if (key) {
-        allocations.value[key] = 0
+        currentMaterialAllocations.value[key] = 0
       }
     })
   }
@@ -1134,7 +1256,7 @@ const applyStrategy = (type) => {
     if (!supplier) return
     const key = getAllocationKey(supplier)
     if (!key) return
-    allocations.value[key] = Number(ratio || 0)
+    currentMaterialAllocations.value[key] = Number(ratio || 0)
   }
 
   if (type === 'common') {
@@ -1190,6 +1312,7 @@ const applyStrategy = (type) => {
 }
 
 const handleSaveDraft = async () => {
+  if (isCompareReadOnly.value) return
   if (!route.query.taskId || !activeMaterial.value) return
 
   const suppliersData = currentComparison.value
@@ -1213,36 +1336,10 @@ const handleSaveDraft = async () => {
       material_code: activeMaterial.value.materialCode,
       suppliers: suppliersData
     })
-    const draftPayload = {
-      task_id: route.query.taskId,
-      task_title: materialsData.value?.[0]?.billNo || `询价任务#${route.query.taskId}`,
-      material_code: activeMaterial.value.materialCode,
-      material_name: activeMaterial.value.materialName,
-      supplier_count: suppliersData.length,
-      updated_at: Date.now()
-    }
-
-    if (compareDraftApiReady.value) {
-      try {
-        await saveCompareDraft(route.query.taskId, {
-          material_code: draftPayload.material_code,
-          material_name: draftPayload.material_name,
-          supplier_count: draftPayload.supplier_count,
-          task_title: draftPayload.task_title
-        })
-        await loadCompareDraftRows()
-      } catch {
-        compareDraftApiReady.value = false
-        upsertLocalDraftIndex(draftPayload)
-      }
-    } else {
-      upsertLocalDraftIndex(draftPayload)
-    }
-    ElMessage.success('报价草稿保存成功')
+    ElMessage.success('当前物料报价草稿保存成功')
     isFormDirty.value = false
-    clearLocalDraft()
     skipLeaveGuardOnce.value = true
-    router.push({ name: 'IntelligentCompare' })
+    router.push({ name: 'InquiryTasks' })
   } catch (error) {
     console.error(error)
     ElMessage.error('保存草稿失败')
@@ -1252,6 +1349,7 @@ const handleSaveDraft = async () => {
 }
 
 const submitAllocation = async () => {
+  if (isCompareReadOnly.value) return
   if (!route.query.taskId) {
     ElMessage.error('当前缺少询价任务ID，无法提交定标')
     return
@@ -1264,7 +1362,7 @@ const submitAllocation = async () => {
   const selectedSuppliers = currentComparison.value
     .map((supplier) => ({
       supplier,
-      ratio: Number(allocations.value[getAllocationKey(supplier)] || 0)
+      ratio: Number(currentMaterialAllocations.value[getAllocationKey(supplier)] || 0)
     }))
     .filter(item => item.ratio > 0)
 
@@ -1273,10 +1371,46 @@ const submitAllocation = async () => {
     return
   }
 
-  const missingLinkSupplier = selectedSuppliers.find(item => !item.supplier.link_id)
-  if (missingLinkSupplier) {
-    ElMessage.error(`供应商 ${missingLinkSupplier.supplier.name} 缺少关联ID，无法提交定标`)
-    return
+  const missingLinkSuppliers = selectedSuppliers.filter(item => !item.supplier.link_id)
+  if (missingLinkSuppliers.length > 0) {
+    for (const item of missingLinkSuppliers) {
+      try {
+        const supplierName = item?.supplier?.name || ''
+        if (!supplierName) {
+          ElMessage.error('存在供应商缺少名称，无法提交定标')
+          return
+        }
+        const res = await addSupplierToTask(route.query.taskId, { supplier_name: supplierName })
+        const data = res?.data || res
+        if (data?.link_id) {
+          item.supplier.link_id = data.link_id
+        }
+        if (data?.supplier_id) {
+          item.supplier.supplier_id = data.supplier_id
+        }
+      } catch (e) {
+        const detail = e?.response?.data?.detail
+        ElMessage.error(detail ? `供应商 ${item.supplier.name} 关联失败：${detail}` : `供应商 ${item.supplier.name} 缺少关联ID，无法提交定标`)
+        return
+      }
+    }
+  }
+
+  for (const item of selectedSuppliers) {
+    if (!item.supplier.is_compare_added) continue
+    const hasValidPrice = Number(item.supplier.tax_net_price || 0) > 0 && Number(item.supplier.price || 0) > 0
+    if (!hasValidPrice) {
+      ElMessage.error(`供应商 ${item.supplier.name || ''} 尚未填写有效报价，也没有可用历史成交价，无法定标`)
+      return
+    }
+    const synced = await syncSupplierQuoteToBackend(item.supplier, {
+      silent: true,
+      errorMessage: `供应商 ${item.supplier.name || ''} 报价保存失败`
+    })
+    if (!synced) {
+      ElMessage.error(`供应商 ${item.supplier.name || ''} 报价保存失败，请稍后重试`)
+      return
+    }
   }
 
   const payload = {
@@ -1291,19 +1425,9 @@ const submitAllocation = async () => {
     await closeInquiryTask(route.query.taskId, payload)
     ElMessage.success('定标成功，合同生成流程已触发')
     isFormDirty.value = false
-    if (compareDraftApiReady.value) {
-      try {
-        await deleteCompareDraftsByTask(route.query.taskId)
-        await loadCompareDraftRows()
-      } catch {
-        compareDraftApiReady.value = false
-        removeLocalDraftByTaskId(route.query.taskId)
-      }
-    } else {
-      removeLocalDraftByTaskId(route.query.taskId)
-    }
+    localStorage.removeItem(getLocalDraftKeyByTaskId(route.query.taskId))
     clearLocalDraft()
-    router.push({ name: 'ContractManagement' })
+    router.push({ name: 'ContractManagement', query: { taskId: route.query.taskId } })
   } catch (error) {
     console.error(error)
   } finally {
@@ -1313,6 +1437,7 @@ const submitAllocation = async () => {
 
 // Generate Analysis
 const generateAnalysis = async (isAuto = false) => {
+  if (isCompareReadOnly.value) return
   if (!activeMaterial.value) return
   const validSuppliers = activeMaterial.value.suppliers.filter(s => s.tax_net_price > 0)
   if (validSuppliers.length < 2) {
@@ -1358,6 +1483,7 @@ const formattedAnalysis = computed(() => {
 })
 
 const generateWechatScript = async () => {
+  if (isCompareReadOnly.value) return
   if (!activeMaterial.value || !activeMaterial.value.aiAnalysisResult) return
   wechatLoading.value = true
   wechatScriptResult.value = ''
@@ -1379,6 +1505,7 @@ const generateWechatScript = async () => {
 }
 
 const openAddSupplierDialog = () => {
+  if (isCompareReadOnly.value) return
   if (!activeMaterial.value) {
     ElMessage.warning('请先选择物料')
     return
@@ -1390,7 +1517,8 @@ const openAddSupplierDialog = () => {
   showAddSupplierDialog.value = true
 }
 
-const handleAddSupplier = () => {
+const handleAddSupplier = async () => {
+  if (isCompareReadOnly.value) return
   if (!newSupplierId.value || !activeMaterial.value) return
 
   const supplierToAdd = otherSuppliers.value.find(s => String(s.id) === String(newSupplierId.value))
@@ -1409,16 +1537,46 @@ const handleAddSupplier = () => {
     return
   }
 
-  activeMaterial.value.suppliers.push({
+  const supplierItem = {
+    link_id: undefined,
     supplier_id: supplierToAdd.id,
     code: supplierToAdd.code,
     name: supplierToAdd.name,
     grade: supplierToAdd.grade || '一般',
+    is_compare_added: true,
     tax_rate: 13,
     tax_net_price: undefined,
     price: undefined,
     qty: activeMaterial.value.qty || 1
-  })
+  }
+
+  if (route.query.taskId) {
+    try {
+      const res = await addSupplierToTask(route.query.taskId, { supplier_name: supplierToAdd.name })
+      const data = res?.data || res
+      if (data?.link_id) supplierItem.link_id = data.link_id
+      if (data?.supplier_id) supplierItem.supplier_id = data.supplier_id
+      if (data?.supplier_code) supplierItem.code = data.supplier_code
+      if (data?.supplier_name) supplierItem.name = data.supplier_name
+      if (data?.supplier_grade) supplierItem.grade = data.supplier_grade
+    } catch (e) {
+      const detail = e?.response?.data?.detail
+      ElMessage.error(detail ? String(detail) : '补充供应商失败')
+      return
+    }
+  }
+
+  activeMaterial.value.suppliers.push(supplierItem)
+
+  const historyPrice = getHistoryPriceForSupplier(supplierItem)
+  if (historyPrice?.latest_price) {
+    supplierItem.tax_net_price = Number(Number(historyPrice.latest_price).toFixed(2))
+    supplierItem.price = Number((supplierItem.tax_net_price / 1.13).toFixed(2))
+    await syncSupplierQuoteToBackend(supplierItem, {
+      successMessage: `已为 ${supplierItem.name} 带入历史成交价并同步到后端`,
+      errorMessage: `供应商 ${supplierItem.name} 历史价格同步失败`
+    })
+  }
 
   showAddSupplierDialog.value = false
   newSupplierId.value = undefined
@@ -1677,6 +1835,28 @@ onBeforeRouteLeave(async () => {
   white-space: nowrap;
 }
 
+.allocation-qty-info {
+  margin-bottom: 12px;
+  padding: 8px 16px;
+  background-color: #f5f7fa;
+  border-radius: 4px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qty-label {
+  color: #606266;
+  font-weight: 500;
+}
+
+.qty-value {
+  color: #409eff;
+  font-weight: bold;
+  font-size: 16px;
+}
+
 .allocation-table {
   margin-bottom: 16px;
 }
@@ -1918,11 +2098,11 @@ onBeforeRouteLeave(async () => {
   border-radius: 6px;
 }
 
-.draft-list-header {
+.compare-entry-guide {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
+  gap: 12px;
 }
 
 :deep(.markdown-body) {

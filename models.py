@@ -29,6 +29,8 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE inquiry_suppliers ADD COLUMN allocated_ratio FLOAT")
         if "allocated_qty" not in inquiry_supplier_columns:
             alter_statements.append("ALTER TABLE inquiry_suppliers ADD COLUMN allocated_qty FLOAT")
+        if "item_allocations" not in inquiry_supplier_columns:
+            alter_statements.append("ALTER TABLE inquiry_suppliers ADD COLUMN item_allocations JSON")
 
     if "inquiry_tasks" in table_names:
         inquiry_task_columns = {col["name"] for col in inspector.get_columns("inquiry_tasks")}
@@ -36,6 +38,11 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN type VARCHAR DEFAULT 'auto'")
         if "buyer_id" not in inquiry_task_columns:
             alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN buyer_id INTEGER")
+
+    if "inquiry_requests" in table_names:
+        inquiry_request_columns = {col["name"] for col in inspector.get_columns("inquiry_requests")}
+        if "material_model" not in inquiry_request_columns:
+            alter_statements.append("ALTER TABLE inquiry_requests ADD COLUMN material_model VARCHAR")
 
     if "warning_messages" in table_names:
         warning_columns = {col["name"] for col in inspector.get_columns("warning_messages")}
@@ -98,6 +105,7 @@ class LinkStatus(str, enum.Enum):
     SENT = "sent"            # 已发送
     QUOTED = "quoted"        # 已报价
     NEGOTIATION = "negotiation" # 谈判中
+    LOCKED = "locked"        # 已达目标价，锁定等待最终比价
     DEAL = "deal"            # 成交
     REJECT = "reject"        # 拒绝/淘汰
 
@@ -124,6 +132,7 @@ class InquiryRequest(Base):
     project_info = Column(JSON, comment="项目信息 {number, name}")
     material_code = Column(String, index=True)
     material_name = Column(String)
+    material_model = Column(String, nullable=True, comment="规格型号")
     qty = Column(Float)
     target_price = Column(Float, nullable=True, comment="期望单价")
     delivery_date = Column(DateTime)
@@ -221,6 +230,7 @@ class InquirySupplier(Base):
     status = Column(String, default=LinkStatus.SENT)
     allocated_ratio = Column(Float, nullable=True, comment="中标分配比例(0-100)")
     allocated_qty = Column(Float, nullable=True, comment="中标分配数量")
+    item_allocations = Column(JSON, nullable=True, comment="按物料维度的分配结果")
     latest_ai_feedback = Column(Text, nullable=True, comment="最新的AI谈判反馈")
     created_at = Column(DateTime, default=datetime.now)
 

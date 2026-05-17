@@ -14,26 +14,41 @@
       </div>
 
       <el-table :data="contracts" v-loading="loading" style="width: 100%">
-        <el-table-column prop="contract_no" label="合同编号" min-width="180" />
-        <el-table-column prop="inquiry_name" label="项目/询价单" min-width="180" />
-        <el-table-column prop="supplier_name" label="供应商" min-width="160" />
-        <el-table-column label="总金额" min-width="120">
+        <el-table-column prop="contract_no" label="合同编号" width="130" header-align="center" align="center" />
+        <el-table-column prop="inquiry_name" label="项目/询价单" min-width="180" header-align="center" align="center" />
+        <el-table-column prop="supplier_name" label="供应商" min-width="160" header-align="center" align="center" />
+        <el-table-column label="总金额" min-width="120" header-align="center" align="center">
           <template #default="{ row }">
             {{ formatAmount(row.total_amount) }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" min-width="130">
+        <el-table-column label="状态" min-width="130" header-align="center" align="center">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)">
               {{ row.status || '未知' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right" align="center" header-align="center">
           <template #default="{ row }">
-            <el-button link type="primary" @click="handlePreview(row)">预览 PDF</el-button>
-            <el-button link type="success" @click="handleDownload(row)">下载</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <div class="action-cell">
+              <el-button link type="primary" :disabled="!canPreviewOrDownload(row)" @click="handlePreview(row)">预览</el-button>
+              <el-button link type="success" :disabled="!canPreviewOrDownload(row)" @click="handleDownload(row)">下载</el-button>
+              <el-dropdown trigger="click" @command="(command) => handleActionCommand(row, command)">
+                <el-button link type="info" class="more-btn">
+                  更多
+                  <el-icon class="el-icon--right"><MoreFilled /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="canRegenerate(row)" command="regenerate">
+                      {{ isFailedStatus(row?.status) ? '重试生成' : '重新生成' }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="delete">删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -55,9 +70,13 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { deleteContractPdf, getContractList, getContractPdfBlob } from '../api/contract'
+import { deleteContract, getContractList, getContractPdfBlob, regenerateContractPdf } from '../api/contract'
+import { MoreFilled } from '@element-plus/icons-vue'
+
+const route = useRoute()
 
 const loading = ref(false)
 const contracts = ref([])
@@ -65,6 +84,16 @@ const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(20)
 const searchKeyword = ref('')
+const taskIdFilter = ref(undefined)
+
+const syncFiltersFromRoute = () => {
+  const keyword = String(route.query.keyword || '').trim()
+  if (keyword) searchKeyword.value = keyword
+
+  const rawTaskId = route.query.taskId
+  const parsedTaskId = rawTaskId != null ? Number(rawTaskId) : undefined
+  taskIdFilter.value = Number.isFinite(parsedTaskId) ? parsedTaskId : undefined
+}
 
 const fetchContracts = async () => {
   loading.value = true
@@ -72,7 +101,8 @@ const fetchContracts = async () => {
     const params = {
       skip: (currentPage.value - 1) * pageSize.value,
       limit: pageSize.value,
-      keyword: searchKeyword.value.trim()
+      keyword: searchKeyword.value.trim(),
+      task_id: taskIdFilter.value
     }
     const res = await getContractList(params)
     contracts.value = res.data.items || []
@@ -86,18 +116,51 @@ const fetchContracts = async () => {
 }
 
 onMounted(() => {
+  syncFiltersFromRoute()
   fetchContracts()
 })
+
+watch(
+  () => route.query,
+  () => {
+    syncFiltersFromRoute()
+    currentPage.value = 1
+    fetchContracts()
+  }
+)
 
 const formatAmount = (amount) => {
   const num = Number(amount || 0)
   return `¥ ${num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+const normalizeStatus = (status) => String(status || '').trim().toLowerCase()
+const isGeneratedStatus = (status) => {
+  const s = normalizeStatus(status)
+  return s.includes('generated') || s.includes('完成') || s.includes('已生成')
+}
+const isGeneratingStatus = (status) => {
+  const s = normalizeStatus(status)
+  return s.includes('generating') || s.includes('生成中')
+}
+const isFailedStatus = (status) => {
+  const s = normalizeStatus(status)
+  return s.includes('failed') || s.includes('失败')
+}
+const isWaitingSupplierStatus = (status) => {
+  const s = normalizeStatus(status)
+  return s.includes('待供应商') || s === 'pending' || s.includes('待')
+}
+
+const canPreviewOrDownload = (row) => isGeneratedStatus(row?.status)
+const canRegenerate = (row) => isFailedStatus(row?.status) || isGeneratedStatus(row?.status)
+
 const getStatusType = (status) => {
   if (!status) return 'info'
-  if (status.includes('待')) return 'warning'
-  if (status.includes('generated') || status.includes('完成')) return 'success'
+  if (isFailedStatus(status)) return 'danger'
+  if (isGeneratingStatus(status)) return 'warning'
+  if (isWaitingSupplierStatus(status)) return 'warning'
+  if (isGeneratedStatus(status)) return 'success'
   return 'info'
 }
 
@@ -111,16 +174,54 @@ const openBlobInNewTab = (blob) => {
 }
 
 const handlePreview = async (row) => {
+  if (!canPreviewOrDownload(row)) {
+    if (isGeneratingStatus(row?.status)) {
+      ElMessage.warning('合同正在生成中，请稍后刷新再试')
+      return
+    }
+    if (isFailedStatus(row?.status)) {
+      ElMessage.error('合同生成失败，请让供应商重新提交合同信息后再试')
+      return
+    }
+    if (isWaitingSupplierStatus(row?.status)) {
+      ElMessage.warning('供应商尚未提交合同信息，暂无法预览/下载')
+      return
+    }
+    ElMessage.warning('合同文件尚未生成，暂无法预览/下载')
+    return
+  }
   try {
     const res = await getContractPdfBlob(row.id)
     openBlobInNewTab(res.data)
   } catch (error) {
     console.error(error)
-    ElMessage.error(error.response?.data?.detail || '预览失败')
+    const detail = error.response?.data?.detail
+    if (error.response?.status === 404) {
+      ElMessage.warning(detail || '合同文件尚未生成或已丢失，请稍后刷新重试')
+      fetchContracts()
+      return
+    }
+    ElMessage.error(detail || '预览失败')
   }
 }
 
 const handleDownload = async (row) => {
+  if (!canPreviewOrDownload(row)) {
+    if (isGeneratingStatus(row?.status)) {
+      ElMessage.warning('合同正在生成中，请稍后刷新再试')
+      return
+    }
+    if (isFailedStatus(row?.status)) {
+      ElMessage.error('合同生成失败，请让供应商重新提交合同信息后再试')
+      return
+    }
+    if (isWaitingSupplierStatus(row?.status)) {
+      ElMessage.warning('供应商尚未提交合同信息，暂无法预览/下载')
+      return
+    }
+    ElMessage.warning('合同文件尚未生成，暂无法预览/下载')
+    return
+  }
   try {
     const res = await getContractPdfBlob(row.id)
     const blob = res.data
@@ -134,14 +235,20 @@ const handleDownload = async (row) => {
     URL.revokeObjectURL(url)
   } catch (error) {
     console.error(error)
-    ElMessage.error(error.response?.data?.detail || '下载失败')
+    const detail = error.response?.data?.detail
+    if (error.response?.status === 404) {
+      ElMessage.warning(detail || '合同文件尚未生成或已丢失，请稍后刷新重试')
+      fetchContracts()
+      return
+    }
+    ElMessage.error(detail || '下载失败')
   }
 }
 
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确认删除合同 ${row.contract_no || ''} 的PDF文件吗？`,
+      `确认删除合同 ${row.contract_no || ''} 的记录吗？该操作不可恢复。`,
       '删除确认',
       {
         confirmButtonText: '确认删除',
@@ -149,13 +256,45 @@ const handleDelete = async (row) => {
         type: 'warning'
       }
     )
-    await deleteContractPdf(row.id)
+    await deleteContract(row.id)
     ElMessage.success('删除成功')
     fetchContracts()
   } catch (error) {
     if (error === 'cancel') return
     console.error(error)
     ElMessage.error(error.response?.data?.detail || '删除失败')
+  }
+}
+
+const handleRegenerate = async (row) => {
+  try {
+    if (isGeneratedStatus(row?.status)) {
+      await ElMessageBox.confirm(
+        `确认重新生成合同 ${row.contract_no || ''} 吗？将覆盖原PDF文件。`,
+        '重新生成确认',
+        {
+          confirmButtonText: '确认',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }
+      )
+    }
+    await regenerateContractPdf(row.id)
+    ElMessage.success('已提交重新生成，请稍后刷新查看状态')
+    fetchContracts()
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '重新生成失败')
+  }
+}
+
+const handleActionCommand = (row, command) => {
+  if (command === 'delete') {
+    handleDelete(row)
+    return
+  }
+  if (command === 'regenerate') {
+    handleRegenerate(row)
   }
 }
 
@@ -192,6 +331,29 @@ const handleSizeChange = (size) => {
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+:deep(.el-table__header-wrapper th .cell) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  width: 100%;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.action-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.more-btn {
+  padding: 0;
 }
 
 .pagination-wrap {

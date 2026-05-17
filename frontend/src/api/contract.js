@@ -15,3 +15,11 @@ export const getContractPdfBlob = (contractId) => {
 export const deleteContractPdf = (contractId) => {
   return api.delete(`${CONTRACT_BASE}/${contractId}/pdf`)
 }
+
+export const deleteContract = (contractId) => {
+  return api.delete(`${CONTRACT_BASE}/${contractId}`)
+}
+
+export const regenerateContractPdf = (contractId) => {
+  return api.post(`${CONTRACT_BASE}/${contractId}/regenerate`)
+}

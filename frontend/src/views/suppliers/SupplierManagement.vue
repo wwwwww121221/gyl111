@@ -17,7 +17,11 @@
         <el-table-column type="index" label="序号" width="80" />
         <el-table-column prop="name" label="供应商名称" />      
         <el-table-column prop="contact_person" label="联系人" />
-        <el-table-column prop="phone" label="联系电话" />
+        <el-table-column prop="phone" label="联系电话" width="140">
+          <template #default="{ row }">
+            <span style="white-space: nowrap;">{{ row.phone || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="email" label="电子邮箱" />
         
         <el-table-column prop="grade" label="评级">
@@ -232,6 +236,8 @@ const accountRules = {
   ]
 }
 
+const resetAllLoading = ref(false)
+
 const fetchSuppliers = async () => {
   loading.value = true
   try {
@@ -258,6 +264,39 @@ const filteredSuppliers = computed(() => {
     (supplier.name || '').toLowerCase().includes(keyword)
   )
 })
+
+const handleResetAllAccounts = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '确定要批量重置所有已通过审核的供应商账号密码吗？\n\n重置规则：\n• 登录账号 = 公司全称\n• 初始密码 = 123456\n\n此操作不可撤销！',
+      '批量重置账号密码',
+      {
+        confirmButtonText: '确认重置',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  resetAllLoading.value = true
+  try {
+    const res = await api.post('/supplier/reset-all-accounts')
+    const { updated_count, total_count, errors, errors_count } = res.data
+    let message = `批量重置完成：成功 ${updated_count}/${total_count} 个供应商`
+    if (errors_count > 0) {
+      message += `\n\n失败 ${errors_count} 个：\n${errors.join('\n')}`
+    }
+    await ElMessageBox.alert(message, '重置结果', { type: errors_count > 0 ? 'warning' : 'success' })
+    await fetchSuppliers()
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '批量重置失败')
+  } finally {
+    resetAllLoading.value = false
+  }
+}
 
 onMounted(() => {
   fetchSuppliers()

@@ -53,3 +53,7 @@ class SupplierContractInfoSubmit(BaseModel):
     fax: str = Field(..., min_length=1)
     postal_code: str = Field(..., min_length=1)
     buyer_company_name: Optional[str] = None
+
+class SupplierChangePasswordPayload(BaseModel):
+    old_password: str = Field(..., min_length=1, description="原密码")
+    new_password: str = Field(..., min_length=6, description="新密码，至少6位")

@@ -43,6 +43,7 @@ def sync_purchase_requisitions(
                 },
                 material_code=material_id,
                 material_name=item.get("material_name"),
+                material_model=item.get("material_model"),
                 qty=item.get("purchase_qty", 0),
                 delivery_date=item.get("delivery_date"),
                 status=InquiryStatus.PENDING_POOL,

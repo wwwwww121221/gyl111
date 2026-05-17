@@ -6,6 +6,7 @@ from copy import copy
 from datetime import datetime
 from pathlib import Path
 from decimal import Decimal
+from decimal import ROUND_FLOOR
 from uuid import uuid4
 
 from openpyxl import load_workbook
@@ -74,6 +75,14 @@ def _resolve_template_path(template_file_path: str = None) -> Path:
     for p in candidates:
         if p.exists():
             return p
+    if TEMPLATE_DIR.exists():
+        fallback_files = sorted(
+            [p for p in TEMPLATE_DIR.glob("*.xlsx") if p.is_file()] + [p for p in TEMPLATE_DIR.glob("*.XLSX") if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+        if fallback_files:
+            return fallback_files[0]
     raise FileNotFoundError("合同模板文件不存在，请将‘合同模版.xlsx’放入 static/templates 目录")
 
 
@@ -288,7 +297,41 @@ def _load_link_quotes(db: Session, link: InquirySupplier):
     return quotes
 
 
+def _parse_link_item_allocations(link: InquirySupplier) -> dict:
+    parsed = {}
+    for row in (link.item_allocations or []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            item_id = int(row.get("item_id"))
+        except (TypeError, ValueError):
+            continue
+        parsed[item_id] = {
+            "allocated_ratio": float(row.get("allocated_ratio")) if row.get("allocated_ratio") is not None else None,
+            "allocated_qty": float(row.get("allocated_qty")) if row.get("allocated_qty") is not None else None,
+        }
+    return parsed
+
+
 def _build_allocated_qty_map(quote_rows: list, link: InquirySupplier) -> dict:
+    item_level_map = _parse_link_item_allocations(link)
+    if item_level_map:
+        result = {}
+        for row in quote_rows:
+            quote = row["quote"]
+            task_item = row["task_item"]
+            base_qty = row["base_qty"]
+            item_cfg = item_level_map.get(int(task_item.id if task_item else quote.item_id))
+            if not item_cfg:
+                result[quote.id] = Decimal("0")
+                continue
+            if item_cfg.get("allocated_qty") is not None:
+                result[quote.id] = _to_decimal(item_cfg["allocated_qty"])
+                continue
+            ratio = _to_decimal(item_cfg.get("allocated_ratio")) / Decimal("100")
+            result[quote.id] = base_qty * ratio
+        return result
+
     base_qty_map = {}
     total_base_qty = Decimal("0")
     for row in quote_rows:
@@ -301,6 +344,25 @@ def _build_allocated_qty_map(quote_rows: list, link: InquirySupplier) -> dict:
         if len(quote_rows) <= 1:
             quote = quote_rows[0]["quote"] if quote_rows else None
             return {quote.id: allocated_total_qty} if quote else {}
+        if allocated_total_qty == allocated_total_qty.to_integral_value() and total_base_qty == total_base_qty.to_integral_value() and total_base_qty > 0:
+            allocated_total_int = int(allocated_total_qty)
+            floors = []
+            remainder_parts = []
+            sum_floor = 0
+            for row in quote_rows:
+                exact = Decimal(str(allocated_total_int)) * row["base_qty"] / total_base_qty
+                base_floor = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+                frac = exact - Decimal(str(base_floor))
+                floors.append((row["quote"].id, base_floor))
+                remainder_parts.append((frac, row["quote"].id))
+                sum_floor += base_floor
+            remainder = allocated_total_int - sum_floor
+            remainder_parts.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            result = {qid: Decimal(str(floor_val)) for qid, floor_val in floors}
+            for i in range(max(0, remainder)):
+                qid = remainder_parts[i % len(remainder_parts)][1]
+                result[qid] = result.get(qid, Decimal("0")) + Decimal("1")
+            return result
         if total_base_qty > 0:
             allocated_qty_map = {}
             allocated_so_far = Decimal("0")
@@ -318,12 +380,122 @@ def _build_allocated_qty_map(quote_rows: list, link: InquirySupplier) -> dict:
 
     if link.allocated_ratio is not None:
         ratio = _to_decimal(link.allocated_ratio) / Decimal("100")
-        return {
-            quote_id: base_qty * ratio
-            for quote_id, base_qty in base_qty_map.items()
-        }
+        return {quote_id: base_qty * ratio for quote_id, base_qty in base_qty_map.items()}
 
     return base_qty_map
+
+
+def _build_task_split_allocated_qty_map(db: Session, quote_rows: list, link: InquirySupplier) -> dict:
+    """
+    拆单定标时，将每个物料的总数量按各成交供应商的 allocated_ratio 分配为整数，且所有合同数量之和等于总量。
+    使用最大余数法分配尾差（四舍五入效果更接近业务预期，但保证总和一致）。
+    """
+    deal_links = (
+        db.query(InquirySupplier)
+        .filter(InquirySupplier.task_id == link.task_id, InquirySupplier.status == LinkStatus.DEAL)
+        .order_by(InquirySupplier.id.asc())
+        .all()
+    )
+    if not deal_links or len(deal_links) <= 1:
+        return {}
+
+    parsed_by_link_id = {deal_link.id: _parse_link_item_allocations(deal_link) for deal_link in deal_links}
+    if any(parsed_by_link_id.values()):
+        result_for_current = {}
+        for row in quote_rows:
+            quote = row["quote"]
+            task_item = row["task_item"]
+            item_id = int(task_item.id if task_item else quote.item_id)
+            item_level_configs = {}
+            has_item_level_config = False
+            has_explicit_qty = False
+
+            for deal_link in deal_links:
+                cfg = parsed_by_link_id.get(deal_link.id, {}).get(item_id)
+                if not cfg:
+                    continue
+                has_item_level_config = True
+                if cfg.get("allocated_qty") is not None:
+                    has_explicit_qty = True
+                item_level_configs[deal_link.id] = cfg
+
+            if not has_item_level_config:
+                continue
+
+            if has_explicit_qty:
+                result_for_current[quote.id] = _to_decimal(item_level_configs.get(link.id, {}).get("allocated_qty"))
+                continue
+
+            current_ratio = _to_decimal(item_level_configs.get(link.id, {}).get("allocated_ratio")) / Decimal("100")
+            base_qty = row["base_qty"]
+            if current_ratio <= 0:
+                result_for_current[quote.id] = Decimal("0")
+                continue
+            if base_qty != base_qty.to_integral_value():
+                result_for_current[quote.id] = base_qty * current_ratio
+                continue
+
+            total_int = int(base_qty)
+            floors = {}
+            remainders = []
+            sum_floor = 0
+            for deal_link in deal_links:
+                ratio = _to_decimal(item_level_configs.get(deal_link.id, {}).get("allocated_ratio")) / Decimal("100")
+                exact = Decimal(str(total_int)) * ratio
+                floor_val = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+                frac = exact - Decimal(str(floor_val))
+                floors[deal_link.id] = floor_val
+                remainders.append((frac, deal_link.id))
+                sum_floor += floor_val
+
+            remainder = total_int - sum_floor
+            remainders.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            for i in range(max(0, remainder)):
+                l_id = remainders[i % len(remainders)][1]
+                floors[l_id] = floors.get(l_id, 0) + 1
+
+            result_for_current[quote.id] = Decimal(str(floors.get(link.id, 0)))
+
+        if result_for_current:
+            return result_for_current
+
+    ratios = {}
+    for l in deal_links:
+        if l.allocated_ratio is None:
+            ratios[l.id] = Decimal("0")
+        else:
+            ratios[l.id] = _to_decimal(l.allocated_ratio) / Decimal("100")
+
+    result_for_current = {}
+    for row in quote_rows:
+        qid = row["quote"].id
+        base_qty = row["base_qty"]
+        if base_qty != base_qty.to_integral_value():
+            continue
+
+        total_int = int(base_qty)
+        floors = {}
+        remainders = []
+        sum_floor = 0
+        for l in deal_links:
+            exact = Decimal(str(total_int)) * ratios.get(l.id, Decimal("0"))
+            floor_val = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+            frac = exact - Decimal(str(floor_val))
+            floors[l.id] = floor_val
+            remainders.append((frac, l.id))
+            sum_floor += floor_val
+
+        remainder = total_int - sum_floor
+        remainders.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        for i in range(max(0, remainder)):
+            l_id = remainders[i % len(remainders)][1]
+            floors[l_id] = floors.get(l_id, 0) + 1
+
+        current_alloc = floors.get(link.id)
+        if current_alloc is not None:
+            result_for_current[qid] = Decimal(str(current_alloc))
+
+    return result_for_current
 
 
 def _estimate_wrapped_lines(value, chars_per_line: int) -> int:
@@ -411,7 +583,9 @@ def _collect_contract_payload(
             "request": req,
             "base_qty": base_qty,
         })
-    allocated_qty_map = _build_allocated_qty_map(quote_rows, link)
+    allocated_qty_map = _build_task_split_allocated_qty_map(db, quote_rows, link)
+    if not allocated_qty_map:
+        allocated_qty_map = _build_allocated_qty_map(quote_rows, link)
 
     for idx, row in enumerate(quote_rows, start=1):
         q = row["quote"]
@@ -421,6 +595,8 @@ def _collect_contract_payload(
         item_project_no = str(req.project_info.get("number") or req.project_info.get("name") or "") if req and req.project_info else ""
         item_project_name = str(req.project_info.get("name") or req.project_info.get("number") or "") if req and req.project_info else ""
         qty = allocated_qty_map.get(q.id, row["base_qty"])
+        if qty <= 0:
+            continue
         price = _to_decimal(q.price)
         amount = qty * price
         total_qty += qty
@@ -432,12 +608,12 @@ def _collect_contract_payload(
             project_name = item_project_name
 
         items.append({
-            "index": idx,
+            "index": len(items) + 1,
             "project_no": item_project_no,
             "project_name": item_project_name,
             "material_name": material_name,
             "material_code": material_code,
-            "qty": float(qty),
+            "qty": int(qty) if qty == qty.to_integral_value() else float(qty),
             "price": float(price),
             "amount": float(amount),
             "delivery_date": _format_delivery_date(q.delivery_date or (req.delivery_date if req else None)),
@@ -451,7 +627,7 @@ def _collect_contract_payload(
         "project_name": project_name,
         "task_title": task.title,
         "items": items,
-        "total_qty": float(total_qty),
+        "total_qty": int(total_qty) if total_qty == total_qty.to_integral_value() else float(total_qty),
         "total_amount": float(total_amount),
         "sup_address": contract_record.address if contract_record else "",
         "sup_legal_rep": contract_record.legal_representative if contract_record else "",
@@ -524,12 +700,11 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
                 source_cell = ws.cell(row=source_row, column=col)
                 target_cell = ws.cell(row=target_row, column=col)
                 if source_cell.has_style:
-                    target_cell._style = copy(source_cell._style)
-                if source_cell.number_format:
+                    target_cell.font = copy(source_cell.font)
+                    target_cell.border = copy(source_cell.border)
+                    target_cell.fill = copy(source_cell.fill)
                     target_cell.number_format = source_cell.number_format
-                if source_cell.protection:
                     target_cell.protection = copy(source_cell.protection)
-                if source_cell.alignment:
                     target_cell.alignment = copy(source_cell.alignment)
         except Exception:
             return
@@ -618,15 +793,28 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
         item_material_name = item.get("material_name", "")
         item_material_code = item.get("material_code", "")
         item_delivery_date = item.get("delivery_date", "")
-        set_item_cell_value(row, 2, item.get("index"))
-        set_item_cell_value(row, 3, item_project_no)
-        set_item_cell_value(row, 7, item_project_name)
-        set_item_cell_value(row, 9, item_material_name)
-        set_item_cell_value(row, 11, item_material_code)
-        set_item_cell_value(row, 15, item.get("qty", 0))
-        set_item_cell_value(row, 19, item.get("price", 0))
-        set_item_cell_value(row, 26, item.get("amount", 0))
-        set_item_cell_value(row, 29, item_delivery_date)
+        item_cols = {
+            2: item.get("index"),
+            3: item_project_no,
+            7: item_project_name,
+            9: item_material_name,
+            11: item_material_code,
+            15: item.get("qty", 0),
+            19: item.get("price", 0),
+            26: item.get("amount", 0),
+            29: item_delivery_date,
+        }
+        base_row = 42
+        for col_idx, value in item_cols.items():
+            set_item_cell_value(row, col_idx, value)
+            if row != base_row:
+                source_cell = ws.cell(row=base_row, column=col_idx)
+                target_cell = get_item_cell(row, col_idx)
+                if source_cell.has_style:
+                    target_cell.font = copy(source_cell.font)
+                    target_cell.border = copy(source_cell.border)
+                    target_cell.fill = copy(source_cell.fill)
+                    target_cell.number_format = source_cell.number_format
         wrap_rules = {
             3: (item_project_no, 12),
             7: (item_project_name, 7),
@@ -637,9 +825,12 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
         max_lines = 1
         for col_idx, (text, chars_per_line) in wrap_rules.items():
             target_cell = get_item_cell(row, col_idx)
-            alignment = copy(target_cell.alignment)
+            base_cell = ws.cell(row=base_row, column=col_idx)
+            alignment = copy(base_cell.alignment) if base_cell.alignment else copy(target_cell.alignment)
             alignment.wrap_text = True
             target_cell.alignment = alignment
+            if row != base_row and base_cell.has_style:
+                target_cell.font = copy(base_cell.font)
             max_lines = max(max_lines, _estimate_wrapped_lines(text, chars_per_line))
         ws.row_dimensions[row].height = max(base_item_row_height, 18 * max_lines + 10)
         row += 1
@@ -657,6 +848,27 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
     set_cell_value(template_cells["sup_tax_id"], payload.get("sup_tax_id", ""))
     set_cell_value(template_cells["sup_fax"], payload.get("sup_fax", ""))
     set_cell_value(template_cells["sup_postal_code"], payload.get("sup_postal_code", ""))
+
+    base_item_row = 42
+    item_data_cols = [2, 3, 7, 9, 11, 15, 19, 26, 29]
+    for check_row in range(base_item_row + 1, row):
+        if check_row > max_item_row:
+            break
+        for col_idx in item_data_cols:
+            try:
+                source_cell = ws.cell(row=base_item_row, column=col_idx)
+                target_cell = ws.cell(row=check_row, column=col_idx)
+                if source_cell.has_style and source_cell.font and source_cell.font.name:
+                    from openpyxl.styles import Font
+                    target_cell.font = Font(
+                        name=source_cell.font.name,
+                        size=source_cell.font.size,
+                        bold=source_cell.font.bold,
+                        italic=source_cell.font.italic,
+                        color=source_cell.font.color,
+                    )
+            except Exception:
+                pass
 
     output_xlsx.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_xlsx)
@@ -729,6 +941,7 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
         set_range_value(template_cells["project_no"], payload.get("project_no") or payload.get("task_title", ""))
         items = payload.get("items", [])
         row = 42
+        base_row_num = row
         base_item_row_height = float(sheet.Rows(row).RowHeight or 22)
         max_item_row = int(sheet.UsedRange.Rows.Count)
         remark_row = None
@@ -738,6 +951,52 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
                 remark_row = r
                 max_item_row = r - 1
                 break
+
+        def _collect_single_row_merges(target_row: int):
+            merges = []
+            seen = set()
+            used_cols = int(sheet.UsedRange.Columns.Count)
+            for col_idx in range(1, used_cols + 1):
+                cell = sheet.Cells(target_row, col_idx)
+                if not bool(cell.MergeCells):
+                    continue
+                area = cell.MergeArea
+                if int(area.Row) != target_row or int(area.Rows.Count) != 1:
+                    continue
+                start_col = int(area.Column)
+                end_col = start_col + int(area.Columns.Count) - 1
+                key = (start_col, end_col)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merges.append(key)
+            return merges
+
+        base_row_merges = _collect_single_row_merges(base_row_num)
+
+        def _reset_item_row_structure(target_row: int):
+            used_cols = int(sheet.UsedRange.Columns.Count)
+            cleared_addresses = set()
+            for col_idx in range(1, used_cols + 1):
+                cell = sheet.Cells(target_row, col_idx)
+                if not bool(cell.MergeCells):
+                    continue
+                area = cell.MergeArea
+                if int(area.Row) != target_row or int(area.Rows.Count) != 1:
+                    continue
+                area_address = str(area.Address)
+                if area_address in cleared_addresses:
+                    continue
+                cleared_addresses.add(area_address)
+                area.UnMerge()
+            for start_col, end_col in base_row_merges:
+                if start_col == end_col:
+                    continue
+                sheet.Range(
+                    sheet.Cells(target_row, start_col),
+                    sheet.Cells(target_row, end_col)
+                ).Merge()
+
         if items and remark_row is not None:
             current_capacity = max_item_row - row + 1
             if current_capacity < 0:
@@ -745,6 +1004,8 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
             if len(items) > current_capacity:
                 extra_rows = len(items) - current_capacity
                 sheet.Rows(f"{remark_row}:{remark_row + extra_rows - 1}").Insert()
+                for insert_idx in range(extra_rows):
+                    _reset_item_row_structure(remark_row + insert_idx)
                 max_item_row = remark_row + extra_rows - 1
         for item in items:
             if row > max_item_row:
@@ -763,6 +1024,15 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
             set_item_cell_value(row, 19, item.get("price", 0))
             set_item_cell_value(row, 26, item.get("amount", 0))
             set_item_cell_value(row, 29, item_delivery_date)
+            if row != base_row_num:
+                try:
+                    for col_idx in [2, 3, 7, 9, 11, 15, 19, 26, 29]:
+                        source_cell = sheet.Cells(base_row_num, col_idx)
+                        target_cell = sheet.Cells(row, col_idx)
+                        target_cell.Font.Name = source_cell.Font.Name
+                        target_cell.Font.Size = source_cell.Font.Size
+                except Exception:
+                    pass
             wrap_rules = {
                 3: (item_project_no, 12),
                 7: (item_project_name, 7),
@@ -792,6 +1062,22 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
         set_range_value(template_cells["sup_tax_id"], payload.get("sup_tax_id", ""))
         set_range_value(template_cells["sup_fax"], payload.get("sup_fax", ""))
         set_range_value(template_cells["sup_postal_code"], payload.get("sup_postal_code", ""))
+        try:
+            base_row_num = 42
+            font_cols = [2, 3, 7, 9, 11, 15, 19, 26, 29]
+            for check_row in range(base_row_num + 1, row):
+                for col_idx in font_cols:
+                    try:
+                        src = sheet.Cells(base_row_num, col_idx)
+                        tgt = sheet.Cells(check_row, col_idx)
+                        if src.Font.Name:
+                            tgt.Font.Name = src.Font.Name
+                            tgt.Font.Size = src.Font.Size
+                            tgt.Font.Bold = src.Font.Bold
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         output_xlsx.parent.mkdir(parents=True, exist_ok=True)
         _call_with_retry(lambda: workbook.SaveAs(str(output_xlsx.resolve()), FileFormat=51))
         return True
@@ -816,10 +1102,14 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
 
 
 def _fill_template_to_temp_excel(payload: dict, template_path: Path = None) -> Path:
+    import logging
+    logger = logging.getLogger(__name__)
     temp_xlsx = CONTRACT_DIR / f"temp_filled_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}.xlsx"
     template_path = template_path or _resolve_template_path()
     if _fill_template_excel_with_win32(payload, temp_xlsx, template_path=template_path):
+        logger.info(f"Excel填充成功: 使用Win32(Excel)COM引擎 -> {temp_xlsx.name}")
         return temp_xlsx
+    logger.info(f"Excel填充: Win32失败,使用openpyxl引擎 -> {temp_xlsx.name}")
     _fill_template_excel(payload, temp_xlsx, template_path=template_path)
     return temp_xlsx
 
@@ -1036,19 +1326,23 @@ def _export_excel_to_pdf_with_libreoffice(xlsx_path: Path, output_pdf: Path) -> 
     return output_pdf.exists() and output_pdf.stat().st_size > 0
 
 
-def _export_excel_to_pdf(xlsx_path: Path, output_pdf: Path) -> None:
+def _export_excel_to_pdf(xlsx_path: Path, output_pdf: Path, payload: dict = None) -> None:
+    import logging
+    logger = logging.getLogger(__name__)
     if _export_excel_to_pdf_with_wps(xlsx_path, output_pdf):
+        logger.info(f"PDF导出成功: 使用WPS引擎 -> {output_pdf.name}")
         return
     if _export_excel_to_pdf_with_libreoffice(xlsx_path, output_pdf):
+        logger.info(f"PDF导出成功: 使用LibreOffice引擎 -> {output_pdf.name}")
         return
     if _export_excel_to_pdf_with_win32(xlsx_path, output_pdf):
+        logger.info(f"PDF导出成功: 使用Win32(Excel)COM引擎 -> {output_pdf.name}")
         return
-    # Some environments cannot stably use Excel COM for PDF export.
-    # Fall back to reportlab rendering to keep business flow available.
-    _render_pdf_with_reportlab(xlsx_path, output_pdf)
+    logger.warning(f"PDF导出: 所有COM引擎失败,使用reportlab兜底渲染 -> {output_pdf.name}")
+    _render_pdf_with_reportlab(xlsx_path, output_pdf, payload=payload)
 
 
-def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path) -> None:
+def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path, payload: dict = None) -> None:
     wb = _safe_load_workbook(xlsx_path)
     ws = wb.active if wb.active else wb.worksheets[0]
     template_cells = _resolve_template_cells_for_openpyxl(ws)
@@ -1067,6 +1361,16 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path) -> None:
     c.drawString(start_x + 210, y, "采购合同")
     y -= 32
     c.setFont(font_name, 11)
+
+    def safe_str(value):
+        if value is None:
+            return ""
+        s = str(value)
+        try:
+            s.encode('utf-8')
+            return s
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return "".join(c for c in s if ord(c) < 127 or ord(c) > 0x4e00)
 
     def get_display_value_by_ref(cell_ref: str):
         try:
@@ -1097,7 +1401,7 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path) -> None:
         ("项目号", template_cells["project_no"]),
     ]
     for label, ref in header_refs:
-        val = get_display_value_by_ref(ref) or ""
+        val = safe_str(get_display_value_by_ref(ref))
         c.setFont(font_name, 11)
         c.drawString(start_x, y, f"{label}：{val}")
         y -= base_line_spacing
@@ -1114,7 +1418,7 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path) -> None:
         ("邮编", template_cells["sup_postal_code"]),
     ]
     for label, ref in supplier_extra_refs:
-        val = get_display_value_by_ref(ref) or ""
+        val = safe_str(get_display_value_by_ref(ref))
         c.setFont(font_name, 10)
         c.drawString(start_x, y, f"{label}：{val}")
         y -= 16
@@ -1129,33 +1433,60 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path) -> None:
         x += col_widths[i]
     y -= base_line_spacing
 
-    row = 42
-    while row <= ws.max_row and y > 80:
-        values = [
-            get_display_value_by_pos(row, 2),
-            get_display_value_by_pos(row, 3),
-            get_display_value_by_pos(row, 7),
-            get_display_value_by_pos(row, 9),
-            get_display_value_by_pos(row, 11),
-            get_display_value_by_pos(row, 15),
-            get_display_value_by_pos(row, 19),
-            get_display_value_by_pos(row, 26),
-            get_display_value_by_pos(row, 29),
-        ]
-        if isinstance(values[0], str) and "备注" in values[0]:
-            break
-        if all(v in [None, ""] for v in values):
+    if payload and payload.get("items"):
+        items = payload["items"]
+        project_no = payload.get("project_no") or payload.get("task_title", "")
+        project_name = payload.get("project_name") or payload.get("task_title", "")
+        for item in items:
+            if y <= 80:
+                break
+            item_project_no = item.get("project_no") or project_no
+            item_project_name = item.get("project_name") or project_name
+            row_values = [
+                item.get("index", ""),
+                item_project_no,
+                item_project_name,
+                item.get("material_name", ""),
+                item.get("material_code", ""),
+                item.get("qty", 0),
+                item.get("price", 0),
+                item.get("amount", 0),
+                item.get("delivery_date", ""),
+            ]
+            x = start_x
+            for i, v in enumerate(row_values):
+                c.setFont(font_name, 10)
+                c.drawString(x, y, safe_str(v))
+                x += col_widths[i]
+            y -= base_line_spacing
+    else:
+        row = 42
+        while row <= ws.max_row and y > 80:
+            values = [
+                get_display_value_by_pos(row, 2),
+                get_display_value_by_pos(row, 3),
+                get_display_value_by_pos(row, 7),
+                get_display_value_by_pos(row, 9),
+                get_display_value_by_pos(row, 11),
+                get_display_value_by_pos(row, 15),
+                get_display_value_by_pos(row, 19),
+                get_display_value_by_pos(row, 26),
+                get_display_value_by_pos(row, 29),
+            ]
+            if isinstance(values[0], str) and "备注" in values[0]:
+                break
+            if all(v in [None, ""] for v in values):
+                row += 1
+                continue
+            x = start_x
+            for i, v in enumerate(values):
+                c.setFont(font_name, 10)
+                c.drawString(x, y, safe_str(v))
+                x += col_widths[i]
+            row_height = ws.row_dimensions[row].height or 15
+            line_spacing = max(base_line_spacing, int(row_height + 4))
+            y -= line_spacing
             row += 1
-            continue
-        x = start_x
-        for i, v in enumerate(values):
-            c.setFont(font_name, 10)
-            c.drawString(x, y, "" if v is None else str(v))
-            x += col_widths[i]
-        row_height = ws.row_dimensions[row].height or 15
-        line_spacing = max(base_line_spacing, int(row_height + 4))
-        y -= line_spacing
-        row += 1
 
     c.save()
 
@@ -1192,7 +1523,7 @@ async def generate_contract_pdf(
     template_path = _resolve_template_path(resolved_template_file_path)
     temp_xlsx = _fill_template_to_temp_excel(payload, template_path=template_path)
     try:
-        _export_excel_to_pdf(temp_xlsx, output_pdf)
+        _export_excel_to_pdf(temp_xlsx, output_pdf, payload=payload)
     finally:
         if temp_xlsx and temp_xlsx.exists():
             try:
@@ -1231,7 +1562,7 @@ async def generate_contract_pdf_from_mock_data(mock_data: dict, output_filename:
     output_pdf = CONTRACT_DIR / output_filename
     temp_xlsx = _fill_template_to_temp_excel(payload)
     try:
-        _export_excel_to_pdf(temp_xlsx, output_pdf)
+        _export_excel_to_pdf(temp_xlsx, output_pdf, payload=payload)
     finally:
         if temp_xlsx and temp_xlsx.exists():
             try:

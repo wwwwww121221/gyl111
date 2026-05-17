@@ -30,10 +30,20 @@ class HistoryPriceResponse(BaseModel):
     avg_30_days: float = 0.0
 
 class MaterialSupplierResponse(BaseModel):
+    id: Optional[int] = None
     code: str
     name: str
     count: int
     grade: str
+
+
+class MaterialSupplierBatchRequest(BaseModel):
+    material_codes: List[str]
+
+
+class MaterialLatestPriceResponse(BaseModel):
+    latest_price: Optional[float] = None
+    latest_date: Optional[str] = None
 
 @router.get("/suppliers/{material_code}", response_model=List[MaterialSupplierResponse])
 def get_material_suppliers(material_code: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user_auth)):
@@ -77,11 +87,146 @@ def get_material_suppliers(material_code: str, db: Session = Depends(get_db), cu
                 grade = '一般'
                 
         result.append(MaterialSupplierResponse(
+            id=supplier.id if supplier else None,
             code=r.supplier_code,
             name=r.supplier_name,
             count=r.count,
             grade=grade
         ))
+    return result
+
+
+@router.post("/suppliers/batch", response_model=Dict[str, List[MaterialSupplierResponse]])
+def get_material_suppliers_batch(
+    payload: MaterialSupplierBatchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth)
+):
+    """
+    批量获取多个物料的历史供应商推荐，减少前端在多物料场景下的请求次数。
+    """
+    normalized_codes = []
+    seen_codes = set()
+    for raw_code in payload.material_codes or []:
+        code = str(raw_code or "").strip()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        normalized_codes.append(code)
+
+    if not normalized_codes:
+        return {}
+
+    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
+    records = db.query(
+        trimmed_material_code.label("material_code"),
+        PurchaseOrderHistory.supplier_code,
+        PurchaseOrderHistory.supplier_name,
+        func.count(PurchaseOrderHistory.id).label("count")
+    ).filter(
+        trimmed_material_code.in_(normalized_codes)
+    ).group_by(
+        trimmed_material_code,
+        PurchaseOrderHistory.supplier_code,
+        PurchaseOrderHistory.supplier_name
+    ).order_by(
+        trimmed_material_code,
+        desc("count")
+    ).all()
+
+    supplier_codes = list({
+        r.supplier_code for r in records
+        if getattr(r, "supplier_code", None)
+    })
+    supplier_map = {}
+    if supplier_codes:
+        suppliers = db.query(Supplier).filter(Supplier.code.in_(supplier_codes)).all()
+        supplier_map = {supplier.code: supplier for supplier in suppliers}
+
+    result: Dict[str, List[MaterialSupplierResponse]] = {code: [] for code in normalized_codes}
+    for record in records:
+        material_code = str(record.material_code or "").strip()
+        supplier_code = record.supplier_code
+        if not material_code or not supplier_code:
+            continue
+
+        supplier = supplier_map.get(supplier_code)
+        grade = "一般"
+        if supplier:
+            if getattr(supplier, "grade", None):
+                grade = supplier.grade
+            elif getattr(supplier, "level", None) == "core":
+                grade = "A级"
+            elif getattr(supplier, "level", None) == "normal":
+                grade = "一般"
+
+        result.setdefault(material_code, [])
+        if len(result[material_code]) >= 3:
+            continue
+
+        result[material_code].append(MaterialSupplierResponse(
+            id=supplier.id if supplier else None,
+            code=supplier_code,
+            name=record.supplier_name,
+            count=record.count,
+            grade=grade
+        ))
+
+    return result
+
+
+@router.post("/latest-prices/batch", response_model=Dict[str, MaterialLatestPriceResponse])
+def get_material_latest_prices_batch(
+    payload: MaterialSupplierBatchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth)
+):
+    """
+    批量获取多个物料最近一次成交的不含税单价，供自动询价默认期望单价使用。
+    """
+    normalized_codes = []
+    seen_codes = set()
+    for raw_code in payload.material_codes or []:
+        code = str(raw_code or "").strip()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        normalized_codes.append(code)
+
+    if not normalized_codes:
+        return {}
+
+    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
+    records = db.query(
+        trimmed_material_code.label("material_code"),
+        PurchaseOrderHistory.price,
+        PurchaseOrderHistory.date,
+        PurchaseOrderHistory.id
+    ).filter(
+        trimmed_material_code.in_(normalized_codes),
+        PurchaseOrderHistory.price.isnot(None)
+    ).order_by(
+        trimmed_material_code,
+        PurchaseOrderHistory.date.desc(),
+        PurchaseOrderHistory.id.desc()
+    ).all()
+
+    result: Dict[str, MaterialLatestPriceResponse] = {
+        code: MaterialLatestPriceResponse()
+        for code in normalized_codes
+    }
+
+    for record in records:
+        material_code = str(record.material_code or "").strip()
+        if not material_code or result.get(material_code, None) is None:
+            continue
+        if result[material_code].latest_price is not None:
+            continue
+        result[material_code] = MaterialLatestPriceResponse(
+            latest_price=float(record.price) if record.price is not None else None,
+            latest_date=record.date.strftime("%Y-%m-%d") if record.date else None
+        )
+
     return result
 
 @router.post("/history", response_model=List[HistoryPriceResponse])

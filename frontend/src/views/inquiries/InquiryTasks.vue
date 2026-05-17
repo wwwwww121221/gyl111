@@ -42,7 +42,9 @@
           </el-table-column>
           <el-table-column prop="status" label="状态" width="120">
             <template #default="scope">
-              <el-tag :type="getTaskStatusType(scope.row.status)">{{ getTaskStatusLabel(scope.row.status) }}</el-tag>
+              <el-tag :type="getTaskStatusType(getTaskDisplayStatus(scope.row))">
+                {{ getTaskStatusLabel(getTaskDisplayStatus(scope.row)) }}
+              </el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="created_at" label="创建时间" width="180">
@@ -53,11 +55,8 @@
           <el-table-column label="操作" width="320" align="center">
             <template #default="scope">
               <template v-if="scope.row.type === 'manual'">
-                <el-button size="small" type="warning" plain @click="openEditQuotesDialog(scope.row)">
-                  修改报价
-                </el-button>
                 <el-button size="small" type="primary" @click="goToCompare(scope.row)">
-                  智能比价
+                  {{ isTaskCompareResultReadonly(scope.row) ? '查看比价结果' : '智能比价' }}
                 </el-button>
                 <el-button 
                   v-if="scope.row.status !== 'closed'" 
@@ -74,12 +73,12 @@
                   详情 / 管理
                 </el-button>
                 <el-button
-                  v-if="scope.row.status === 'awaiting_award'"
+                  v-if="scope.row.compare_ready"
                   size="small"
                   type="warning"
-                  @click="goToCompare(scope.row)"
+                  @click="openAutoAllocationTab(scope.row)"
                 >
-                  智能比价 / 定标
+                  份额分配
                 </el-button>
               </template>
 
@@ -108,8 +107,8 @@
             <div class="card-header">
               <div class="header-title">
                 <span class="task-title">{{ currentTaskDetails.title }}</span>
-                <el-tag :type="getTaskStatusType(currentTaskDetails.status)" effect="dark" size="default" style="margin-left: 15px;">
-                  {{ getTaskStatusLabel(currentTaskDetails.status) }}
+                <el-tag :type="getTaskStatusType(currentTaskDisplayStatus)" effect="dark" size="default" style="margin-left: 15px;">
+                  {{ getTaskStatusLabel(currentTaskDisplayStatus) }}
                 </el-tag>
                 <el-tag v-if="hasTaskExpired(currentTaskDetails)" type="danger" effect="plain" size="default" style="margin-left: 8px;">
                   已逾期
@@ -117,13 +116,13 @@
               </div>
               <div class="header-actions">
                 <el-button
-                  v-if="currentTaskDetails.status === 'awaiting_award'"
+                  v-if="isCurrentTaskCompareReady"
                   type="warning"
-                  @click="goToCompare(currentTaskDetails)"
+                  @click="openCurrentTaskAllocationTab"
                 >
-                  前往智能比价 / 定标
+                  前往份额分配
                 </el-button>
-                <el-button v-if="currentTaskDetails.status === 'active'" type="danger" plain @click="handleCloseTask()">
+                <el-button v-if="currentTaskDisplayStatus === 'active'" type="danger" plain @click="handleCloseTask()">
                   终止任务 (流标)
                 </el-button>
               </div>
@@ -151,8 +150,8 @@
         </el-card>
 
         <el-alert
-          v-if="isAwaitingAwardTask"
-          title="自动谈判已提前结束：当前任务进入“待份额分配”状态，请前往智能比价页面完成拆单定标。"
+          v-if="isCurrentTaskCompareReady"
+          :title="compareReadyAlertTitle"
           type="warning"
           :closable="false"
           show-icon
@@ -168,7 +167,7 @@
               <span class="tab-label-with-status">
                 <span>供应商与报价动态</span>
                 <el-tag
-                  v-if="isAwaitingAwardTask"
+                  v-if="isCurrentTaskCompareReady"
                   size="small"
                   type="warning"
                   effect="plain"
@@ -183,7 +182,7 @@
                   <el-input v-model="supplierForm.name" placeholder="输入供应商名称" style="width: 200px;" />
                 </el-form-item>
                 <el-form-item>
-                  <el-button type="primary" @click="handleAddSupplier" :loading="addingSupplier" :disabled="currentTaskDetails.status !== 'active'">
+                  <el-button type="primary" @click="handleAddSupplier" :loading="addingSupplier" :disabled="currentTaskDisplayStatus !== 'active'">
                     添加供应商
                   </el-button>
                 </el-form-item>
@@ -194,6 +193,37 @@
               <el-table-column type="expand">
                 <template #default="props">
                   <div class="expand-content">
+                    <template v-if="props.row.material_allocations && props.row.material_allocations.length > 0">
+                      <h4 class="expand-title">
+                        <el-icon style="vertical-align: middle; margin-right: 5px;"><DocumentCopy /></el-icon>物料分配详情
+                      </h4>
+                      <el-table :data="props.row.material_allocations" border size="small" style="margin-bottom: 16px;">
+                        <el-table-column prop="material_name" label="物料名称" min-width="180" />
+                        <el-table-column prop="material_code" label="物料编码" width="150" />
+                        <el-table-column prop="base_qty" label="原始数量" width="100" align="right" />
+                        <el-table-column prop="allocated_qty" label="分配数量" width="100" align="right" />
+                        <el-table-column prop="allocated_ratio" label="分配占比" width="100" align="right">
+                          <template #default="scope">
+                            {{ Number(scope.row.allocated_ratio || 0).toFixed(2) }}%
+                          </template>
+                        </el-table-column>
+                        <el-table-column label="成交单价(¥)" width="120" align="right">
+                          <template #default="scope">
+                            {{ Number(scope.row.price || 0).toFixed(2) }}
+                          </template>
+                        </el-table-column>
+                        <el-table-column label="分配金额(¥)" width="120" align="right">
+                          <template #default="scope">
+                            {{ Number(scope.row.amount || 0).toFixed(2) }}
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="delivery_date" label="交期" width="140" align="center">
+                          <template #default="scope">
+                            {{ formatDate(scope.row.delivery_date) }}
+                          </template>
+                        </el-table-column>
+                      </el-table>
+                    </template>
                     <h4 class="expand-title"><el-icon style="vertical-align: middle; margin-right: 5px;"><DocumentCopy /></el-icon>历史报价记录</h4>
                     <el-timeline style="padding-top: 10px;">
                       <el-timeline-item
@@ -276,7 +306,7 @@
               <el-table-column label="操作" width="260" align="center" fixed="right">
                 <template #default="scope">
                   <el-button 
-                    v-if="currentTaskDetails.status === 'active' && scope.row.status !== 'deal' && scope.row.status !== 'reject'" 
+                    v-if="currentTaskDisplayStatus === 'active' && !['deal', 'reject', 'locked'].includes(scope.row.status)" 
                     size="small" 
                     type="success" 
                     plain
@@ -284,10 +314,11 @@
                     选定成交
                   </el-button>
                   <span v-else-if="scope.row.status === 'deal'" style="color: #67c23a; font-weight: bold;">已成交</span>
+                  <span v-else-if="scope.row.status === 'locked'" style="color: #409eff; font-weight: bold;">已锁定</span>
                   <span v-else-if="scope.row.status === 'reject'" style="color: #909399;">已淘汰</span>
                   <span v-else>-</span>
                   <el-button
-                    v-if="currentTaskDetails.status === 'active' && scope.row.status === 'negotiation'"
+                    v-if="currentTaskDisplayStatus === 'active' && scope.row.status === 'negotiation'"
                     size="small"
                     type="warning"
                     plain
@@ -296,7 +327,7 @@
                     人工通过
                   </el-button>
                   <el-button
-                    v-if="currentTaskDetails.status === 'active' && scope.row.status === 'negotiation'"
+                    v-if="currentTaskDisplayStatus === 'active' && scope.row.status === 'negotiation'"
                     size="small"
                     type="danger"
                     plain
@@ -307,6 +338,144 @@
                 </template>
               </el-table-column>
             </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane v-if="isAutoAllocationAvailable" name="allocation">
+            <template #label>
+              <span class="tab-label-with-status">
+                <span>份额分配</span>
+                <el-tag
+                  v-if="isCurrentTaskCompareReady"
+                  size="small"
+                  :type="isAutoAllocationReadonly ? 'info' : 'warning'"
+                  effect="plain"
+                >
+                  {{ isAutoAllocationReadonly ? '历史结果' : '待定标' }}
+                </el-tag>
+              </span>
+            </template>
+
+            <div class="auto-allocation-wrap">
+              <el-alert
+                :title="isAutoAllocationReadonly ? '当前页展示的是历史分配结果，不能再修改。' : '自动询价已结束，请直接在当前页面完成每个物料的份额分配。'"
+                :type="isAutoAllocationReadonly ? 'info' : 'warning'"
+                :closable="false"
+                show-icon
+                class="auto-allocation-alert"
+              />
+
+              <div class="allocation-strategy-toolbar global-allocation-toolbar">
+                <el-button @click="applyAllocationStrategyToAll('common')" :disabled="isAutoAllocationReadonly">全额给常用 (100%)</el-button>
+                <div class="pressure-strategy-group">
+                  <el-button type="warning" @click="applyAllocationStrategyToAll('pressure')" :disabled="isAutoAllocationReadonly">价格压迫策略</el-button>
+                  <div class="pressure-ratio-group">
+                    <span class="pressure-ratio-label">常用占%</span>
+                    <el-input-number
+                      v-model="pressureCommonRatio"
+                      size="small"
+                      :min="0"
+                      :max="100"
+                      :controls="false"
+                      :disabled="isAutoAllocationReadonly"
+                    />
+                    <span class="pressure-ratio-label">最低价占%</span>
+                    <el-input-number
+                      v-model="pressureLowestRatio"
+                      size="small"
+                      :min="0"
+                      :max="100"
+                      :controls="false"
+                      :disabled="isAutoAllocationReadonly"
+                    />
+                  </div>
+                </div>
+                <el-button type="success" @click="applyAllocationStrategyToAll('lowest')" :disabled="isAutoAllocationReadonly">价低者得 (100%)</el-button>
+              </div>
+
+              <el-card
+                v-for="item in currentTaskDetails.items"
+                :key="item.id"
+                shadow="never"
+                class="allocation-item-card"
+              >
+                <template #header>
+                  <div class="allocation-item-header">
+                    <div>
+                      <div class="allocation-item-title">{{ item.material_name }}</div>
+                      <div class="allocation-item-meta">
+                        <span>物料编码：{{ item.material_code }}</span>
+                        <span>需求数量：{{ item.qty }}</span>
+                      </div>
+                    </div>
+                    <div class="allocation-item-actions">
+                      <el-button size="small" @click="applyItemAllocationStrategy(item, 'common')" :disabled="isAutoAllocationReadonly">常用100%</el-button>
+                      <el-button size="small" type="warning" @click="applyItemAllocationStrategy(item, 'pressure')" :disabled="isAutoAllocationReadonly">压迫策略</el-button>
+                      <el-button size="small" type="success" @click="applyItemAllocationStrategy(item, 'lowest')" :disabled="isAutoAllocationReadonly">低价100%</el-button>
+                    </div>
+                  </div>
+                </template>
+
+                <el-table :data="getAllocationSuppliersForItem(item)" border stripe size="small">
+                  <el-table-column prop="supplier_name" label="供应商名称" min-width="180">
+                    <template #default="scope">
+                      <div class="supplier-name-cell">
+                        <span>{{ scope.row.supplier_name }}</span>
+                        <el-tag
+                          v-for="tag in scope.row.identity_tags"
+                          :key="tag.label"
+                          :type="tag.type"
+                          size="small"
+                          effect="dark"
+                        >
+                          {{ tag.label }}
+                        </el-tag>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="supplier_grade" label="评级" width="90" align="center" />
+                  <el-table-column prop="status" label="状态" width="110" align="center">
+                    <template #default="scope">
+                      <el-tag :type="getLinkStatusType(scope.row.status)" effect="light">{{ getLinkStatusText(scope.row.status) }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="报价(元)" width="120" align="right">
+                    <template #default="scope">
+                      <span>{{ Number(scope.row.price || 0).toFixed(2) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="分配比例 (%)" width="180" align="center">
+                    <template #default="scope">
+                      <el-input-number
+                        v-model="autoItemAllocations[item.id][scope.row.link_id]"
+                        size="small"
+                        :min="0"
+                        :max="100"
+                        :precision="0"
+                        :step="5"
+                        controls-position="right"
+                        :disabled="isAutoAllocationReadonly"
+                      />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="分配数量" width="110" align="center">
+                    <template #default="scope">
+                      {{ getItemAllocatedQty(item, scope.row) }}
+                    </template>
+                  </el-table-column>
+                </el-table>
+
+                <div class="allocation-item-footer">
+                  <span class="allocation-sum-text">当前分配总和：{{ getItemAllocationSum(item.id) }}%</span>
+                  <span v-if="!isAutoAllocationReadonly && getItemAllocationSum(item.id) !== 100" class="allocation-warning">该物料分配总和必须等于 100%</span>
+                </div>
+              </el-card>
+
+              <div v-if="!isAutoAllocationReadonly" class="allocation-submit-bar">
+                <el-button type="primary" :disabled="!canSubmitAutoAllocations" :loading="submittingAutoAllocation" @click="submitAutoItemAllocations">
+                  确认分配并生成合同
+                </el-button>
+              </div>
+            </div>
           </el-tab-pane>
 
           <!-- Tab 2: Items -->
@@ -354,49 +523,11 @@
         </el-button>
       </template>
     </el-dialog>
-    <el-dialog
-      v-model="editQuotesDialogVisible"
-      title="修改手工报价"
-      width="70%"
-      top="5vh"
-    >
-      <div v-loading="editQuotesLoading" style="min-height: 200px;">
-        <div v-for="(item, idx) in editQuotesData" :key="idx" style="margin-bottom: 20px;">
-          <h4 style="margin: 0 0 10px 0; color: #303133;">物料: {{ item.material_name }} ({{ item.material_code }}) - 数量: {{ item.qty }}</h4>
-          <el-table :data="[item]" border size="small">
-            <el-table-column
-              v-for="link in item.links"
-              :key="link.supplier_code"
-              :label="link.supplier_name + ' (含税单价)'"
-              min-width="150"
-              align="center"
-            >
-              <template #default="scope">
-                <el-input-number
-                  v-model="scope.row.quotes[link.supplier_code]"
-                  :precision="2"
-                  :step="1"
-                  :min="0"
-                  :controls="false"
-                  size="small"
-                  style="width: 100%; text-align: center;"
-                  placeholder="请输入含税单价"
-                ></el-input-number>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="editQuotesDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="savingQuotes" @click="saveEditedQuotes">保存修改</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getInquiryTasks, addSupplierToTask, getTaskDetails, closeInquiryTask, updateTaskStatus } from '../../api/inquiry'
 import api from '../../api/index'
@@ -410,10 +541,14 @@ const activeTaskType = ref('auto')
 const loadingTasks = ref(false)
 const taskList = ref([])
 const searchQuery = ref('')
+const isTaskCompareResultReadonly = (task) => ['closed', 'cancelled'].includes(String(task?.status || '').toLowerCase())
 
 const handleTaskTypeChange = () => {
   fetchTasks()
 }
+
+const getTaskDisplayStatus = (task) => task?.effective_status || task?.status || ''
+const isTaskCompareReady = (task) => Boolean(task?.compare_ready)
 
 const goToCompare = (task) => {
   if (task.status === 'pending_fill') {
@@ -429,13 +564,13 @@ const goToCompare = (task) => {
 
 const handleFinishManualTask = async (task) => {
   try {
-    await ElMessageBox.confirm(`确定要结束任务 "${task.title}" 吗？`, '结束任务', {
-      confirmButtonText: '确定',
+    await ElMessageBox.confirm(`确定要结束任务 "${task.title}" 吗？该操作将按流标关闭任务，并同步结束供应商流程。`, '结束任务', {
+      confirmButtonText: '确定结束',
       cancelButtonText: '取消',
       type: 'warning'
     })
-    await updateTaskStatus(task.id, 'closed')
-    ElMessage.success('任务已结束')
+    await closeInquiryTask(task.id)
+    ElMessage.success('任务已按流标关闭')
     fetchTasks()
   } catch (e) {
     if (e !== 'cancel') {
@@ -469,85 +604,14 @@ const manualInterventionLinkId = ref(null)
 const manualInterventionForm = reactive({
   message: ''
 })
+const pressureCommonRatio = ref(80)
+const pressureLowestRatio = ref(20)
+const autoItemAllocations = ref({})
+const topHistoricalSupplierMap = ref({})
+const submittingAutoAllocation = ref(false)
 const nowTs = ref(Date.now())
 let timerId = null
-
-const editQuotesDialogVisible = ref(false)
-const editingTask = ref(null)
-const editQuotesData = ref([])
-const editQuotesLoading = ref(false)
-const savingQuotes = ref(false)
-
-const openEditQuotesDialog = async (task) => {
-  editingTask.value = task
-  editQuotesDialogVisible.value = true
-  editQuotesLoading.value = true
-  try {
-    const res = await getTaskDetails(task.id)
-    const details = res.data
-    const items = details.items || []
-    const links = details.links || []
-    
-    editQuotesData.value = items.map(item => {
-      const quotesObj = {}
-      links.forEach(link => {
-        const round = link.current_round || 1
-        const quotesRound = link.quotes ? (link.quotes[round] || link.quotes['1'] || []) : []
-        const quote = quotesRound.find(q => q.item_id === item.id)
-        if (quote && quote.price) {
-          quotesObj[link.supplier_code] = Number((quote.price * 1.13).toFixed(2))
-        } else {
-          quotesObj[link.supplier_code] = undefined
-        }
-      })
-      return {
-        ...item,
-        quotes: quotesObj,
-        links: links
-      }
-    })
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('获取任务详情失败')
-  } finally {
-    editQuotesLoading.value = false
-  }
-}
-
-const saveEditedQuotes = async () => {
-  if (!editingTask.value) return
-  savingQuotes.value = true
-  try {
-    for (const item of editQuotesData.value) {
-      const suppliersQuotes = []
-      for (const link of item.links) {
-        const taxNetPrice = item.quotes[link.supplier_code]
-        if (taxNetPrice > 0) {
-          suppliersQuotes.push({
-            supplier_code: link.supplier_code,
-            supplier_name: link.supplier_name,
-            tax_net_price: Number(taxNetPrice),
-            price: Number((taxNetPrice / 1.13).toFixed(2)),
-            qty: Number(item.qty) || 1
-          })
-        }
-      }
-      if (suppliersQuotes.length > 0) {
-        await api.post(`/inquiry/tasks/${editingTask.value.id}/save-manual-quotes`, {
-          material_code: item.material_code,
-          suppliers: suppliersQuotes
-        })
-      }
-    }
-    ElMessage.success('报价修改成功')
-    editQuotesDialogVisible.value = false
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('修改报价失败')
-  } finally {
-    savingQuotes.value = false
-  }
-}
+let syncingPressureRatios = false
 
 const fetchTasks = async () => {
   loadingTasks.value = true
@@ -562,14 +626,20 @@ const fetchTasks = async () => {
   }
 }
 
-const viewTaskDetails = async (task) => {
+const viewTaskDetails = async (task, preferredTab = 'suppliers') => {
   currentTask.value = task
-  detailsActiveTab.value = 'suppliers'
+  detailsActiveTab.value = preferredTab
   detailsVisible.value = true
   loadingDetails.value = true
   try {
     const res = await getTaskDetails(task.id)
     currentTaskDetails.value = res.data
+    initializeAutoItemAllocations()
+    if (currentTaskDetails.value?.type === 'auto') {
+      await loadTopHistoricalSuppliers(currentTaskDetails.value)
+    } else {
+      topHistoricalSupplierMap.value = {}
+    }
   } catch (error) {
     console.error(error)
     ElMessage.error('获取任务详情失败')
@@ -588,6 +658,15 @@ const handleCloseTask = async (linkId = null) => {
     console.error(error)
     ElMessage.error('操作失败')
   }
+}
+
+const openAutoAllocationTab = async (task) => {
+  await viewTaskDetails(task, 'allocation')
+}
+
+const openCurrentTaskAllocationTab = () => {
+  if (!isAutoAllocationAvailable.value) return
+  detailsActiveTab.value = 'allocation'
 }
 
 const handleDeleteTask = async (task) => {
@@ -664,6 +743,7 @@ const getLinkStatusType = (status) => {
     'sent': 'info',
     'quoted': 'primary',
     'negotiation': 'warning',
+    'locked': 'success',
     'deal': 'success',
     'reject': 'danger'
   }
@@ -675,6 +755,7 @@ const getLinkStatusText = (status) => {
     'sent': '已发送(未报)',
     'quoted': '已报价',
     'negotiation': '谈判中',
+    'locked': '已锁定',
     'deal': '已成交',
     'reject': '已淘汰'
   }
@@ -709,18 +790,43 @@ const getCountdownMeta = (deadline) => {
 }
 
 const hasTaskExpired = (task) => {
-  if (!task || task.status !== 'active' || !task.deadline) return false
+  if (!task || getTaskDisplayStatus(task) !== 'active' || !task.deadline) return false
   const deadlineMs = new Date(task.deadline).getTime()
   if (Number.isNaN(deadlineMs)) return false
   return nowTs.value > deadlineMs
 }
 
 const detailCountdownMeta = computed(() => getCountdownMeta(currentTaskDetails.value?.deadline))
-const isAwaitingAwardTask = computed(() => currentTaskDetails.value?.status === 'awaiting_award')
+const currentTaskDisplayStatus = computed(() => getTaskDisplayStatus(currentTaskDetails.value))
+const isCurrentTaskCompareReady = computed(() => isTaskCompareReady(currentTaskDetails.value))
+const isAutoAllocationAvailable = computed(() => {
+  const task = currentTaskDetails.value
+  if (!task || task.type !== 'auto') return false
+  const status = String(task.status || '').toLowerCase()
+  return Boolean(task.compare_ready || ['closed', 'cancelled'].includes(status))
+})
+const isAutoAllocationReadonly = computed(() => {
+  const status = String(currentTaskDetails.value?.status || '').toLowerCase()
+  return ['closed', 'cancelled'].includes(status)
+})
+const compareReadyAlertTitle = computed(() => {
+  if (currentTaskDetails.value?.compare_ready_reason === 'max_rounds_reached') {
+    return '自动谈判已达到最大轮次：当前任务进入“待份额分配”状态，请直接在当前详情页完成按物料拆单定标。'
+  }
+  return '自动谈判已提前结束：当前任务进入“待份额分配”状态，请直接在当前详情页完成按物料拆单定标。'
+})
 const detailCountdownText = computed(() =>
-  isAwaitingAwardTask.value ? '自动谈判已结束，等待采购员完成份额定标' : detailCountdownMeta.value.text
+  isCurrentTaskCompareReady.value ? '自动谈判已结束，等待采购员完成份额定标' : detailCountdownMeta.value.text
 )
-const isDetailDeadlineUrgent = computed(() => !isAwaitingAwardTask.value && detailCountdownMeta.value.urgent)
+const isDetailDeadlineUrgent = computed(() => !isCurrentTaskCompareReady.value && detailCountdownMeta.value.urgent)
+const canSubmitAutoAllocations = computed(() => {
+  if (!isAutoAllocationAvailable.value || isAutoAllocationReadonly.value) return false
+  const items = currentTaskDetails.value?.items || []
+  return items.length > 0 && items.every((item) => {
+    const suppliers = getAllocationSuppliersForItem(item)
+    return suppliers.length > 0 && getItemAllocationSum(item.id) === 100
+  })
+})
 
 const getTaskStatusType = (status) => {
   const map = {
@@ -751,6 +857,250 @@ const getTaskStatusLabel = (status) => {
 const getQuoteRowClassName = ({ row }) => {
   return row?.is_anomaly ? 'anomaly-row' : ''
 }
+
+const resolveLatestItemQuote = (link, itemId) => {
+  const rounds = Object.keys(link?.quotes || {})
+    .map((round) => Number(round))
+    .filter((round) => Number.isFinite(round))
+    .sort((a, b) => b - a)
+
+  for (const round of rounds) {
+    const quotes = link?.quotes?.[round] || link?.quotes?.[String(round)] || []
+    const matched = quotes.find((quote) => Number(quote?.item_id) === Number(itemId))
+    if (matched) return matched
+  }
+  return null
+}
+
+const getHistoricalAllocatedRatio = (link, item) => {
+  const materialAllocation = (link?.material_allocations || []).find((allocation) => {
+    return Number(allocation?.item_id) === Number(item?.id) ||
+      String(allocation?.material_code || '') === String(item?.material_code || '')
+  })
+  return Number(materialAllocation?.allocated_ratio || 0)
+}
+
+const initializeAutoItemAllocations = () => {
+  const task = currentTaskDetails.value
+  if (!task || task.type !== 'auto') {
+    autoItemAllocations.value = {}
+    return
+  }
+
+  const nextAllocations = {}
+  ;(task.items || []).forEach((item) => {
+    nextAllocations[item.id] = {}
+    ;(task.links || []).forEach((link) => {
+      const quote = resolveLatestItemQuote(link, item.id)
+      if (!quote) return
+      nextAllocations[item.id][link.link_id] = isAutoAllocationReadonly.value ? getHistoricalAllocatedRatio(link, item) : 0
+    })
+  })
+  autoItemAllocations.value = nextAllocations
+}
+
+const loadTopHistoricalSuppliers = async (taskDetails) => {
+  const items = taskDetails?.items || []
+  const nextMap = {}
+  await Promise.all(items.map(async (item) => {
+    try {
+      const res = await api.get(`/compare/suppliers/${item.material_code}`)
+      nextMap[item.material_code] = Array.isArray(res.data) && res.data.length > 0 ? res.data[0] : null
+    } catch (error) {
+      console.error(`获取物料 ${item.material_code} 历史供应商失败`, error)
+      nextMap[item.material_code] = null
+    }
+  }))
+  topHistoricalSupplierMap.value = nextMap
+}
+
+const getAllocationSuppliersForItem = (item) => {
+  const links = currentTaskDetails.value?.links || []
+  const commonSupplier = topHistoricalSupplierMap.value?.[item.material_code]
+  const commonCode = String(commonSupplier?.code || '')
+  const commonName = String(commonSupplier?.name || commonSupplier?.supplier_name || '')
+
+  const rows = links.map((link) => {
+    const quote = resolveLatestItemQuote(link, item.id)
+    if (!quote) return null
+    return {
+      link_id: link.link_id,
+      supplier_id: link.supplier_id,
+      supplier_name: link.supplier_name,
+      supplier_code: link.supplier_code,
+      supplier_grade: link.supplier_grade,
+      status: link.status,
+      price: Number(quote.price || 0),
+      qty: Number(quote.qty || item.qty || 0),
+      material_allocations: link.material_allocations || []
+    }
+  }).filter(Boolean)
+
+  const validRows = rows.filter((row) => Number(row.price || 0) > 0)
+  const minPrice = validRows.length ? Math.min(...validRows.map((row) => Number(row.price || 0))) : null
+  const maxPrice = validRows.length ? Math.max(...validRows.map((row) => Number(row.price || 0))) : null
+
+  return rows.map((row) => {
+    const tags = []
+    if ((commonCode && String(row.supplier_code || '') === commonCode) || (commonName && String(row.supplier_name || '') === commonName)) {
+      tags.push({ label: '常用供应商', type: 'primary' })
+    }
+    if (minPrice !== null && Number(row.price || 0) === minPrice) {
+      tags.push({ label: '最低价', type: 'success' })
+    }
+    if (maxPrice !== null && Number(row.price || 0) === maxPrice) {
+      tags.push({ label: '最高价', type: 'danger' })
+    }
+    return {
+      ...row,
+      is_common: tags.some(tag => tag.label === '常用供应商'),
+      is_lowest: tags.some(tag => tag.label === '最低价'),
+      identity_tags: tags
+    }
+  })
+}
+
+const getItemAllocationBucket = (itemId) => {
+  if (!autoItemAllocations.value[itemId]) {
+    autoItemAllocations.value[itemId] = {}
+  }
+  return autoItemAllocations.value[itemId]
+}
+
+const getItemAllocationSum = (itemId) => {
+  const bucket = getItemAllocationBucket(itemId)
+  return Object.values(bucket).reduce((sum, value) => sum + Number(value || 0), 0)
+}
+
+const getItemAllocatedQty = (item, supplierRow) => {
+  const ratio = Number(getItemAllocationBucket(item.id)[supplierRow.link_id] || 0)
+  if (ratio <= 0) return '-'
+  return Math.round(Number(item.qty || 0) * ratio / 100)
+}
+
+const applyItemAllocationStrategy = (item, type, silent = false) => {
+  const suppliers = getAllocationSuppliersForItem(item)
+  if (!suppliers.length) {
+    if (!silent) ElMessage.warning(`物料 ${item.material_name} 暂无可分配供应商`)
+    return false
+  }
+
+  const bucket = {}
+  suppliers.forEach((supplier) => {
+    bucket[supplier.link_id] = 0
+  })
+
+  const commonSupplier = suppliers.find((supplier) => supplier.is_common)
+  const lowestSupplier = suppliers.find((supplier) => supplier.is_lowest)
+
+  if (type === 'common') {
+    if (!commonSupplier) {
+      if (!silent) ElMessage.warning(`物料 ${item.material_name} 未识别到常用供应商`)
+      return false
+    }
+    bucket[commonSupplier.link_id] = 100
+  } else if (type === 'lowest') {
+    if (!lowestSupplier) {
+      if (!silent) ElMessage.warning(`物料 ${item.material_name} 未识别到最低价供应商`)
+      return false
+    }
+    bucket[lowestSupplier.link_id] = 100
+  } else if (type === 'pressure') {
+    if (!commonSupplier && !lowestSupplier) {
+      if (!silent) ElMessage.warning(`物料 ${item.material_name} 未识别到常用供应商或最低价供应商`)
+      return false
+    }
+    if (commonSupplier && lowestSupplier && commonSupplier.link_id !== lowestSupplier.link_id) {
+      bucket[commonSupplier.link_id] = Number(pressureCommonRatio.value || 0)
+      bucket[lowestSupplier.link_id] = Number(pressureLowestRatio.value || 0)
+    } else {
+      const preferredSupplier = commonSupplier || lowestSupplier
+      if (preferredSupplier) {
+        bucket[preferredSupplier.link_id] = 100
+      }
+    }
+  }
+
+  autoItemAllocations.value = {
+    ...autoItemAllocations.value,
+    [item.id]: bucket
+  }
+  return true
+}
+
+const applyAllocationStrategyToAll = (type) => {
+  const items = currentTaskDetails.value?.items || []
+  let appliedCount = 0
+  items.forEach((item) => {
+    if (applyItemAllocationStrategy(item, type, true)) {
+      appliedCount += 1
+    }
+  })
+  if (!appliedCount) {
+    ElMessage.warning('当前没有可应用策略的物料')
+  }
+}
+
+const submitAutoItemAllocations = async () => {
+  if (!currentTaskDetails.value || !canSubmitAutoAllocations.value) {
+    ElMessage.warning('请先完成所有物料的份额分配，且每个物料总和必须等于 100%')
+    return
+  }
+
+  const allocationMap = {}
+  ;(currentTaskDetails.value.items || []).forEach((item) => {
+    const suppliers = getAllocationSuppliersForItem(item)
+    suppliers.forEach((supplier) => {
+      const ratio = Number(getItemAllocationBucket(item.id)[supplier.link_id] || 0)
+      if (ratio <= 0) return
+      if (!allocationMap[supplier.link_id]) {
+        allocationMap[supplier.link_id] = {
+          link_id: supplier.link_id,
+          item_allocations: []
+        }
+      }
+      allocationMap[supplier.link_id].item_allocations.push({
+        item_id: item.id,
+        allocated_ratio: ratio
+      })
+    })
+  })
+
+  const payload = {
+    allocations: Object.values(allocationMap)
+  }
+  if (!payload.allocations.length) {
+    ElMessage.warning('请至少为一个供应商分配份额')
+    return
+  }
+
+  submittingAutoAllocation.value = true
+  try {
+    await closeInquiryTask(currentTaskDetails.value.id, payload)
+    ElMessage.success('份额分配成功，合同生成流程已触发')
+    await viewTaskDetails(currentTask.value, 'allocation')
+    await fetchTasks()
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '份额分配失败')
+  } finally {
+    submittingAutoAllocation.value = false
+  }
+}
+
+watch(pressureCommonRatio, (value) => {
+  if (syncingPressureRatios) return
+  syncingPressureRatios = true
+  pressureLowestRatio.value = Math.max(0, 100 - Number(value || 0))
+  syncingPressureRatios = false
+})
+
+watch(pressureLowestRatio, (value) => {
+  if (syncingPressureRatios) return
+  syncingPressureRatios = true
+  pressureCommonRatio.value = Math.max(0, 100 - Number(value || 0))
+  syncingPressureRatios = false
+})
 
 onMounted(() => {
   fetchTasks()
@@ -900,6 +1250,114 @@ onUnmounted(() => {
   margin-bottom: 15px;
   color: #606266;
   font-size: 15px;
+}
+
+.auto-allocation-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auto-allocation-alert {
+  margin-bottom: 4px;
+}
+
+.global-allocation-toolbar {
+  margin-bottom: 0;
+}
+
+.allocation-item-card {
+  border-radius: 8px;
+}
+
+.allocation-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.allocation-item-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.allocation-item-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.allocation-item-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.allocation-item-footer {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.allocation-submit-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.supplier-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.allocation-strategy-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pressure-strategy-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid #f3d19e;
+  background: #fff8eb;
+  border-radius: 8px;
+}
+
+.pressure-ratio-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pressure-ratio-label {
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
+}
+
+.allocation-sum-text {
+  font-size: 14px;
+  color: #303133;
+  font-weight: 500;
+}
+
+.allocation-warning {
+  font-size: 13px;
+  color: #f56c6c;
 }
 
 .countdown-text {

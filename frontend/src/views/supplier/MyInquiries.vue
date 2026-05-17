@@ -13,6 +13,7 @@
           <el-select v-model="statusFilter" class="status-select" placeholder="状态筛选" clearable>
             <el-option label="未确认" value="unconfirmed" />
             <el-option label="已确认" value="confirmed" />
+            <el-option label="已锁定" value="locked" />
             <el-option label="已成交" value="deal" />
             <el-option label="已取消" value="cancelled" />
           </el-select>
@@ -20,6 +21,9 @@
         <div class="toolbar-right">
           <span class="result-count">共 {{ filteredInquiries.length }} 条</span>
           <el-button v-if="searchQuery || statusFilter" @click="handleClearFilters" plain>清空筛选</el-button>
+          <el-tooltip content="修改密码" placement="top">
+            <el-button type="warning" @click="showChangePasswordDialog = true">修改密码</el-button>
+          </el-tooltip>
           <el-tooltip content="刷新列表" placement="top">
             <el-button type="primary" @click="fetchInquiries" :icon="Refresh" circle />
           </el-tooltip>
@@ -146,6 +150,34 @@
           <div class="feedback-content">{{ currentInquiry.latest_ai_feedback }}</div>
         </div>
 
+        <template v-if="currentInquiry.material_allocations && currentInquiry.material_allocations.length > 0">
+          <div class="table-section-title"><span class="title-text">本次中标物料分配详情</span></div>
+          <div class="detail-table-wrap">
+            <el-table :data="currentInquiry.material_allocations" style="width: 100%" border stripe size="small">
+              <el-table-column prop="material_name" label="物料名称" />
+              <el-table-column prop="material_code" label="物料编码" />
+              <el-table-column prop="base_qty" label="原始数量" width="100" align="right" />
+              <el-table-column prop="allocated_qty" label="分配数量" width="100" align="right" />
+              <el-table-column label="分配占比" width="100" align="right">
+                <template #default="{ row }">
+                  {{ Number(row.allocated_ratio || 0).toFixed(2) }}%
+                </template>
+              </el-table-column>
+              <el-table-column label="成交单价(元)" width="120" align="right">
+                <template #default="{ row }">
+                  {{ Number(row.price || 0).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="分配金额(元)" width="120" align="right">
+                <template #default="{ row }">
+                  {{ Number(row.amount || 0).toFixed(2) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="delivery_date" label="交期" width="140" :formatter="formatDate" />
+            </el-table>
+          </div>
+        </template>
+
         <div class="table-section-title"><span class="title-text">物料明细及报价</span></div>
         <div class="detail-table-wrap">
           <el-table :data="currentInquiry.items" style="width: 100%" border stripe size="small">
@@ -218,6 +250,26 @@
         </span>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showChangePasswordDialog" title="修改登录密码" width="450px" destroy-on-close>
+      <el-form ref="passwordFormRef" :model="passwordForm" :rules="passwordRules" label-width="100px">
+        <el-form-item label="当前密码" prop="old_password">
+          <el-input v-model="passwordForm.old_password" type="password" show-password placeholder="请输入当前密码" />
+        </el-form-item>
+        <el-form-item label="新密码" prop="new_password">
+          <el-input v-model="passwordForm.new_password" type="password" show-password placeholder="请输入新密码（至少6位）" />
+        </el-form-item>
+        <el-form-item label="确认新密码" prop="confirm_password">
+          <el-input v-model="passwordForm.confirm_password" type="password" show-password placeholder="请再次输入新密码" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showChangePasswordDialog = false">取消</el-button>
+          <el-button type="primary" @click="handleChangePassword" :loading="changePasswordLoading">确认修改</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -235,6 +287,7 @@ const isMobile = ref(window.innerWidth <= 768)
 
 const getDisplayStatus = (row) => {
   if (row.status === 'deal') return 'deal'
+  if (row.status === 'locked') return 'locked'
   if (row.task_status === 'closed' || row.task_status === 'cancelled') return 'cancelled'
   if (row.task_status === 'awaiting_award') return 'confirmed'
   if (row.status === 'sent') return 'unconfirmed'
@@ -266,6 +319,34 @@ const confirmInquiryId = ref(null)
 const contractDialogVisible = ref(false)
 const contractSubmitLoading = ref(false)
 const contractFormRef = ref()
+const showChangePasswordDialog = ref(false)
+const changePasswordLoading = ref(false)
+const passwordFormRef = ref()
+const passwordForm = ref({
+  old_password: '',
+  new_password: '',
+  confirm_password: ''
+})
+const passwordRules = {
+  old_password: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
+  new_password: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '密码长度至少6位', trigger: 'blur' }
+  ],
+  confirm_password: [
+    { required: true, message: '请确认新密码', trigger: 'blur' },
+    {
+      validator: (rule, value, callback) => {
+        if (value !== passwordForm.value.new_password) {
+          callback(new Error('两次输入的密码不一致'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur'
+    }
+  ]
+}
 const contractForm = ref({
   address: '',
   legal_representative: '',
@@ -338,13 +419,13 @@ watch(dialogVisible, (visible) => {
 
 const getNewStatusText = (row) => {
   const status = getDisplayStatus(row)
-  const map = { unconfirmed: '未确认', confirmed: '已确认', cancelled: '已取消', deal: '已成交' }
+  const map = { unconfirmed: '未确认', confirmed: '已确认', locked: '已锁定', cancelled: '已取消', deal: '已成交' }
   return map[status]
 }
 
 const getNewStatusType = (row) => {
   const status = getDisplayStatus(row)
-  const map = { unconfirmed: 'info', confirmed: 'primary', cancelled: 'danger', deal: 'success' }
+  const map = { unconfirmed: 'info', confirmed: 'primary', locked: 'success', cancelled: 'danger', deal: 'success' }
   return map[status]
 }
 
@@ -399,9 +480,17 @@ const resetContractForm = () => {
   }
 }
 
-const handleOpenContractForm = (row) => {
+const handleOpenContractForm = async (row) => {
   confirmInquiryId.value = row.inquiry_supplier_id
   resetContractForm()
+  try {
+    const res = await api.get('/supplier/last-contract-info')
+    if (res.data && Object.keys(res.data).length > 0) {
+      contractForm.value = { ...contractForm.value, ...res.data }
+    }
+  } catch (error) {
+    console.error('获取上次合同信息失败', error)
+  }
   contractDialogVisible.value = true
 }
 
@@ -427,6 +516,31 @@ const submitContractInfo = async () => {
     ElMessage.error(error.response?.data?.detail || '提交失败')
   } finally {
     contractSubmitLoading.value = false
+  }
+}
+
+const handleChangePassword = async () => {
+  if (!passwordFormRef.value) return
+  try {
+    await passwordFormRef.value.validate()
+  } catch {
+    ElMessage.warning('请先完善表单信息')
+    return
+  }
+  changePasswordLoading.value = true
+  try {
+    await api.put('/supplier/change-password', {
+      old_password: passwordForm.value.old_password,
+      new_password: passwordForm.value.new_password
+    })
+    showChangePasswordDialog.value = false
+    ElMessage.success('密码修改成功，下次登录请使用新密码')
+    passwordForm.value = { old_password: '', new_password: '', confirm_password: '' }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '密码修改失败')
+  } finally {
+    changePasswordLoading.value = false
   }
 }
 

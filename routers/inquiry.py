@@ -318,6 +318,7 @@ def _build_link_material_allocations(db: Session, task: InquiryTask, link: Inqui
             "request_id": row["task_item"].request_id if row["task_item"] else None,
             "material_code": request.material_code if request else "",
             "material_name": request.material_name if request else "",
+            "material_model": request.material_model if request else "",
             "base_qty": _format_decimal_number(base_qty),
             "allocated_qty": _format_decimal_number(allocated_qty),
             "allocated_ratio": round(float(allocated_ratio), 2),
@@ -780,6 +781,7 @@ def get_task_details(
             "id": item.id,
             "material_name": item.request.material_name,
             "material_code": item.request.material_code,
+            "material_model": item.request.material_model,
             "qty": item.request.qty,
             "target_price": item.request.target_price,
             "delivery_date": item.request.delivery_date

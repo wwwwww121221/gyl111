@@ -13,13 +13,13 @@
         >
           <el-option
             v-for="item in materialList"
-            :key="item.material_name"
-            :label="item.material_name"
-            :value="item.material_name"
+            :key="item.material_code"
+            :label="getMaterialOptionLabel(item)"
+            :value="item.material_code"
           >
-            <span style="float: left">{{ item.material_name }}</span>
+            <span style="float: left">{{ item.material_name }}<span v-if="item.material_model"> / {{ item.material_model }}</span></span>
             <span style="float: right; color: var(--el-text-color-secondary); font-size: 13px">
-              {{ item.count }} 次采购
+              {{ item.material_code }} | {{ item.count }} 次采购
             </span>
           </el-option>
         </el-select>
@@ -224,6 +224,17 @@ const dateShortcuts = [
 const supplierOptions = computed(() => {
   return analysisData.value.all_suppliers || []
 })
+
+const getMaterialOptionLabel = (item) => {
+  const parts = [item.material_name]
+  if (item.material_model) {
+    parts.push(item.material_model)
+  }
+  if (item.material_code) {
+    parts.push(item.material_code)
+  }
+  return parts.filter(Boolean).join(' / ')
+}
 
 const fetchMaterials = async () => {
   try {

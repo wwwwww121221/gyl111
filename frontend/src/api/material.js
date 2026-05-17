@@ -6,6 +6,6 @@ export const getMaterialList = () => {
   return request.get(`${MATERIAL_BASE}/list`)
 }
 
-export const getMaterialAnalysis = (material_name) => {
-  return request.get(`${MATERIAL_BASE}/analysis`, { params: { material_name } })
+export const getMaterialAnalysis = (material_code) => {
+  return request.get(`${MATERIAL_BASE}/analysis`, { params: { material_code } })
 }

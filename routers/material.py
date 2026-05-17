@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from models import (
     Supplier,
     User,
+    Material,
     PurchaseOrderHistory,
     get_db,
 )
@@ -30,18 +31,23 @@ def get_material_list(
     
     rows = (
         db.query(
+            PurchaseOrderHistory.material_code,
             PurchaseOrderHistory.material_name,
+            Material.specification,
             func.count(PurchaseOrderHistory.id).label("count")
         )
+        .outerjoin(Material, PurchaseOrderHistory.material_code == Material.code)
         .filter(PurchaseOrderHistory.material_name != None, PurchaseOrderHistory.material_name != '')
-        .group_by(PurchaseOrderHistory.material_name)
+        .group_by(PurchaseOrderHistory.material_code, PurchaseOrderHistory.material_name, Material.specification)
         .order_by(desc("count"))
         .all()
     )
     
     return [
         {
+            "material_code": r.material_code,
             "material_name": r.material_name,
+            "material_model": r.specification,
             "count": r.count
         }
         for r in rows
@@ -49,7 +55,7 @@ def get_material_list(
 
 @router.get("/analysis")
 def get_material_analysis(
-    material_name: str = Query(..., min_length=1),
+    material_code: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
@@ -65,7 +71,7 @@ def get_material_analysis(
             Supplier.grade.label("supplier_grade")
         )
         .outerjoin(Supplier, PurchaseOrderHistory.supplier_name == Supplier.name)
-        .filter(PurchaseOrderHistory.material_name == material_name)
+        .filter(PurchaseOrderHistory.material_code == material_code)
         .order_by(PurchaseOrderHistory.date.desc())
         .all()
     )

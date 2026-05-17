@@ -6,7 +6,43 @@
     </div>
 
     <div class="content-card">
-      <el-table :data="logs" style="width: 100%" v-loading="loading" stripe border>
+      <div class="filter-bar">
+        <el-date-picker
+          v-model="filters.dateRange"
+          type="datetimerange"
+          range-separator="至"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          value-format="YYYY-MM-DD HH:mm:ss"
+          class="filter-item filter-date"
+          clearable
+        />
+        <el-select v-model="filters.role" placeholder="角色" clearable class="filter-item">
+          <el-option v-for="item in roleOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="filters.module" placeholder="所属模块" clearable class="filter-item">
+          <el-option v-for="item in moduleOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="filters.actionType" placeholder="操作类型" clearable class="filter-item">
+          <el-option v-for="item in actionOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="filters.result" placeholder="结果" clearable class="filter-item">
+          <el-option v-for="item in resultOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-input
+          v-model="filters.keyword"
+          placeholder="搜索账号/对象/描述"
+          clearable
+          class="filter-item filter-keyword"
+          @keyup.enter="handleSearch"
+        />
+        <div class="filter-actions">
+          <el-button type="primary" @click="handleSearch" :loading="loading">查询</el-button>
+          <el-button @click="resetFilters">重置</el-button>
+        </div>
+      </div>
+
+      <el-table :data="displayLogs" style="width: 100%" v-loading="loading" stripe border>
         <el-table-column type="expand" width="54">
           <template #default="{ row }">
             <div class="log-expand-card">
@@ -63,9 +99,12 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作对象" min-width="180" show-overflow-tooltip>
+        <el-table-column label="操作对象" min-width="220">
           <template #default="{ row }">
-            {{ formatTarget(row) }}
+            <div class="target-cell">
+              <div class="target-type">{{ row.target_type || '未识别' }}</div>
+              <div class="target-name">{{ row.target_name || '-' }}</div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="结果" width="100" align="center">
@@ -83,24 +122,146 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../api/index'
 
 const loading = ref(false)
-const logs = ref([])
+const rawLogs = ref([])
 
-const fetchLogs = async () => {
+const createEmptyFilters = () => ({
+  dateRange: [],
+  role: '',
+  module: '',
+  actionType: '',
+  result: '',
+  keyword: ''
+})
+
+const filters = reactive(createEmptyFilters())
+const appliedFilters = ref(createEmptyFilters())
+
+const roleOptions = [
+  { label: '管理员', value: 'admin' },
+  { label: '采购员', value: 'buyer' },
+  { label: '供应商', value: 'supplier' }
+]
+
+const moduleOptions = [
+  { label: '认证中心', value: '认证中心' },
+  { label: '账号管理', value: '账号管理' },
+  { label: '账号安全', value: '账号安全' },
+  { label: '询价管理', value: '询价管理' },
+  { label: '供应商管理', value: '供应商管理' },
+  { label: '预警管理', value: '预警管理' },
+  { label: '系统管理', value: '系统管理' }
+]
+
+const actionOptions = [
+  { label: '登录', value: 'LOGIN' },
+  { label: '创建账号', value: 'CREATE_USER' },
+  { label: '删除账号', value: 'DELETE_USER' },
+  { label: '修改密码', value: 'CHANGE_PASSWORD' },
+  { label: '创建询价', value: 'CREATE_INQUIRY' },
+  { label: '更新供应商', value: 'UPDATE_SUPPLIER' },
+  { label: '删除供应商', value: 'DELETE_SUPPLIER' },
+  { label: '批量重置供应商账号', value: 'RESET_SUPPLIER_ACCOUNTS' },
+  { label: '发送预警', value: 'SEND_WARNING' }
+]
+
+const resultOptions = [
+  { label: '成功', value: 'success' },
+  { label: '失败', value: 'failed' },
+  { label: '部分成功', value: 'partial' }
+]
+
+const buildRequestParams = (sourceFilters) => {
+  const params = { limit: 1000 }
+  if (sourceFilters.dateRange?.length === 2) {
+    params.start_time = sourceFilters.dateRange[0]
+    params.end_time = sourceFilters.dateRange[1]
+  }
+  if (sourceFilters.role) params.role = sourceFilters.role
+  if (sourceFilters.module) params.module = sourceFilters.module
+  if (sourceFilters.actionType) params.action_type = sourceFilters.actionType
+  if (sourceFilters.result) params.result = sourceFilters.result
+  if (sourceFilters.keyword?.trim()) params.keyword = sourceFilters.keyword.trim()
+  return params
+}
+
+const cloneFilters = (sourceFilters) => ({
+  dateRange: Array.isArray(sourceFilters.dateRange) ? [...sourceFilters.dateRange] : [],
+  role: sourceFilters.role || '',
+  module: sourceFilters.module || '',
+  actionType: sourceFilters.actionType || '',
+  result: sourceFilters.result || '',
+  keyword: sourceFilters.keyword || ''
+})
+
+const fetchLogs = async (sourceFilters = appliedFilters.value) => {
   loading.value = true
   try {
-    const res = await api.get('/system/logs')
-    logs.value = res.data
+    const params = buildRequestParams(sourceFilters)
+    const res = await api.get('/system/logs', { params })
+    rawLogs.value = Array.isArray(res.data) ? res.data : []
   } catch (error) {
     console.error(error)
     ElMessage.error('获取操作日志失败')
   } finally {
     loading.value = false
   }
+}
+
+const matchesDateRange = (row, dateRange) => {
+  if (!dateRange?.length || !row?.created_at) return true
+  const rowTime = new Date(row.created_at.replace(' ', 'T')).getTime()
+  const startTime = new Date(dateRange[0].replace(' ', 'T')).getTime()
+  const endTime = new Date(dateRange[1].replace(' ', 'T')).getTime()
+  return rowTime >= startTime && rowTime <= endTime
+}
+
+const matchesKeyword = (row, keyword) => {
+  const normalizedKeyword = String(keyword || '').trim().toLowerCase()
+  if (!normalizedKeyword) return true
+  const haystack = [
+    row?.username,
+    row?.detail,
+    row?.module,
+    row?.action_type,
+    row?.target_type,
+    row?.target_name,
+    row?.ip_address,
+    getRoleLabel(row?.user_role),
+    getResultLabel(row?.result)
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  return haystack.includes(normalizedKeyword)
+}
+
+const displayLogs = computed(() => {
+  const active = appliedFilters.value
+  return rawLogs.value.filter((row) => {
+    if (active.role && row?.user_role !== active.role) return false
+    if (active.module && row?.module !== active.module) return false
+    if (active.actionType && row?.action_type !== active.actionType) return false
+    if (active.result && row?.result !== active.result) return false
+    if (!matchesDateRange(row, active.dateRange)) return false
+    if (!matchesKeyword(row, active.keyword)) return false
+    return true
+  })
+})
+
+const handleSearch = async () => {
+  appliedFilters.value = cloneFilters(filters)
+  await fetchLogs(appliedFilters.value)
+}
+
+const resetFilters = () => {
+  Object.assign(filters, createEmptyFilters())
+  appliedFilters.value = createEmptyFilters()
+  fetchLogs(appliedFilters.value)
 }
 
 const getActionTagType = (action) => {
@@ -159,7 +320,7 @@ const getResultTagType = (result) => {
 const formatTarget = (row) => {
   const targetType = row?.target_type || ''
   const targetName = row?.target_name || ''
-  if (targetType && targetName) return `${targetType} / ${targetName}`
+  if (targetType && targetName) return `${targetType}\n${targetName}`
   return targetName || targetType || '未识别'
 }
 
@@ -184,12 +345,12 @@ const hasExtraData = (extraData) => {
 const formatExtraValue = (value) => {
   if (value === null || value === undefined || value === '') return '-'
   if (Array.isArray(value)) {
-    return value.map((item) => formatExtraValue(item)).join('；')
+    return value.map((item) => formatExtraValue(item)).join('\n')
   }
   if (typeof value === 'object') {
     return Object.entries(value)
       .map(([key, val]) => `${key}: ${formatExtraValue(val)}`)
-      .join('；')
+      .join('\n')
   }
   return String(value)
 }
@@ -227,6 +388,56 @@ onMounted(() => {
   padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.filter-item {
+  width: 160px;
+  flex: 0 0 160px;
+}
+
+.filter-date {
+  width: 320px;
+  flex-basis: 320px;
+}
+
+.filter-keyword {
+  width: 220px;
+  flex-basis: 220px;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+:deep(.filter-item .el-input__wrapper),
+:deep(.filter-item .el-select__wrapper),
+:deep(.filter-date .el-input__wrapper) {
+  width: 100%;
+}
+
+.target-cell {
+  line-height: 1.5;
+}
+
+.target-type {
+  color: #909399;
+  font-size: 12px;
+}
+
+.target-name {
+  color: #303133;
+  word-break: break-all;
 }
 
 .log-expand-card {

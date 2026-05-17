@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from typing import Any, List
 from datetime import datetime
 from models import get_db, User, OperationLog, InquiryTask, Contract, WarningMessage, Supplier
 from routers.auth import get_current_user_auth
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 router = APIRouter()
 
@@ -132,17 +132,61 @@ def get_operation_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_auth),
     skip: int = 0,
-    limit: int = 100
+    limit: int = 200,
+    start_time: str | None = Query(None),
+    end_time: str | None = Query(None),
+    role: str | None = Query(None),
+    module: str | None = Query(None),
+    action_type: str | None = Query(None),
+    result: str | None = Query(None),
+    keyword: str | None = Query(None)
 ) -> Any:
     """
     获取操作日志列表（仅限超级管理员）
     """
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="只有超级管理员可以查看操作日志")
-        
-    logs = db.query(OperationLog).order_by(OperationLog.created_at.desc()).offset(skip).limit(limit).all()
-    
-    result = []
+
+    logs_query = db.query(OperationLog).outerjoin(User, OperationLog.user_id == User.id)
+
+    if start_time:
+        try:
+            start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+            logs_query = logs_query.filter(OperationLog.created_at >= start_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="开始时间格式不正确")
+
+    if end_time:
+        try:
+            end_dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+            logs_query = logs_query.filter(OperationLog.created_at <= end_dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="结束时间格式不正确")
+
+    if role:
+        logs_query = logs_query.filter(User.role == role)
+
+    if action_type:
+        logs_query = logs_query.filter(OperationLog.action_type == action_type)
+
+    if result:
+        logs_query = logs_query.filter(OperationLog.result == result)
+
+    if keyword:
+        like_pattern = f"%{keyword.strip()}%"
+        logs_query = logs_query.filter(
+            or_(
+                User.username.ilike(like_pattern),
+                OperationLog.detail.ilike(like_pattern),
+                OperationLog.target_name.ilike(like_pattern),
+                OperationLog.module.ilike(like_pattern),
+                OperationLog.action_type.ilike(like_pattern)
+            )
+        )
+
+    logs = logs_query.order_by(OperationLog.created_at.desc()).all()
+
+    resolved_logs = []
     for log in logs:
         resolved_module = log.module or _infer_module(log.action_type, log.detail)
         resolved_target_type = log.target_type
@@ -150,7 +194,10 @@ def get_operation_logs(
         if not resolved_target_type and not resolved_target_name:
             resolved_target_type, resolved_target_name = _infer_target(log.action_type, log.detail)
 
-        result.append({
+        if module and resolved_module != module:
+            continue
+
+        resolved_logs.append({
             "id": log.id,
             "username": log.user.username if log.user else "系统/未知",
             "user_role": log.user.role if log.user else None,
@@ -164,7 +211,8 @@ def get_operation_logs(
             "ip_address": log.ip_address,
             "created_at": log.created_at.strftime("%Y-%m-%d %H:%M:%S") if log.created_at else None
         })
-    return result
+
+    return resolved_logs[skip: skip + limit]
 
 @router.get("/buyer-analysis")
 def get_buyer_analysis(

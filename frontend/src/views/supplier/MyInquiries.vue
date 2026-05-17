@@ -156,6 +156,7 @@
             <el-table :data="currentInquiry.material_allocations" style="width: 100%" border stripe size="small">
               <el-table-column prop="material_name" label="物料名称" />
               <el-table-column prop="material_code" label="物料编码" />
+              <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
               <el-table-column prop="base_qty" label="原始数量" width="100" align="right" />
               <el-table-column prop="allocated_qty" label="分配数量" width="100" align="right" />
               <el-table-column label="分配占比" width="100" align="right">
@@ -183,6 +184,7 @@
           <el-table :data="currentInquiry.items" style="width: 100%" border stripe size="small">
             <el-table-column prop="material_name" label="物料名称" />
             <el-table-column prop="material_code" label="物料编码" />
+            <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
             <el-table-column prop="qty" label="采购数量" width="100" />
             <el-table-column prop="target_delivery_date" label="期望交期" :formatter="formatDate" />
             <el-table-column label="您的可供数量" width="130">

@@ -558,6 +558,8 @@ def create_inquiry_task(
                 # 更新期望价格（如果提供）
                 if getattr(raw_req, 'target_price', None) is not None:
                     existing.target_price = raw_req.target_price
+                if getattr(raw_req, 'material_model', None) is not None:
+                    existing.material_model = raw_req.material_model
                 request_ids.append(existing.id)
             else:
                 # 创建新记录
@@ -567,6 +569,7 @@ def create_inquiry_task(
                     project_info=raw_req.project_info,
                     material_code=raw_req.material_code,
                     material_name=raw_req.material_name,
+                    material_model=getattr(raw_req, 'material_model', None),
                     qty=raw_req.qty,
                     target_price=getattr(raw_req, 'target_price', None),
                     delivery_date=raw_req.delivery_date,

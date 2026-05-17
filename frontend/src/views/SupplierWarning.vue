@@ -63,6 +63,7 @@
           
           <el-table :data="group" style="width: 100%" size="small" :row-class-name="tableRowClassName" border>
             <el-table-column prop="material_name" label="物料名称 (Material)" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="material_model" label="规格型号" min-width="160" show-overflow-tooltip />
             <el-table-column prop="project_number" label="项目号 (Project)" width="150" show-overflow-tooltip />
             <el-table-column 
               prop="warning_unreceived_qty"
@@ -112,6 +113,7 @@
                 style="margin-top: 10px; width: 100%"
               >
                 <el-table-column prop="material" label="物料名称" min-width="180" />
+                <el-table-column prop="material_model" label="规格型号" min-width="150" show-overflow-tooltip />
                 <el-table-column prop="qty" label="欠交数量" width="100" align="center">
                   <template #default="{row}">
                     <span style="color: #F56C6C; font-weight: bold;">{{ row.qty }}</span>
@@ -177,6 +179,7 @@ const filteredList = computed(() => {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(item => 
       (item.material_name && item.material_name.toLowerCase().includes(query)) || 
+      (item.material_model && item.material_model.toLowerCase().includes(query)) ||
       (item.project_number && item.project_number.toLowerCase().includes(query)) ||
       (item.supplier_name && item.supplier_name.toLowerCase().includes(query))
     )
@@ -203,7 +206,7 @@ const aggregatedList = computed(() => {
   
   filteredList.value.forEach(item => {
     // Create a unique key
-    const key = `${item.supplier_name}_${item.material_name}_${item.project_number}_${item.delivery_date}`
+    const key = `${item.supplier_name}_${item.material_name}_${item.material_model || ''}_${item.project_number}_${item.delivery_date}`
     
     if (map.has(key)) {
       const existing = map.get(key)
@@ -279,6 +282,7 @@ const handleSendWarning = async (supplierName, items) => {
       supplier_name: supplierName,
       items: items.map(item => ({
         material_name: item.material_name,
+        material_model: item.material_model,
         project_number: item.project_number,
         qty: item.warning_unreceived_qty,
         delivery_date: item.delivery_date
@@ -309,13 +313,14 @@ const parseContent = (content) => {
     const line = lines[i]
     if (line.startsWith('- 物料：')) {
       const parts = line.split('，')
-      let material = '', qty = '', date = ''
+      let material = '', material_model = '', qty = '', date = ''
       parts.forEach(part => {
         if (part.includes('物料：')) material = part.replace('- 物料：', '').trim()
+        if (part.includes('规格型号：')) material_model = part.replace('规格型号：', '').trim()
         if (part.includes('欠交数量：')) qty = part.replace('欠交数量：', '').trim()
         if (part.includes('要求交期：')) date = part.replace('要求交期：', '').trim()
       })
-      items.push({ material, qty, date })
+      items.push({ material, material_model, qty, date })
     }
   }
   return { header, items }

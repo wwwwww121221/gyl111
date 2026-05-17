@@ -8,6 +8,8 @@
           class="material-selector"
           @change="handleSelectMaterial"
           filterable
+          :loading="loadingMaterials"
+          @visible-change="handleMaterialDropdownVisible"
           size="large"
           style="width: 400px"
         >
@@ -163,6 +165,8 @@ import { getMaterialList, getMaterialAnalysis } from '../../api/material'
 const materialList = ref([])
 const selectedMaterial = ref('')
 const loadingData = ref(false)
+const loadingMaterials = ref(false)
+const materialsLoaded = ref(false)
 
 const selectedChartSuppliers = ref([])
 
@@ -237,11 +241,21 @@ const getMaterialOptionLabel = (item) => {
 }
 
 const fetchMaterials = async () => {
+  loadingMaterials.value = true
   try {
-    const res = await getMaterialList()
+    const res = await getMaterialList({ limit: 5000 })
     materialList.value = res.data || []
+    materialsLoaded.value = true
   } catch (error) {
     ElMessage.error('获取物料列表失败')
+  } finally {
+    loadingMaterials.value = false
+  }
+}
+
+const handleMaterialDropdownVisible = (visible) => {
+  if (visible && !materialsLoaded.value) {
+    fetchMaterials()
   }
 }
 
@@ -443,7 +457,6 @@ const handleResize = () => {
 }
 
 onMounted(() => {
-  fetchMaterials()
   window.addEventListener('resize', handleResize)
 })
 

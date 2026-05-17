@@ -305,7 +305,13 @@
       </el-card>
     </div>
 
-    <el-dialog v-model="showAddSupplierDialog" title="添加比价供应商" width="400px">
+    <el-dialog
+      v-model="showAddSupplierDialog"
+      title="添加比价供应商"
+      width="400px"
+      draggable
+      overflow
+    >
       <el-select
         v-model="newSupplierId"
         placeholder="请选择或搜索供应商"

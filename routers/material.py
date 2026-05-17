@@ -1,7 +1,7 @@
 from typing import Any
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, desc
+from sqlalchemy import and_, func, desc, or_
 from sqlalchemy.orm import Session
 
 from models import (
@@ -21,6 +21,8 @@ def _require_buyer_or_admin(current_user: User):
 
 @router.get("/list")
 def get_material_list(
+    keyword: str = Query("", description="物料编码/名称/规格型号关键词"),
+    limit: int = Query(5000, ge=1, le=5000),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -29,7 +31,8 @@ def get_material_list(
     """
     _require_buyer_or_admin(current_user)
     
-    rows = (
+    keyword = (keyword or "").strip()
+    query = (
         db.query(
             PurchaseOrderHistory.material_code,
             PurchaseOrderHistory.material_name,
@@ -38,8 +41,23 @@ def get_material_list(
         )
         .outerjoin(Material, PurchaseOrderHistory.material_code == Material.code)
         .filter(PurchaseOrderHistory.material_name != None, PurchaseOrderHistory.material_name != '')
+    )
+
+    if keyword:
+        like_pattern = f"%{keyword}%"
+        query = query.filter(
+            or_(
+                PurchaseOrderHistory.material_code.ilike(like_pattern),
+                PurchaseOrderHistory.material_name.ilike(like_pattern),
+                Material.specification.ilike(like_pattern)
+            )
+        )
+
+    rows = (
+        query
         .group_by(PurchaseOrderHistory.material_code, PurchaseOrderHistory.material_name, Material.specification)
         .order_by(desc("count"))
+        .limit(limit)
         .all()
     )
     

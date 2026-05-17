@@ -7,7 +7,7 @@
           <div class="logo">
             <div class="logo-icon">📦</div>
             <div class="logo-content">
-              <div class="logo-title">SupplyChain</div>
+              <div class="logo-title">julan</div>
               <div class="logo-subtitle">智能采购平台</div>
             </div>
           </div>

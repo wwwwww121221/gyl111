@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
@@ -48,7 +48,8 @@ def get_current_user_auth(token: str = Depends(oauth2_scheme), db: Session = Dep
 @router.post("/login", response_model=Token)
 def login_access_token(
     db: Session = Depends(get_db), 
-    form_data: OAuth2PasswordRequestForm = Depends()
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    request: Request = None
 ) -> Any:
     """
     OAuth2 兼容的 token 登录接口，获取 Access Token
@@ -99,7 +100,18 @@ def login_access_token(
     )
     
     from routers.system import log_operation
-    log_operation(db, user.id, "LOGIN", f"用户 {user.username} 登录系统")
+    log_operation(
+        db,
+        user.id,
+        "LOGIN",
+        f"用户 {user.username} 登录系统",
+        request=request,
+        module="认证中心",
+        target_type="账号",
+        target_name=user.username,
+        result="success",
+        extra_data={"role": user.role}
+    )
     
     return {"access_token": access_token, "token_type": "bearer", "role": user.role, "username": user.username}
 
@@ -108,6 +120,7 @@ def register_user(
     *,
     db: Session = Depends(get_db),
     user_in: UserCreate,
+    request: Request = None
 ) -> Any:
     """
     注册新用户
@@ -144,7 +157,21 @@ def register_user(
         db.commit()
         
     from routers.system import log_operation
-    log_operation(db, user.id, "CREATE_USER", f"新账号注册: {user.username} (角色: {user.role})")
+    log_operation(
+        db,
+        user.id,
+        "CREATE_USER",
+        f"新账号注册: {user.username} (角色: {user.role})",
+        request=request,
+        module="认证中心",
+        target_type="账号",
+        target_name=user.username,
+        result="success",
+        extra_data={
+            "role": user.role,
+            "company_name": user_in.company_name or ""
+        }
+    )
 
     return user
 
@@ -166,7 +193,8 @@ def get_users(
 def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user_auth)
+    current_user: User = Depends(get_current_user_auth),
+    request: Request = None
 ) -> Any:
     """
     删除采购员账号（仅超级管理员可访问）
@@ -196,7 +224,18 @@ def delete_user(
         # 3. 供应商表里的 reviewer_id 置空
         db.query(Supplier).filter(Supplier.reviewer_id == user.id).update({"reviewer_id": None})
         
-        log_operation(db, current_user.id, "DELETE_USER", f"删除了采购员账号: {user.username}")
+        log_operation(
+            db,
+            current_user.id,
+            "DELETE_USER",
+            f"删除了采购员账号: {user.username}",
+            request=request,
+            module="账号管理",
+            target_type="账号",
+            target_name=user.username,
+            result="success",
+            extra_data={"deleted_role": user.role}
+        )
         
         db.delete(user)
         db.commit()

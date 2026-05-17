@@ -39,6 +39,7 @@
               style="margin-top: 10px; width: 100%"
             >
               <el-table-column prop="material" label="物料名称" min-width="180" />
+              <el-table-column prop="material_model" label="规格型号" min-width="150" show-overflow-tooltip />
               <el-table-column prop="qty" label="欠交数量" width="120" align="center">
                 <template #default="{row}">
                   <span style="color: #F56C6C; font-weight: bold;">{{ row.qty }}</span>
@@ -72,7 +73,13 @@
     </div>
 
     <!-- 填写备注弹窗 -->
-    <el-dialog v-model="remarkDialogVisible" title="确认预警通知" width="500px">
+    <el-dialog
+      v-model="remarkDialogVisible"
+      title="确认预警通知"
+      width="500px"
+      draggable
+      overflow
+    >
       <el-form label-position="top">
         <el-form-item label="回复/备注 (选填)">
           <el-input
@@ -123,13 +130,14 @@ const parseContent = (content) => {
     const line = lines[i]
     if (line.startsWith('- 物料：')) {
       const parts = line.split('，')
-      let material = '', qty = '', date = ''
+      let material = '', material_model = '', qty = '', date = ''
       parts.forEach(part => {
         if (part.includes('物料：')) material = part.replace('- 物料：', '').trim()
+        if (part.includes('规格型号：')) material_model = part.replace('规格型号：', '').trim()
         if (part.includes('欠交数量：')) qty = part.replace('欠交数量：', '').trim()
         if (part.includes('要求交期：')) date = part.replace('要求交期：', '').trim()
       })
-      items.push({ material, qty, date })
+      items.push({ material, material_model, qty, date })
     }
   }
   return { header, items }

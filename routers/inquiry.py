@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from typing import List, Any, Optional
 from pydantic import BaseModel
@@ -523,7 +523,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def create_inquiry_task(
     task_in: InquiryTaskCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ) -> Any:
     """
     创建询价任务：
@@ -661,7 +662,23 @@ def create_inquiry_task(
     db.refresh(new_task)
     
     from routers.system import log_operation
-    log_operation(db, current_user.id, "CREATE_INQUIRY", f"创建了询价单: {new_task.title}")
+    log_operation(
+        db,
+        current_user.id,
+        "CREATE_INQUIRY",
+        f"创建了询价单: {new_task.title}",
+        request=request,
+        module="询价管理",
+        target_type="询价任务",
+        target_name=new_task.title,
+        result="success",
+        extra_data={
+            "task_id": new_task.id,
+            "task_type": new_task.type,
+            "item_count": len(task_in.request_ids or []),
+            "supplier_count": len(task_level_supplier_ids)
+        }
+    )
     
     return new_task
 

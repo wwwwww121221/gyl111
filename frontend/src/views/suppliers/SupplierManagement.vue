@@ -59,7 +59,14 @@
       </el-table>
     </div>
 
-    <el-dialog v-model="addDialogVisible" title="新增供应商" width="560px" @close="resetAddForm">
+    <el-dialog
+      v-model="addDialogVisible"
+      title="新增供应商"
+      width="560px"
+      draggable
+      overflow
+      @close="resetAddForm"
+    >
       <el-form ref="addFormRef" :model="addForm" :rules="addRules" label-width="110px">
         <el-form-item label="供应商名称" prop="name">
           <el-input v-model="addForm.name" />
@@ -109,7 +116,13 @@
     </el-dialog>
 
     <!-- Edit Dialog -->
-    <el-dialog v-model="dialogVisible" title="供应商管理" width="500px">
+    <el-dialog
+      v-model="dialogVisible"
+      title="供应商管理"
+      width="500px"
+      draggable
+      overflow
+    >
       <el-form :model="editForm" label-width="100px">
         <el-form-item label="供应商名称">
           <el-input v-model="currentSupplierName" disabled />
@@ -142,7 +155,14 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="accountDialogVisible" title="编辑供应商登录账号" width="500px" @close="resetAccountForm">
+    <el-dialog
+      v-model="accountDialogVisible"
+      title="编辑供应商登录账号"
+      width="500px"
+      draggable
+      overflow
+      @close="resetAccountForm"
+    >
       <el-form ref="accountFormRef" :model="accountForm" :rules="accountRules" label-width="100px">
         <el-form-item label="供应商名称">
           <el-input v-model="currentSupplierName" disabled />

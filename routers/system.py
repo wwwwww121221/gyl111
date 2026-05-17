@@ -8,13 +8,118 @@ from sqlalchemy import func
 
 router = APIRouter()
 
-def log_operation(db: Session, user_id: int, action_type: str, detail: str, ip_address: str = None):
+
+def _infer_module(action_type: str, detail: str) -> str:
+    action_type = str(action_type or "").upper()
+    mapping = {
+        "LOGIN": "认证中心",
+        "CREATE_USER": "账号管理",
+        "DELETE_USER": "账号管理",
+        "CHANGE_PASSWORD": "账号安全",
+        "CREATE_INQUIRY": "询价管理",
+        "UPDATE_SUPPLIER": "供应商管理",
+        "DELETE_SUPPLIER": "供应商管理",
+        "RESET_SUPPLIER_ACCOUNTS": "供应商管理",
+        "SEND_WARNING": "预警管理",
+    }
+    return mapping.get(action_type) or ("系统管理" if detail else None)
+
+
+def _infer_target(action_type: str, detail: str) -> tuple[str | None, str | None]:
+    action_type = str(action_type or "").upper()
+    detail = str(detail or "")
+
+    if action_type == "CREATE_INQUIRY":
+        marker = "创建了询价单:"
+        if marker in detail:
+            return "询价任务", detail.split(marker, 1)[1].strip()
+        return "询价任务", None
+
+    if action_type == "SEND_WARNING":
+        marker = "向供应商"
+        if marker in detail and "发送了催货预警" in detail:
+            supplier_name = detail.split(marker, 1)[1].split("发送了催货预警", 1)[0].strip()
+            return "供应商", supplier_name
+        return "供应商", None
+
+    if action_type == "LOGIN":
+        marker = "用户"
+        if marker in detail and "登录系统" in detail:
+            username = detail.split(marker, 1)[1].split("登录系统", 1)[0].strip()
+            return "账号", username
+        return "账号", None
+
+    if action_type == "CREATE_USER":
+        marker = "新账号注册:"
+        if marker in detail:
+            username = detail.split(marker, 1)[1].split("(角色", 1)[0].strip()
+            return "账号", username
+        return "账号", None
+
+    if action_type == "DELETE_USER":
+        marker = "删除了采购员账号:"
+        if marker in detail:
+            return "账号", detail.split(marker, 1)[1].strip()
+        return "账号", None
+
+    if action_type == "UPDATE_SUPPLIER":
+        marker = "更新供应商"
+        if marker in detail and "状态为" in detail:
+            supplier_name = detail.split(marker, 1)[1].split("状态为", 1)[0].strip()
+            return "供应商", supplier_name
+        return "供应商", None
+
+    if action_type == "DELETE_SUPPLIER":
+        marker = "删除了供应商及其关联账号和数据:"
+        if marker in detail:
+            return "供应商", detail.split(marker, 1)[1].strip()
+        return "供应商", None
+
+    if action_type == "CHANGE_PASSWORD":
+        marker = "供应商"
+        if marker in detail and "修改了登录密码" in detail:
+            supplier_name = detail.split(marker, 1)[1].split("修改了登录密码", 1)[0].strip()
+            return "供应商账号", supplier_name
+        return "供应商账号", None
+
+    if action_type == "RESET_SUPPLIER_ACCOUNTS":
+        return "供应商账号", "批量重置"
+
+    return None, None
+
+def get_request_ip(request: Request = None) -> str:
+    if not request:
+        return None
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def log_operation(
+    db: Session,
+    user_id: int,
+    action_type: str,
+    detail: str,
+    ip_address: str = None,
+    request: Request = None,
+    module: str = None,
+    target_type: str = None,
+    target_name: str = None,
+    result: str = "success",
+    extra_data: dict = None
+):
     try:
         log = OperationLog(
             user_id=user_id,
             action_type=action_type,
+            module=module,
+            target_type=target_type,
+            target_name=target_name,
+            result=result,
             detail=detail,
-            ip_address=ip_address
+            extra_data=extra_data,
+            ip_address=ip_address or get_request_ip(request)
         )
         db.add(log)
         db.commit()
@@ -39,11 +144,23 @@ def get_operation_logs(
     
     result = []
     for log in logs:
+        resolved_module = log.module or _infer_module(log.action_type, log.detail)
+        resolved_target_type = log.target_type
+        resolved_target_name = log.target_name
+        if not resolved_target_type and not resolved_target_name:
+            resolved_target_type, resolved_target_name = _infer_target(log.action_type, log.detail)
+
         result.append({
             "id": log.id,
             "username": log.user.username if log.user else "系统/未知",
+            "user_role": log.user.role if log.user else None,
             "action_type": log.action_type,
+            "module": resolved_module,
+            "target_type": resolved_target_type,
+            "target_name": resolved_target_name,
+            "result": log.result or "success",
             "detail": log.detail,
+            "extra_data": log.extra_data or {},
             "ip_address": log.ip_address,
             "created_at": log.created_at.strftime("%Y-%m-%d %H:%M:%S") if log.created_at else None
         })

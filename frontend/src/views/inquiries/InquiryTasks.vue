@@ -52,45 +52,50 @@
               {{ formatDateTime(scope.row.created_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="320" align="center">
+          <el-table-column label="操作" width="320" align="left">
             <template #default="scope">
-              <template v-if="scope.row.type === 'manual'">
-                <el-button size="small" type="primary" @click="goToCompare(scope.row)">
-                  {{ isTaskCompareResultReadonly(scope.row) ? '查看比价结果' : '智能比价' }}
-                </el-button>
-                <el-button 
-                  v-if="scope.row.status !== 'closed'" 
-                  size="small" 
-                  type="success" 
-                  plain
-                  @click="handleFinishManualTask(scope.row)"
-                >
-                  结束流程
-                </el-button>
-              </template>
-              <template v-else>
-                <el-button size="small" type="primary" @click="viewTaskDetails(scope.row)">
-                  详情 / 管理
-                </el-button>
-                <el-button
-                  v-if="scope.row.compare_ready"
-                  size="small"
-                  type="warning"
-                  @click="openAutoAllocationTab(scope.row)"
-                >
-                  份额分配
-                </el-button>
-              </template>
+              <div class="task-table-action-group">
+                <template v-if="scope.row.type === 'manual'">
+                  <el-button size="small" type="primary" class="task-action-primary-btn" @click="goToCompare(scope.row)">
+                    {{ isTaskCompareResultReadonly(scope.row) ? '查看比价结果' : '智能比价' }}
+                  </el-button>
+                  <el-button
+                    v-if="scope.row.status !== 'closed'"
+                    size="small"
+                    type="success"
+                    plain
+                    class="task-action-secondary-btn"
+                    @click="handleFinishManualTask(scope.row)"
+                  >
+                    结束流程
+                  </el-button>
+                </template>
+                <template v-else>
+                  <el-button size="small" type="primary" class="task-action-primary-btn" @click="viewTaskDetails(scope.row)">
+                    详情 / 管理
+                  </el-button>
+                  <el-button
+                    v-if="scope.row.compare_ready"
+                    size="small"
+                    type="warning"
+                    class="task-action-secondary-btn"
+                    @click="openAutoAllocationTab(scope.row)"
+                  >
+                    份额分配
+                  </el-button>
+                </template>
 
-              <el-button 
-                v-if="scope.row.status === 'closed'" 
-                size="small" 
-                type="danger" 
-                plain
-                @click="handleDeleteTask(scope.row)"
-              >
-                删除
-              </el-button>
+                <el-button
+                  v-if="scope.row.status === 'closed'"
+                  size="small"
+                  type="danger"
+                  plain
+                  class="task-action-secondary-btn"
+                  @click="handleDeleteTask(scope.row)"
+                >
+                  删除
+                </el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -98,7 +103,15 @@
     </div>
 
     <!-- Dialog: Task Details -->
-    <el-dialog v-model="detailsVisible" title="询价任务详情" width="85%" top="5vh" class="custom-dialog">
+    <el-dialog
+      v-model="detailsVisible"
+      title="询价任务详情"
+      width="85%"
+      top="5vh"
+      class="custom-dialog"
+      draggable
+      overflow
+    >
       <div v-if="currentTaskDetails" v-loading="loadingDetails" class="task-details-container">
         
         <!-- Header Info Card -->
@@ -505,6 +518,8 @@
       v-model="manualInterventionDialogVisible"
       :title="manualInterventionMode === 'continue' ? '人工通过谈判' : '人工淘汰供应商'"
       width="520px"
+      draggable
+      overflow
     >
       <el-form :model="manualInterventionForm" label-width="92px">
         <el-form-item label="处理说明">
@@ -1309,6 +1324,27 @@ onUnmounted(() => {
 .allocation-submit-bar {
   display: flex;
   justify-content: flex-end;
+}
+
+.task-table-action-group {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: nowrap;
+  width: 100%;
+  padding-left: 8px;
+  box-sizing: border-box;
+}
+
+.task-action-primary-btn {
+  width: 96px;
+  margin: 0;
+}
+
+.task-action-secondary-btn {
+  width: 78px;
+  margin: 0;
 }
 
 .supplier-name-cell {

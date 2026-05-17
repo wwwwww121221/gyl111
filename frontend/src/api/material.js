@@ -2,8 +2,8 @@ import request from './index'
 
 const MATERIAL_BASE = '/material'
 
-export const getMaterialList = () => {
-  return request.get(`${MATERIAL_BASE}/list`)
+export const getMaterialList = (params = {}) => {
+  return request.get(`${MATERIAL_BASE}/list`, { params })
 }
 
 export const getMaterialAnalysis = (material_code) => {

@@ -168,7 +168,7 @@ const handleCommand = (command) => {
 <style scoped>
 .layout-container {
   height: 100vh;
-  width: 100vw;
+  width: 100%;
 }
 
 .main-container {

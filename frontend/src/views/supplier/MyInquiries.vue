@@ -34,16 +34,16 @@
         <el-table
           :data="filteredInquiries"
           style="width: 100%"
-          height="100%"
           v-loading="loading"
           empty-text="暂无询价数据"
           border
           stripe
           highlight-current-row
+          fit
         >
           <el-table-column type="index" label="序号" width="80" align="center" />
-          <el-table-column prop="task_title" label="询价单标题" min-width="200" />
-          <el-table-column prop="contract_no" label="合同编号" width="170" align="center">
+          <el-table-column prop="task_title" label="询价单标题" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="contract_no" label="合同编号" width="110" align="center">
             <template #default="{ row }">
               <span v-if="row.contract_no">{{ row.contract_no }}</span>
               <span v-else style="color: #c0c4cc;">-</span>
@@ -56,26 +56,38 @@
               <el-tag :type="getNewStatusType(row)" effect="light">{{ getNewStatusText(row) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="220" align="center" fixed="right">
+          <el-table-column label="操作" width="300" align="left">
             <template #default="{ row }">
-              <el-button size="small" type="primary" @click="handleDetail(row)">查看详情 / 报价</el-button>
-              <el-dropdown
-                v-if="hasContractAction(row)"
-                trigger="click"
-                @command="(command) => handleContractAction(row, command)"
-              >
-                <el-button size="small" plain class="more-actions-btn">
-                  更多
-                  <el-icon class="el-icon--right"><MoreFilled /></el-icon>
+              <div class="table-action-group">
+                <el-button size="small" type="primary" class="action-primary-btn" @click="handleDetail(row)">查看详情 / 报价</el-button>
+                <el-button
+                  v-if="canFillContract(row)"
+                  size="small"
+                  plain
+                  class="action-secondary-btn"
+                  @click="handleOpenContractForm(row)"
+                >
+                  填写合同信息
                 </el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item v-if="canFillContract(row)" command="fill_contract">填写合同信息</el-dropdown-item>
-                    <el-dropdown-item v-else-if="canViewContract(row)" command="view_contract">下载/查看合同</el-dropdown-item>
-                    <el-dropdown-item v-else-if="isContractGenerating(row)" disabled>合同生成中</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+                <el-button
+                  v-else-if="canViewContract(row)"
+                  size="small"
+                  plain
+                  class="action-secondary-btn"
+                  @click="handleViewContract(row)"
+                >
+                  下载/查看合同
+                </el-button>
+                <el-button
+                  v-else-if="isContractGenerating(row)"
+                  size="small"
+                  plain
+                  class="action-secondary-btn"
+                  disabled
+                >
+                  合同生成中
+                </el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -98,29 +110,44 @@
           <div class="mobile-card-meta">当前轮次：第 {{ row.current_round || 0 }} 轮</div>
           <div class="mobile-card-actions">
             <el-button size="small" type="primary" @click="handleDetail(row)">查看详情 / 报价</el-button>
-            <el-dropdown
-              v-if="hasContractAction(row)"
-              trigger="click"
-              @command="(command) => handleContractAction(row, command)"
+            <el-button
+              v-if="canFillContract(row)"
+              size="small"
+              plain
+              @click="handleOpenContractForm(row)"
             >
-              <el-button size="small" plain>
-                更多
-                <el-icon class="el-icon--right"><MoreFilled /></el-icon>
-              </el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-if="canFillContract(row)" command="fill_contract">填写合同信息</el-dropdown-item>
-                  <el-dropdown-item v-else-if="canViewContract(row)" command="view_contract">下载/查看合同</el-dropdown-item>
-                  <el-dropdown-item v-else-if="isContractGenerating(row)" disabled>合同生成中</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+              填写合同信息
+            </el-button>
+            <el-button
+              v-else-if="canViewContract(row)"
+              size="small"
+              plain
+              @click="handleViewContract(row)"
+            >
+              下载/查看合同
+            </el-button>
+            <el-button
+              v-else-if="isContractGenerating(row)"
+              size="small"
+              plain
+              disabled
+            >
+              合同生成中
+            </el-button>
           </div>
         </el-card>
       </div>
     </div>
 
-    <el-dialog v-model="dialogVisible" title="询价单详情与报价" :width="isMobile ? '96%' : '850px'" top="5vh" class="custom-dialog">
+    <el-dialog
+      v-model="dialogVisible"
+      title="询价单详情与报价"
+      :width="isMobile ? '96%' : '850px'"
+      top="5vh"
+      class="custom-dialog"
+      draggable
+      overflow
+    >
       <div v-if="currentInquiry" class="dialog-content">
         <el-card shadow="never" class="info-card">
           <template #header>
@@ -147,7 +174,15 @@
 
         <div v-if="currentInquiry.latest_ai_feedback" class="feedback-box">
           <div class="feedback-title"><el-icon><ChatLineRound /></el-icon> 采购方/系统反馈</div>
-          <div class="feedback-content">{{ currentInquiry.latest_ai_feedback }}</div>
+          <div class="feedback-content">
+            <div
+              v-for="(line, index) in feedbackLines"
+              :key="`${index}-${line}`"
+              class="feedback-line"
+            >
+              {{ line }}
+            </div>
+          </div>
         </div>
 
         <template v-if="currentInquiry.material_allocations && currentInquiry.material_allocations.length > 0">
@@ -233,7 +268,14 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="contractDialogVisible" title="填写合同信息" :width="isMobile ? '96%' : '620px'" destroy-on-close>
+    <el-dialog
+      v-model="contractDialogVisible"
+      title="填写合同信息"
+      :width="isMobile ? '96%' : '620px'"
+      destroy-on-close
+      draggable
+      overflow
+    >
       <el-form ref="contractFormRef" :model="contractForm" :rules="contractFormRules" label-width="110px">
         <el-form-item label="地址" prop="address"><el-input v-model="contractForm.address" placeholder="请输入地址" /></el-form-item>
         <el-form-item label="法定代表人" prop="legal_representative"><el-input v-model="contractForm.legal_representative" placeholder="请输入法定代表人" /></el-form-item>
@@ -253,7 +295,14 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showChangePasswordDialog" title="修改登录密码" width="450px" destroy-on-close>
+    <el-dialog
+      v-model="showChangePasswordDialog"
+      title="修改登录密码"
+      width="450px"
+      destroy-on-close
+      draggable
+      overflow
+    >
       <el-form ref="passwordFormRef" :model="passwordForm" :rules="passwordRules" label-width="100px">
         <el-form-item label="当前密码" prop="old_password">
           <el-input v-model="passwordForm.old_password" type="password" show-password placeholder="请输入当前密码" />
@@ -279,7 +328,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import api from '../../api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Search, ChatLineRound, MoreFilled } from '@element-plus/icons-vue'
+import { Refresh, Search, ChatLineRound } from '@element-plus/icons-vue'
 
 const inquiries = ref([])
 const loading = ref(false)
@@ -441,16 +490,6 @@ const canFillContract = (row) => {
   return !status || ['failed', 'pending', '待供应商填写'].includes(status)
 }
 
-const hasContractAction = (row) => canFillContract(row) || canViewContract(row) || isContractGenerating(row)
-
-const handleContractAction = (row, command) => {
-  if (command === 'fill_contract') {
-    handleOpenContractForm(row)
-    return
-  }
-  if (command === 'view_contract') handleViewContract(row)
-}
-
 const handleClearFilters = () => {
   searchQuery.value = ''
   statusFilter.value = ''
@@ -594,6 +633,14 @@ const deadlineMeta = computed(() => getDeadlineMeta(currentInquiry.value?.deadli
 const deadlineCountdownText = computed(() => deadlineMeta.value.text)
 const isDeadlineUrgent = computed(() => deadlineMeta.value.urgent)
 const isDeadlinePassed = computed(() => deadlineMeta.value.passed)
+const feedbackLines = computed(() => {
+  const raw = currentInquiry.value?.latest_ai_feedback || ''
+  if (!raw) return []
+  return raw
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+})
 
 const canQuote = computed(() => {
   if (!currentInquiry.value) return false
@@ -712,8 +759,25 @@ const submitQuote = async () => {
   font-size: 13px;
 }
 
-.more-actions-btn {
-  margin-left: 8px;
+.table-action-group {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: nowrap;
+  width: 100%;
+  padding-left: 8px;
+  box-sizing: border-box;
+}
+
+.action-primary-btn {
+  width: 118px;
+  margin: 0;
+}
+
+.action-secondary-btn {
+  width: 118px;
+  margin: 0;
 }
 
 .mobile-card-list {
@@ -797,6 +861,10 @@ const submitQuote = async () => {
   color: #606266;
   line-height: 1.5;
   font-size: 14px;
+}
+
+.feedback-line + .feedback-line {
+  margin-top: 6px;
 }
 
 .table-section-title {

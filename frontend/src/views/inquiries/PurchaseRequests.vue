@@ -118,7 +118,14 @@
     </div>
 
     <!-- Dialog: Create Task -->
-    <el-dialog v-model="dialogVisible" title="创建新询价任务" width="800px" @close="isJumpToCompare = false">
+    <el-dialog
+      v-model="dialogVisible"
+      title="创建新询价任务"
+      width="800px"
+      draggable
+      overflow
+      @close="isJumpToCompare = false"
+    >
       <el-form ref="taskFormRef" :model="taskForm" :rules="taskFormRules" label-width="100px" size="default">
         <el-form-item label="任务类型" prop="type">
           <el-tag :type="lockedTaskType === 'manual' ? 'warning' : 'success'" effect="dark">

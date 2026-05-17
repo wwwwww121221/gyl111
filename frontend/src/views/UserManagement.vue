@@ -35,7 +35,14 @@
     </div>
 
     <!-- 新增采购员弹窗 -->
-    <el-dialog v-model="dialogVisible" title="新增采购员" width="400px" @close="resetForm">
+    <el-dialog
+      v-model="dialogVisible"
+      title="新增采购员"
+      width="400px"
+      draggable
+      overflow
+      @close="resetForm"
+    >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="80px">
         <el-form-item label="登录账号" prop="username">
           <el-input v-model="form.username" placeholder="建议输入员工姓名拼音" />

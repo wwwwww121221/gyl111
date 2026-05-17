@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Any, List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 import logging
 from sqlalchemy.orm import Session
-from models import get_db, WarningMessage, Supplier, User
+from models import get_db, WarningMessage, Supplier, User, Material
 from routers.inquiry import get_current_user
 
 # 引用现有的 ERP 业务逻辑
@@ -20,6 +20,7 @@ class WarningItem(BaseModel):
     supplier_name: Optional[str] = None
     material_id: Optional[str] = None
     material_name: Optional[str] = None
+    material_model: Optional[str] = None
     delivery_date: Any # 可能是 datetime 或 str
     purchase_qty: float = 0.0
     received_qty: float = 0.0
@@ -60,13 +61,47 @@ class BuyerWarningMessageResponse(WarningMessageResponse):
     supplier_name: str
     buyer_name: Optional[str] = None
 
+
+def _enrich_warning_items_with_material_model(items: List[dict], db: Session) -> List[dict]:
+    if not items:
+        return items
+
+    material_codes = {
+        str(item.get("material_id") or "").strip()
+        for item in items
+        if item.get("material_id")
+    }
+    if not material_codes:
+        return items
+
+    material_rows = (
+        db.query(Material.code, Material.specification)
+        .filter(Material.code.in_(material_codes))
+        .all()
+    )
+    model_map = {
+        str(row.code).strip(): row.specification
+        for row in material_rows
+        if row.code
+    }
+
+    enriched_items = []
+    for item in items:
+        normalized_code = str(item.get("material_id") or "").strip()
+        enriched_items.append({
+            **item,
+            "material_model": item.get("material_model") or model_map.get(normalized_code) or ""
+        })
+    return enriched_items
+
 # --- Endpoints ---
 
 @router.post("/send")
 def send_warning_to_supplier(
     req: SendWarningRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ) -> Any:
     """
     采购员向供应商发送发货预警通知
@@ -82,10 +117,12 @@ def send_warning_to_supplier(
     content_lines = [f"【发货预警通知】采购员 {current_user.username} 提醒您有逾期或即将逾期的物料，请尽快安排发货：\n"]
     for item in req.items:
         m_name = item.get("material_name", "未知物料")
+        m_model = item.get("material_model", "")
         # 兼容前端传递 qty 或 warning_unreceived_qty
         q = item.get("qty", item.get("warning_unreceived_qty", 0))
         d = item.get("delivery_date", "")
-        content_lines.append(f"- 物料：{m_name}，欠交数量：{q}，要求交期：{d}")
+        model_text = f"，规格型号：{m_model}" if m_model else ""
+        content_lines.append(f"- 物料：{m_name}{model_text}，欠交数量：{q}，要求交期：{d}")
         
     msg = WarningMessage(
         supplier_id=supplier.id,
@@ -96,7 +133,29 @@ def send_warning_to_supplier(
     db.commit()
     
     from routers.system import log_operation
-    log_operation(db, current_user.id, "SEND_WARNING", f"向供应商 {req.supplier_name} 发送了催货预警")
+    log_operation(
+        db,
+        current_user.id,
+        "SEND_WARNING",
+        f"向供应商 {req.supplier_name} 发送了催货预警",
+        request=request,
+        module="预警管理",
+        target_type="供应商",
+        target_name=req.supplier_name,
+        result="success",
+        extra_data={
+            "item_count": len(req.items or []),
+            "items": [
+                {
+                    "material_name": item.get("material_name", ""),
+                    "material_model": item.get("material_model", ""),
+                    "qty": item.get("qty", item.get("warning_unreceived_qty", 0)),
+                    "delivery_date": item.get("delivery_date", "")
+                }
+                for item in (req.items or [])
+            ]
+        }
+    )
     
     return {"message": "预警发送成功"}
 
@@ -173,13 +232,17 @@ def get_sent_warning_messages(
     return result
 
 @router.get("/dashboard", response_model=WarningDashboardResponse)
-def get_warning_dashboard() -> Any:
+def get_warning_dashboard(
+    db: Session = Depends(get_db)
+) -> Any:
     """
     获取预警大屏数据：包含汇总信息和详细列表
     """
     try:
         # 调用底层服务获取数据
         unreceived, unstockin = get_inventory_warning_data()
+        unreceived = _enrich_warning_items_with_material_model(unreceived, db)
+        unstockin = _enrich_warning_items_with_material_model(unstockin, db)
         
         # 计算汇总指标
         unique_suppliers = set()

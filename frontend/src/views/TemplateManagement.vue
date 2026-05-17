@@ -28,7 +28,13 @@
       </el-table>
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="560px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="dialogTitle"
+      width="560px"
+      draggable
+      overflow
+    >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
         <el-form-item label="模板名称" prop="name">
           <el-input v-model="form.name" placeholder="请输入模板名称" />

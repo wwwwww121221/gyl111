@@ -55,6 +55,19 @@ def ensure_runtime_schema_columns():
         if "supplier_remark" not in warning_columns:
             alter_statements.append("ALTER TABLE warning_messages ADD COLUMN supplier_remark TEXT")
 
+    if "operation_logs" in table_names:
+        operation_log_columns = {col["name"] for col in inspector.get_columns("operation_logs")}
+        if "module" not in operation_log_columns:
+            alter_statements.append("ALTER TABLE operation_logs ADD COLUMN module VARCHAR")
+        if "target_type" not in operation_log_columns:
+            alter_statements.append("ALTER TABLE operation_logs ADD COLUMN target_type VARCHAR")
+        if "target_name" not in operation_log_columns:
+            alter_statements.append("ALTER TABLE operation_logs ADD COLUMN target_name VARCHAR")
+        if "result" not in operation_log_columns:
+            alter_statements.append("ALTER TABLE operation_logs ADD COLUMN result VARCHAR DEFAULT 'success'")
+        if "extra_data" not in operation_log_columns:
+            alter_statements.append("ALTER TABLE operation_logs ADD COLUMN extra_data JSON")
+
     if "compare_drafts" not in table_names:
         alter_statements.extend([
             """
@@ -362,7 +375,12 @@ class OperationLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     action_type = Column(String, nullable=False, comment="LOGIN, CREATE_USER, DELETE_USER, APPROVE_SUPPLIER, CREATE_INQUIRY, SEND_WARNING")
+    module = Column(String, nullable=True, comment="所属模块")
+    target_type = Column(String, nullable=True, comment="操作对象类型")
+    target_name = Column(String, nullable=True, comment="操作对象名称")
+    result = Column(String, nullable=True, default="success", comment="操作结果")
     detail = Column(String, nullable=True)
+    extra_data = Column(JSON, nullable=True, comment="补充明细")
     ip_address = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 

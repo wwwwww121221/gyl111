@@ -566,7 +566,7 @@ def _collect_contract_payload(
 
     project_no = ""
     project_name = ""
-    buyer_name = buyer_company_name or "俊朗电气有限公司"
+    buyer_name = buyer_company_name or "俊郎电气有限公司"
     if contract_record and contract_record.buyer_company_name:
         buyer_name = contract_record.buyer_company_name
     items = []
@@ -1507,7 +1507,7 @@ async def generate_contract_pdf(
             task_id=link.task_id,
             inquiry_supplier_id=link.id,
             status="pending",
-            buyer_company_name=resolved_buyer_name or "俊朗电气有限公司",
+            buyer_company_name=resolved_buyer_name or "俊郎电气有限公司",
         )
         db.add(contract_record)
         db.flush()

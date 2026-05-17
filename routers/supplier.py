@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from typing import Any
@@ -350,7 +350,8 @@ def create_supplier_with_optional_account(
 @router.post("/reset-all-accounts")
 def reset_all_supplier_accounts(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ) -> Any:
     _require_admin_or_buyer(current_user)
 
@@ -400,7 +401,23 @@ def reset_all_supplier_accounts(
     db.commit()
 
     from routers.system import log_operation
-    log_operation(db, current_user.id, "RESET_SUPPLIER_ACCOUNTS", f"批量重置供应商账号密码: 成功{updated_count}个, 失败{len(errors)}个")
+    log_operation(
+        db,
+        current_user.id,
+        "RESET_SUPPLIER_ACCOUNTS",
+        f"批量重置供应商账号密码: 成功{updated_count}个, 失败{len(errors)}个",
+        request=request,
+        module="供应商管理",
+        target_type="供应商账号",
+        target_name="批量重置",
+        result="partial" if errors else "success",
+        extra_data={
+            "updated_count": updated_count,
+            "failed_count": len(errors),
+            "total_count": len(suppliers),
+            "errors": errors[:10]
+        }
+    )
 
     return {
         "message": f"批量重置完成: 成功更新 {updated_count} 个供应商账号",
@@ -414,7 +431,8 @@ def reset_all_supplier_accounts(
 def change_password(
     payload: SupplierChangePasswordPayload,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ) -> Any:
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="仅供应商可修改密码")
@@ -433,7 +451,17 @@ def change_password(
     db.commit()
 
     from routers.system import log_operation
-    log_operation(db, current_user.id, "CHANGE_PASSWORD", f"供应商 {supplier.name} 修改了登录密码")
+    log_operation(
+        db,
+        current_user.id,
+        "CHANGE_PASSWORD",
+        f"供应商 {supplier.name} 修改了登录密码",
+        request=request,
+        module="账号安全",
+        target_type="供应商账号",
+        target_name=supplier.name,
+        result="success"
+    )
 
     return {"message": "密码修改成功"}
 
@@ -442,7 +470,8 @@ def update_supplier(
     supplier_id: int, 
     supplier_update: SupplierUpdate, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     """
     采购员审核/定级供应商
@@ -468,7 +497,22 @@ def update_supplier(
     db.refresh(supplier)
     
     from routers.system import log_operation
-    log_operation(db, current_user.id, "UPDATE_SUPPLIER", f"更新供应商 {supplier.name} 状态为 {supplier.status}, 评级为 {supplier.grade}")
+    log_operation(
+        db,
+        current_user.id,
+        "UPDATE_SUPPLIER",
+        f"更新供应商 {supplier.name} 状态为 {supplier.status}, 评级为 {supplier.grade}",
+        request=request,
+        module="供应商管理",
+        target_type="供应商",
+        target_name=supplier.name,
+        result="success",
+        extra_data={
+            "status": supplier.status,
+            "grade": supplier.grade,
+            "level": supplier.level
+        }
+    )
     
     return {"message": "Supplier updated successfully", "id": supplier.id, "status": supplier.status, "grade": supplier.grade}
 
@@ -534,7 +578,8 @@ def update_supplier_account(
 def delete_supplier(
     supplier_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     """
     删除供应商（仅超级管理员可操作）
@@ -573,7 +618,17 @@ def delete_supplier(
                 
         # 5. 记录日志
         from routers.system import log_operation
-        log_operation(db, current_user.id, "DELETE_SUPPLIER", f"删除了供应商及其关联账号和数据: {supplier_name}")
+        log_operation(
+            db,
+            current_user.id,
+            "DELETE_SUPPLIER",
+            f"删除了供应商及其关联账号和数据: {supplier_name}",
+            request=request,
+            module="供应商管理",
+            target_type="供应商",
+            target_name=supplier_name,
+            result="success"
+        )
         
         db.commit()
     except Exception as e:
@@ -1028,13 +1083,15 @@ async def submit_quote(
                     max_rounds=max_rounds,
                 )
                 material_name = r_item.material_name if r_item else f"物料#{q.item_id}"
+                material_model = getattr(r_item, "material_model", "") if r_item else ""
+                material_label = f"{material_name} / {material_model}" if material_model else material_name
                 if feedback:
                     feedback_lines.append(
-                        f"{material_name}：当前报价{float(q.price or 0):.4f}元，建议下调{drop_ratio * 100:.2f}%至{suggested_price:.4f}元。"
+                        f"{material_label}：当前报价{float(q.price or 0):.4f}元，建议下调{drop_ratio * 100:.2f}%至{suggested_price:.4f}元。"
                     )
                 else:
                     feedback_lines.append(
-                        f"{material_name}：当前报价{float(q.price or 0):.4f}元，已接近目标区间，可保持或小幅优化。"
+                        f"{material_label}：当前报价{float(q.price or 0):.4f}元，已接近目标区间，可保持或小幅优化。"
                     )
 
             l.latest_ai_feedback = "系统已完成本轮价格分析，请参考以下建议进行下一轮报价：\n" + "\n".join(feedback_lines)

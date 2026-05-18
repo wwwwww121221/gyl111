@@ -32,7 +32,7 @@
           </div>
           <el-divider class="header-divider" />
 
-          <el-alert
+           <el-alert
             v-if="isCompareReadOnly"
             :title="readonlyAlertTitle"
             type="info"
@@ -186,10 +186,18 @@
             </template>
 
             <div class="allocation-strategy-toolbar">
-              <el-button @click="applyStrategy('common')" :disabled="isCompareReadOnly">全额给常用 (100%)</el-button>
+              <el-tooltip :content="getStrategyDisabledReason('common')" :disabled="!isStrategyDisabled('common')" placement="top">
+                <span class="strategy-button-wrap">
+                  <el-button @click="applyStrategy('common')" :disabled="isCompareReadOnly || isStrategyDisabled('common')">全额给常用 (100%)</el-button>
+                </span>
+              </el-tooltip>
 
               <div class="pressure-strategy-group">
-                <el-button type="warning" @click="applyStrategy('pressure')" :disabled="isCompareReadOnly">价格压迫策略</el-button>
+                <el-tooltip :content="getStrategyDisabledReason('pressure')" :disabled="!isStrategyDisabled('pressure')" placement="top">
+                  <span class="strategy-button-wrap">
+                    <el-button type="warning" @click="applyStrategy('pressure')" :disabled="isCompareReadOnly || isStrategyDisabled('pressure')">价格压迫策略</el-button>
+                  </span>
+                </el-tooltip>
                 <div class="pressure-ratio-group">
                   <span class="pressure-ratio-label">常用占%</span>
                   <el-input-number
@@ -212,7 +220,11 @@
                 </div>
               </div>
 
-              <el-button type="success" @click="applyStrategy('lowest')" :disabled="isCompareReadOnly">价低者得 (100%)</el-button>
+              <el-tooltip :content="getStrategyDisabledReason('lowest')" :disabled="!isStrategyDisabled('lowest')" placement="top">
+                <span class="strategy-button-wrap">
+                  <el-button type="success" @click="applyStrategy('lowest')" :disabled="isCompareReadOnly || isStrategyDisabled('lowest')">价低者得 (100%)</el-button>
+                </span>
+              </el-tooltip>
             </div>
 
             <div class="allocation-qty-info">
@@ -905,6 +917,10 @@ const getAllocationKey = (supplier) => {
   return String(supplier?.link_id ?? supplier?.code ?? supplier?.name ?? '')
 }
 
+const hasValidSupplierQuote = (supplier) => {
+  return Number(supplier?.tax_net_price || 0) > 0 && Number(supplier?.price || 0) > 0
+}
+
 const normalizeAllocationState = (rawAllocations, fallbackMaterialKey = '') => {
   if (!rawAllocations || typeof rawAllocations !== 'object' || Array.isArray(rawAllocations)) {
     return {}
@@ -1238,15 +1254,43 @@ const currentComparison = computed(() => {
   })
 })
 
+const validQuotedComparison = computed(() => {
+  return currentComparison.value.filter((supplier) => hasValidSupplierQuote(supplier))
+})
+
+const quotedCommonSupplier = computed(() => {
+  return validQuotedComparison.value.find((supplier) => supplier.is_common) || null
+})
+
+const quotedLowestSupplier = computed(() => {
+  return validQuotedComparison.value.find((supplier) => supplier.is_lowest) || null
+})
+
+const getStrategyDisabledReason = (type) => {
+  if (isCompareReadOnly.value) return '当前任务为历史只读模式，不能再修改分配策略'
+  if (!currentComparison.value.length) return '当前暂无可分配的供应商'
+  if (!validQuotedComparison.value.length) return '请先至少填写一家供应商的有效报价'
+  if (type === 'common' && !quotedCommonSupplier.value) return '当前未识别到已报价的常用供应商'
+  if (type === 'lowest' && !quotedLowestSupplier.value) return '当前未识别到最低价供应商'
+  if (type === 'pressure' && !quotedCommonSupplier.value && !quotedLowestSupplier.value) {
+    return '当前未识别到已报价的常用供应商或最低价供应商'
+  }
+  return ''
+}
+
+const isStrategyDisabled = (type) => Boolean(getStrategyDisabledReason(type))
+
 const applyStrategy = (type) => {
-  if (isCompareReadOnly.value) return
-  if (!currentComparison.value.length) {
-    ElMessage.warning('当前暂无可分配的供应商')
+  const disabledReason = getStrategyDisabledReason(type)
+  if (disabledReason) {
+    if (!isCompareReadOnly.value) {
+      ElMessage.warning(disabledReason)
+    }
     return
   }
 
-  const commonSupplier = currentComparison.value.find(item => item.is_common)
-  const lowestSupplier = currentComparison.value.find(item => item.is_lowest)
+  const commonSupplier = quotedCommonSupplier.value
+  const lowestSupplier = quotedLowestSupplier.value
 
   const resetAllocationsToZero = () => {
     initializeAllocations()
@@ -1267,7 +1311,7 @@ const applyStrategy = (type) => {
 
   if (type === 'common') {
     if (!commonSupplier) {
-      ElMessage.warning('未识别到常用供应商')
+      ElMessage.warning('未识别到已报价的常用供应商，请先确认物料历史供应商或补齐报价')
       return
     }
     resetAllocationsToZero()
@@ -1278,7 +1322,7 @@ const applyStrategy = (type) => {
 
   if (type === 'lowest') {
     if (!lowestSupplier) {
-      ElMessage.warning('未识别到最低价供应商')
+      ElMessage.warning('未识别到最低价供应商，请先填写至少一家有效报价')
       return
     }
     resetAllocationsToZero()
@@ -1289,7 +1333,7 @@ const applyStrategy = (type) => {
 
   if (type === 'pressure') {
     if (!commonSupplier && !lowestSupplier) {
-      ElMessage.warning('未识别到常用供应商或最低价供应商')
+      ElMessage.warning('未识别到已报价的常用供应商或最低价供应商，请先补齐报价')
       return
     }
 
@@ -1815,6 +1859,10 @@ onBeforeRouteLeave(async () => {
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 16px;
+}
+
+.strategy-button-wrap {
+  display: inline-flex;
 }
 
 .pressure-strategy-group {

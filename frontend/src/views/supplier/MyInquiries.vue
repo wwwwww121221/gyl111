@@ -185,35 +185,6 @@
           </div>
         </div>
 
-        <template v-if="currentInquiry.material_allocations && currentInquiry.material_allocations.length > 0">
-          <div class="table-section-title"><span class="title-text">本次中标物料分配详情</span></div>
-          <div class="detail-table-wrap">
-            <el-table :data="currentInquiry.material_allocations" style="width: 100%" border stripe size="small">
-              <el-table-column prop="material_name" label="物料名称" />
-              <el-table-column prop="material_code" label="物料编码" />
-              <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
-              <el-table-column prop="base_qty" label="原始数量" width="100" align="right" />
-              <el-table-column prop="allocated_qty" label="分配数量" width="100" align="right" />
-              <el-table-column label="分配占比" width="100" align="right">
-                <template #default="{ row }">
-                  {{ Number(row.allocated_ratio || 0).toFixed(2) }}%
-                </template>
-              </el-table-column>
-              <el-table-column label="成交单价(元)" width="120" align="right">
-                <template #default="{ row }">
-                  {{ Number(row.price || 0).toFixed(2) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="分配金额(元)" width="120" align="right">
-                <template #default="{ row }">
-                  {{ Number(row.amount || 0).toFixed(2) }}
-                </template>
-              </el-table-column>
-              <el-table-column prop="delivery_date" label="交期" width="140" :formatter="formatDate" />
-            </el-table>
-          </div>
-        </template>
-
         <div class="table-section-title"><span class="title-text">物料明细及报价</span></div>
         <div class="detail-table-wrap">
           <el-table :data="currentInquiry.items" style="width: 100%" border stripe size="small">
@@ -339,6 +310,7 @@ const isMobile = ref(window.innerWidth <= 768)
 const getDisplayStatus = (row) => {
   if (row.status === 'deal') return 'deal'
   if (row.status === 'locked') return 'locked'
+  if (row.status === 'reject') return 'cancelled'
   if (row.task_status === 'closed' || row.task_status === 'cancelled') return 'cancelled'
   if (row.task_status === 'awaiting_award') return 'confirmed'
   if (row.status === 'sent') return 'unconfirmed'
@@ -710,9 +682,11 @@ const submitQuote = async () => {
 <style scoped>
 .page-container {
   padding: 20px;
-  height: calc(100vh - 100px);
+  height: auto;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
 }
 
 .content-card {
@@ -722,13 +696,15 @@ const submitQuote = async () => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  min-height: 0;
+  overflow: auto;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
 }
 
 .table-container {
   flex: 1;
-  overflow: hidden;
+  min-height: 0;
+  overflow: auto;
 }
 
 .toolbar {

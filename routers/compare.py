@@ -50,12 +50,17 @@ def get_material_suppliers(material_code: str, db: Session = Depends(get_db), cu
     """
     获取曾经供应过该物料的历史供应商，按采购次数降序排列
     """
+    normalized_code = str(material_code or "").strip()
+    if not normalized_code:
+        return []
+
+    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
     records = db.query(
         PurchaseOrderHistory.supplier_code,
         PurchaseOrderHistory.supplier_name,
         func.count(PurchaseOrderHistory.id).label('count')
     ).filter(
-        PurchaseOrderHistory.material_code == material_code
+        trimmed_material_code == normalized_code
     ).group_by(
         PurchaseOrderHistory.supplier_code,
         PurchaseOrderHistory.supplier_name
@@ -236,14 +241,16 @@ def get_history_prices(req: CompareRequest, db: Session = Depends(get_db), curre
     """
     results = []
     thirty_days_ago = datetime.now() - timedelta(days=30)
+    normalized_code = str(req.material_code or "").strip()
     
     supplier_codes = [s.get("code") for s in req.suppliers if s.get("code")]
-    if not supplier_codes:
+    if not supplier_codes or not normalized_code:
         return []
 
     # 一次性查出所有相关供应商在该物料下的所有历史订单
+    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
     all_records = db.query(PurchaseOrderHistory).filter(
-        PurchaseOrderHistory.material_code == req.material_code,
+        trimmed_material_code == normalized_code,
         PurchaseOrderHistory.supplier_code.in_(supplier_codes)
     ).all()
 

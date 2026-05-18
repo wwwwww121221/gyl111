@@ -22,7 +22,7 @@ from schemas_supplier import (
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
 import logging
-from routers.inquiry import get_current_user, _build_link_material_allocations
+from routers.inquiry import get_current_user
 from core.security import get_password_hash
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,13 @@ def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplie
     allowed_items = []
 
     for item in (task.items or []):
+        has_quote = any(q.item_id == item.id for q in (link.quotations or []))
+        has_allocation = any(
+            int(allocation.get("item_id") or 0) == int(item.id)
+            for allocation in (link.item_allocations or [])
+            if isinstance(allocation, dict)
+        )
+
         supplier_ids = item_supplier_map.get(str(item.id))
         if isinstance(supplier_ids, list) and supplier_ids:
             normalized_ids = set()
@@ -51,14 +58,11 @@ def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplie
                     continue
             if supplier_id in normalized_ids:
                 allowed_items.append(item)
+            elif has_quote or has_allocation:
+                # 兼容旧任务/历史任务：即便映射缺失，只要该供应商确实报过该物料或有分配记录，仍允许查看自身物料明细
+                allowed_items.append(item)
             continue
 
-        has_quote = any(q.item_id == item.id for q in (link.quotations or []))
-        has_allocation = any(
-            int(allocation.get("item_id") or 0) == int(item.id)
-            for allocation in (link.item_allocations or [])
-            if isinstance(allocation, dict)
-        )
         if has_quote or has_allocation or not item_supplier_map:
             allowed_items.append(item)
 
@@ -778,7 +782,6 @@ def get_inquiry_details(
         "contract_pdf": contract_pdf_path,
         "contract_pdf_path": contract_pdf_path,
         "contract_no": contract_no,
-        "material_allocations": _build_link_material_allocations(db, task, link),
         "items": items
     }
 

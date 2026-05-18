@@ -235,6 +235,8 @@ const handleCommand = (command) => {
   background-color: #f0f2f5;
   padding: 20px;
   position: relative;
+  min-height: 0;
+  overflow: auto;
 }
 
 .menu-toggle-btn {

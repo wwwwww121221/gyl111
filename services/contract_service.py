@@ -566,9 +566,11 @@ def _collect_contract_payload(
 
     project_no = ""
     project_name = ""
-    buyer_name = buyer_company_name or "俊郎电气有限公司"
+    buyer_name = "俊郎电气有限公司"
     if contract_record and contract_record.buyer_company_name:
         buyer_name = contract_record.buyer_company_name
+    if buyer_company_name:
+        buyer_name = buyer_company_name
     items = []
     total_amount = Decimal("0")
     total_qty = Decimal("0")
@@ -1499,18 +1501,41 @@ async def generate_contract_pdf(
     buyer_company_name: str = None
 ) -> str:
     link = _resolve_deal_link(db, inquiry_id)
-    active_template = contract_template or _get_active_contract_template(db)
-    resolved_buyer_name = buyer_company_name or (active_template.default_buyer_name if active_template else None)
     contract_record = db.query(Contract).filter(Contract.inquiry_supplier_id == link.id).first()
+    active_template = contract_template or _get_active_contract_template(db)
+    resolved_template_file_path = (
+        template_file_path
+        or (active_template.file_path if active_template else None)
+        or (contract_record.template_file_path if contract_record else None)
+    )
+    resolved_template_id = active_template.id if active_template else (contract_record.template_id if contract_record else None)
+    resolved_template_name = active_template.name if active_template else (contract_record.template_name if contract_record else None)
+    resolved_buyer_name = (
+        buyer_company_name
+        or (active_template.default_buyer_name if active_template else None)
+        or (contract_record.buyer_company_name if contract_record else None)
+    )
     if not contract_record:
         contract_record = Contract(
             task_id=link.task_id,
             inquiry_supplier_id=link.id,
             status="pending",
             buyer_company_name=resolved_buyer_name or "俊郎电气有限公司",
+            template_id=resolved_template_id,
+            template_name=resolved_template_name,
+            template_file_path=resolved_template_file_path,
         )
         db.add(contract_record)
         db.flush()
+    else:
+        if resolved_template_id is not None:
+            contract_record.template_id = resolved_template_id
+        if resolved_template_name:
+            contract_record.template_name = resolved_template_name
+        if resolved_template_file_path:
+            contract_record.template_file_path = resolved_template_file_path
+        if buyer_company_name or (active_template and active_template.default_buyer_name):
+            contract_record.buyer_company_name = resolved_buyer_name
     payload = _collect_contract_payload(
         db,
         link,
@@ -1519,7 +1544,6 @@ async def generate_contract_pdf(
     )
 
     output_pdf = CONTRACT_DIR / f"合同_{inquiry_id}.pdf"
-    resolved_template_file_path = template_file_path or (active_template.file_path if active_template else None)
     template_path = _resolve_template_path(resolved_template_file_path)
     temp_xlsx = _fill_template_to_temp_excel(payload, template_path=template_path)
     try:

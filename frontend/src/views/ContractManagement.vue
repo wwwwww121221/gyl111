@@ -17,6 +17,13 @@
         <el-table-column prop="contract_no" label="合同编号" width="130" header-align="center" align="center" />
         <el-table-column prop="inquiry_name" label="项目/询价单" min-width="180" header-align="center" align="center" />
         <el-table-column prop="supplier_name" label="供应商" min-width="160" header-align="center" align="center" />
+        <el-table-column label="使用模板" min-width="180" header-align="center" align="center" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :class="{ 'template-fallback-text': !row.template_name }">
+              {{ row.template_name || '默认/历史模板' }}
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column label="总金额" min-width="120" header-align="center" align="center">
           <template #default="{ row }">
             {{ formatAmount(row.total_amount) }}
@@ -354,6 +361,10 @@ const handleSizeChange = (size) => {
 
 .more-btn {
   padding: 0;
+}
+
+.template-fallback-text {
+  color: #909399;
 }
 
 .pagination-wrap {

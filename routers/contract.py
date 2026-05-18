@@ -97,6 +97,7 @@ def get_contract_list(
                 InquiryTask.title.ilike(like_kw),
                 Supplier.name.ilike(like_kw),
                 Contract.status.ilike(like_kw),
+                Contract.template_name.ilike(like_kw),
             )
         )
 
@@ -114,6 +115,8 @@ def get_contract_list(
                 "supplier_name": supplier_name,
                 "total_amount": contract.total_amount,
                 "status": contract.status,
+                "template_name": contract.template_name,
+                "template_file_path": contract.template_file_path,
             }
         )
     return {"total": total, "skip": skip, "limit": limit, "items": items}

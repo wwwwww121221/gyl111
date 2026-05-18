@@ -1271,6 +1271,10 @@ def close_inquiry_task(
                     status="待供应商填写"
                 )
             contract_record.total_amount = total_amount
+            if active_template:
+                contract_record.template_id = active_template.id
+                contract_record.template_name = active_template.name
+                contract_record.template_file_path = active_template.file_path
             if active_template and active_template.default_buyer_name and not contract_record.buyer_company_name:
                 contract_record.buyer_company_name = active_template.default_buyer_name
             db.add(contract_record)

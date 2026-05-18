@@ -68,6 +68,15 @@ def ensure_runtime_schema_columns():
         if "extra_data" not in operation_log_columns:
             alter_statements.append("ALTER TABLE operation_logs ADD COLUMN extra_data JSON")
 
+    if "contracts" in table_names:
+        contract_columns = {col["name"] for col in inspector.get_columns("contracts")}
+        if "template_id" not in contract_columns:
+            alter_statements.append("ALTER TABLE contracts ADD COLUMN template_id INTEGER")
+        if "template_name" not in contract_columns:
+            alter_statements.append("ALTER TABLE contracts ADD COLUMN template_name VARCHAR")
+        if "template_file_path" not in contract_columns:
+            alter_statements.append("ALTER TABLE contracts ADD COLUMN template_file_path VARCHAR")
+
     if "compare_drafts" not in table_names:
         alter_statements.extend([
             """
@@ -282,6 +291,9 @@ class Contract(Base):
     pdf_path = Column(Text, nullable=True)
     total_amount = Column(Float, nullable=True)
     buyer_company_name = Column(String, nullable=True)
+    template_id = Column(Integer, ForeignKey("contract_templates.id"), nullable=True)
+    template_name = Column(String, nullable=True)
+    template_file_path = Column(String, nullable=True)
     history_versions = Column(JSON, nullable=True, default=list)
     address = Column(String, nullable=True)
     legal_representative = Column(String, nullable=True)
@@ -301,6 +313,7 @@ class Contract(Base):
     task = relationship("InquiryTask", back_populates="contracts")
     inquiry_supplier = relationship("InquirySupplier", back_populates="contracts")
     generator = relationship("User")
+    template = relationship("ContractTemplate")
 
 class ContractTemplate(Base):
     __tablename__ = "contract_templates"

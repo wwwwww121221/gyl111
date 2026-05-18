@@ -1,6 +1,48 @@
 import datetime
 from kingdee_erp_tool.core.client import client
 
+BASE_WARNING_FIELDS = [
+    "F_XJPJ_BASE.FNUMBER",
+    "FSUPPLIERID.FNAME",
+    "FMATERIALID.FNUMBER",
+    "FMATERIALNAME",
+]
+
+WARNING_MODEL_FIELD_CANDIDATES = [
+    "FMATERIALMODEL",
+    "FMATERIALID.FSpecification",
+]
+
+WARNING_TAIL_FIELDS = [
+    "FQTY",
+    "FDELIVERYDATE",
+    "FRECEIVEQTY",
+    "FREMAINRECEIVEQTY",
+    "FSTOCKINQTY",
+    "FREMAINSTOCKINQTY",
+]
+
+
+def _build_warning_field_keys(material_model_field: str | None = None) -> str:
+    field_keys = list(BASE_WARNING_FIELDS)
+    if material_model_field:
+        field_keys.append(material_model_field)
+    field_keys.extend(WARNING_TAIL_FIELDS)
+    return ",".join(field_keys)
+
+
+def _is_query_error_response(rows) -> bool:
+    if not isinstance(rows, list) or not rows:
+        return False
+    first = rows[0]
+    if isinstance(first, list) and first:
+        first = first[0]
+    if not isinstance(first, dict):
+        return False
+    response_status = (((first.get("Result") or {}).get("ResponseStatus")) or {})
+    return response_status.get("IsSuccess") is False
+
+
 def get_purchase_order_data():
     """
     获取采购订单数据
@@ -15,7 +57,6 @@ def get_purchase_order_data():
     # 累计收料数量FRECEIVEQTY,剩余收料数量FREMAINRECEIVEQTY,累计入库数量FSTOCKINQTY,剩余入库数量FREMAINSTOCKINQTY
     para = {
         "FormId": "PUR_PurchaseOrder",
-        "FieldKeys": "F_XJPJ_BASE.FNUMBER,FSUPPLIERID.FNAME,FMATERIALID.FNUMBER,FMATERIALNAME,FQTY,FDELIVERYDATE,FRECEIVEQTY,FREMAINRECEIVEQTY,FSTOCKINQTY,FREMAINSTOCKINQTY",
         "FilterString": [
             {"Left": "(", "FieldName": "FDELIVERYDATE", "Compare": ">=", "Value": now_str, "Right": ")", "Logic": "0"},
             {"Left": "(", "FieldName": "FDELIVERYDATE", "Compare": "<=", "Value": future_str, "Right": ")", "Logic": "0"},
@@ -28,9 +69,18 @@ def get_purchase_order_data():
         "SubSystemId": ""
     }
 
-    # 使用 client 执行查询
-    print(f"Executing query with params: {para}")
-    return client.execute_query(para)
+    # 优先尝试直接取规格型号；ERP不支持时自动回退，避免整页预警数据丢失
+    for material_model_field in WARNING_MODEL_FIELD_CANDIDATES + [None]:
+        query_para = dict(para)
+        query_para["FieldKeys"] = _build_warning_field_keys(material_model_field)
+        print(f"Executing query with params: {query_para}")
+        rows = client.execute_query(query_para)
+        if _is_query_error_response(rows):
+            print(f"Warning query failed with field {material_model_field}, fallback to next candidate.")
+            continue
+        return rows
+
+    return []
 
 def process_warning_data(rows):
     """
@@ -48,7 +98,7 @@ def process_warning_data(rows):
     for r in rows:
         try:
             # Check if row is valid list
-            if not isinstance(r, list) or len(r) < 9:
+            if not isinstance(r, list) or len(r) < 10:
                 print(f"Skipping invalid row: {r}")
                 continue
 
@@ -56,12 +106,15 @@ def process_warning_data(rows):
             supplier_id = r[1]
             material_id = r[2]
             material_name = r[3]
-            qty = float(r[4]) if r[4] is not None else 0.0
-            delivery_date = r[5]
-            receive_qty = float(r[6]) if r[6] is not None else 0.0
-            # r[7] is FREMAINRECEIVEQTY
-            stockin_qty = float(r[8]) if r[8] is not None else 0.0
-            # r[9] is FREMAINSTOCKINQTY
+            has_material_model = len(r) >= 11
+            material_model = r[4] if has_material_model and r[4] is not None else ""
+            value_offset = 1 if has_material_model else 0
+            qty = float(r[4 + value_offset]) if r[4 + value_offset] is not None else 0.0
+            delivery_date = r[5 + value_offset]
+            receive_qty = float(r[6 + value_offset]) if r[6 + value_offset] is not None else 0.0
+            # r[7 + value_offset] is FREMAINRECEIVEQTY
+            stockin_qty = float(r[8 + value_offset]) if r[8 + value_offset] is not None else 0.0
+            # r[9 + value_offset] is FREMAINSTOCKINQTY
 
             # 核心逻辑
             unreceived_qty = max(0, qty - receive_qty)
@@ -72,6 +125,7 @@ def process_warning_data(rows):
                 "supplier_name": supplier_id,
                 "material_id": material_id,
                 "material_name": material_name,
+                "material_model": material_model,
                 "delivery_date": delivery_date
             }
 

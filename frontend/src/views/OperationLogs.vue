@@ -392,31 +392,32 @@ onMounted(() => {
 
 .filter-bar {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: center;
   margin-bottom: 16px;
+  overflow-x: auto;
 }
 
 .filter-item {
-  width: 160px;
-  flex: 0 0 160px;
+  width: 120px;
+  flex: 0 0 120px;
 }
 
 .filter-date {
-  width: 320px;
-  flex-basis: 320px;
+  width: 280px;
+  flex: 0 0 280px;
 }
 
 .filter-keyword {
-  width: 220px;
-  flex-basis: 220px;
+  width: 180px;
+  flex: 0 0 180px;
 }
 
 .filter-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex: 0 0 auto;
 }
 

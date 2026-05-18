@@ -88,9 +88,10 @@ def _enrich_warning_items_with_material_model(items: List[dict], db: Session) ->
     enriched_items = []
     for item in items:
         normalized_code = str(item.get("material_id") or "").strip()
+        erp_material_model = str(item.get("material_model") or "").strip()
         enriched_items.append({
             **item,
-            "material_model": item.get("material_model") or model_map.get(normalized_code) or ""
+            "material_model": erp_material_model or model_map.get(normalized_code) or ""
         })
     return enriched_items
 

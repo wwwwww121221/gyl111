@@ -15,6 +15,7 @@ class TokenData(BaseModel):
 class UserBase(BaseModel):
     username: str
     role: Optional[str] = "buyer"
+    department: Optional[str] = "采购部"
 
 class UserCreate(UserBase):
     password: str
@@ -42,6 +43,13 @@ class InquiryRequestBase(BaseModel):
     material_model: Optional[str] = None
     qty: float
     delivery_date: Optional[datetime] = None
+    purchaser_name: Optional[str] = None
+    purchaser_detail_name: Optional[str] = None
+    purchaser_base_name: Optional[str] = None
+    remark: Optional[str] = None
+    remark_detail: Optional[str] = None
+    remark_base: Optional[str] = None
+    technician_name: Optional[str] = None
 
 class InquiryRequestCreate(InquiryRequestBase):
     target_price: Optional[float] = None
@@ -63,6 +71,14 @@ class StrategyConfig(BaseModel):
     bargain_ratio: float = 0.05
     target_price_rule: Optional[dict] = None
 
+
+class InquiryAttachment(BaseModel):
+    name: str
+    file_path: str
+    preview_file_path: Optional[str] = None
+    size: Optional[int] = None
+    uploaded_at: Optional[datetime] = None
+
 class InquiryTaskBase(BaseModel):
     title: str
     type: str = "auto"
@@ -74,12 +90,17 @@ class InquiryTaskCreate(InquiryTaskBase):
     request_ids: Optional[List[int]] = None
     raw_requests: Optional[List[InquiryRequestCreate]] = None
     supplier_ids: Optional[List[int]] = None
+    buyer_comment: Optional[str] = None
+    attachments: Optional[List[InquiryAttachment]] = None
 
 class InquiryTask(InquiryTaskBase):
     deadline: Optional[datetime] = None
     id: int
     status: Optional[str] = None
     buyer_id: Optional[int] = None
+    approved_by: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    approval_comment: Optional[str] = None
     created_by: Optional[int] = None
     created_at: Optional[datetime] = None
     
@@ -102,6 +123,10 @@ class TaskCloseAllocation(BaseModel):
 
 class TaskClosePayload(BaseModel):
     allocations: List[TaskCloseAllocation]
+
+
+class TaskApprovalPayload(BaseModel):
+    comment: Optional[str] = None
 
 class ContractBase(BaseModel):
     task_id: int

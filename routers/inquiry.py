@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 from typing import List, Any, Optional
 from pydantic import BaseModel
 import uuid
 from datetime import datetime, date
 from decimal import Decimal, ROUND_FLOOR
+from pathlib import Path
+import shutil
+import subprocess
 
 from models import (
     get_db, User, InquiryRequest, InquiryTask, InquiryTaskItem,
@@ -13,16 +16,396 @@ from models import (
 )
 from schemas import (
     InquiryTaskCreate, InquiryTask as InquiryTaskSchema, StrategyConfig,
-    InquiryRequest as InquiryRequestSchema, TaskClosePayload
+    InquiryRequest as InquiryRequestSchema, TaskClosePayload, TaskApprovalPayload
 )
 from routers.auth import oauth2_scheme, login_access_token # reuse auth but simpler dependency
 from services.negotiation_service import calculate_supplier_scores
+from services.contract_service import _find_soffice_executable, _import_win32_modules
 
 # 简单的用户获取依赖
 from jose import jwt, JWTError
 from core.config import settings
 
 router = APIRouter()
+BASE_DIR = Path(__file__).resolve().parent.parent
+UPLOAD_ROOT_DIR = BASE_DIR / "static" / "uploads"
+UPLOAD_ROOT_DIR.mkdir(parents=True, exist_ok=True)
+OFFICE_PREVIEW_EXTENSIONS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+
+
+def _is_admin_like(user: User | None) -> bool:
+    return bool(user and user.role in ["admin", "buyer_manager"])
+
+
+def _requires_task_approval(user: User | None) -> bool:
+    return bool(user and user.role == "buyer")
+
+
+def _get_task_pending_supplier_ids(task: InquiryTask) -> list[int]:
+    strategy = task.strategy_config or {}
+    pending_supplier_ids = strategy.get("pending_supplier_ids") or []
+    normalized_ids = []
+    seen_ids = set()
+    for raw_supplier_id in pending_supplier_ids:
+        try:
+            supplier_id = int(raw_supplier_id)
+        except (TypeError, ValueError):
+            continue
+        if supplier_id <= 0 or supplier_id in seen_ids:
+            continue
+        seen_ids.add(supplier_id)
+        normalized_ids.append(supplier_id)
+    return normalized_ids
+
+
+def _get_task_buyer_comment(task: InquiryTask) -> str:
+    strategy = task.strategy_config or {}
+    return str(strategy.get("buyer_comment") or "").strip()
+
+
+def _normalize_attachment_path(file_path: str) -> str:
+    normalized_path = str(file_path or "").strip().replace("\\", "/")
+    if not normalized_path:
+        return ""
+    if normalized_path.startswith("/static/"):
+        return normalized_path
+    if normalized_path.startswith("static/"):
+        return f"/{normalized_path}"
+    return normalized_path
+
+
+def _normalize_upload_category(category: str) -> str:
+    normalized = str(category or "").strip().lower().replace("\\", "/")
+    normalized = normalized.replace("-", "_").replace(" ", "_")
+    normalized = "".join(ch for ch in normalized if ch.isalnum() or ch in ["_", "/"])
+    normalized = normalized.strip("/_")
+    return normalized or "misc"
+
+
+def _get_upload_directory(category: str) -> tuple[str, Path]:
+    normalized_category = _normalize_upload_category(category)
+    month_bucket = datetime.now().strftime("%Y%m")
+    target_dir = UPLOAD_ROOT_DIR / normalized_category / month_bucket
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return normalized_category, target_dir
+
+
+def _normalize_task_attachments(raw_attachments: Any) -> list[dict]:
+    normalized_attachments = []
+    for item in raw_attachments or []:
+        if isinstance(item, BaseModel):
+            data = item.model_dump() if hasattr(item, "model_dump") else item.dict()
+        elif isinstance(item, dict):
+            data = item
+        else:
+            continue
+
+        name = str(data.get("name") or data.get("filename") or "").strip()
+        file_path = _normalize_attachment_path(str(data.get("file_path") or "").strip())
+        if not name or not file_path:
+            continue
+
+        size = data.get("size")
+        try:
+            size = int(size) if size is not None else None
+        except (TypeError, ValueError):
+            size = None
+
+        uploaded_at = data.get("uploaded_at")
+        if isinstance(uploaded_at, datetime):
+            uploaded_at = uploaded_at.isoformat()
+        elif uploaded_at is not None:
+            uploaded_at = str(uploaded_at)
+
+        preview_file_path = _normalize_attachment_path(str(data.get("preview_file_path") or "").strip())
+        if not preview_file_path:
+            preview_candidate = _resolve_local_attachment_path(file_path).parent / "preview" / f"{Path(file_path).stem}_preview.pdf"
+            if preview_candidate.exists():
+                preview_file_path = f"/{preview_candidate.relative_to(BASE_DIR).as_posix()}"
+
+        normalized_attachments.append({
+            "name": name,
+            "file_path": file_path,
+            "preview_file_path": preview_file_path,
+            "size": size,
+            "uploaded_at": uploaded_at
+        })
+    return normalized_attachments
+
+
+def _get_task_attachments(task: InquiryTask) -> list[dict]:
+    strategy = task.strategy_config or {}
+    return _normalize_task_attachments(strategy.get("attachments") or [])
+
+
+def _resolve_local_attachment_path(file_path: str) -> Path:
+    normalized_path = _normalize_attachment_path(file_path)
+    if normalized_path.startswith("/static/"):
+        return BASE_DIR / normalized_path.lstrip("/")
+    candidate = Path(normalized_path)
+    return candidate if candidate.is_absolute() else BASE_DIR / normalized_path
+
+
+def _delete_task_attachment_files(task: InquiryTask) -> None:
+    for attachment in _get_task_attachments(task):
+        try:
+            local_path = _resolve_local_attachment_path(attachment.get("file_path") or "")
+            if local_path.exists():
+                local_path.unlink()
+            preview_path = attachment.get("preview_file_path") or ""
+            if preview_path:
+                preview_local_path = _resolve_local_attachment_path(preview_path)
+                if preview_local_path.exists():
+                    preview_local_path.unlink()
+        except OSError:
+            continue
+
+
+def _convert_with_libreoffice(source_path: Path, output_pdf: Path) -> bool:
+    soffice_path = _find_soffice_executable()
+    if soffice_path is None:
+        return False
+
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    generated_pdf = output_pdf.parent / f"{source_path.stem}.pdf"
+    if generated_pdf.exists():
+        try:
+            generated_pdf.unlink()
+        except Exception:
+            pass
+
+    command = [
+        str(soffice_path),
+        "--headless",
+        "--nologo",
+        "--nodefault",
+        "--norestore",
+        "--nolockcheck",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        str(output_pdf.parent.resolve()),
+        str(source_path.resolve()),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception:
+        return False
+
+    if result.returncode != 0 or not generated_pdf.exists():
+        return False
+
+    if generated_pdf.resolve() != output_pdf.resolve():
+        try:
+            if output_pdf.exists():
+                output_pdf.unlink()
+        except Exception:
+            pass
+        generated_pdf.replace(output_pdf)
+
+    return output_pdf.exists() and output_pdf.stat().st_size > 0
+
+
+def _convert_with_word(source_path: Path, output_pdf: Path) -> bool:
+    pythoncom, win32 = _import_win32_modules()
+    if not pythoncom or not win32:
+        return False
+    app = None
+    document = None
+    try:
+        pythoncom.CoInitialize()
+        app = win32.DispatchEx("Word.Application")
+        app.Visible = False
+        document = app.Documents.Open(str(source_path.resolve()))
+        document.ExportAsFixedFormat(str(output_pdf.resolve()), 17)
+        return output_pdf.exists() and output_pdf.stat().st_size > 0
+    except Exception:
+        return False
+    finally:
+        if document is not None:
+            try:
+                document.Close(False)
+            except Exception:
+                pass
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:
+                pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
+
+def _convert_with_excel(source_path: Path, output_pdf: Path) -> bool:
+    pythoncom, win32 = _import_win32_modules()
+    if not pythoncom or not win32:
+        return False
+    app = None
+    workbook = None
+    try:
+        pythoncom.CoInitialize()
+        app = win32.DispatchEx("Excel.Application")
+        app.Visible = False
+        app.DisplayAlerts = False
+        workbook = app.Workbooks.Open(str(source_path.resolve()))
+        workbook.ExportAsFixedFormat(0, str(output_pdf.resolve()))
+        return output_pdf.exists() and output_pdf.stat().st_size > 0
+    except Exception:
+        return False
+    finally:
+        if workbook is not None:
+            try:
+                workbook.Close(False)
+            except Exception:
+                pass
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:
+                pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
+
+def _convert_with_powerpoint(source_path: Path, output_pdf: Path) -> bool:
+    pythoncom, win32 = _import_win32_modules()
+    if not pythoncom or not win32:
+        return False
+    app = None
+    presentation = None
+    try:
+        pythoncom.CoInitialize()
+        app = win32.DispatchEx("PowerPoint.Application")
+        presentation = app.Presentations.Open(str(source_path.resolve()), WithWindow=False)
+        presentation.SaveAs(str(output_pdf.resolve()), 32)
+        return output_pdf.exists() and output_pdf.stat().st_size > 0
+    except Exception:
+        return False
+    finally:
+        if presentation is not None:
+            try:
+                presentation.Close()
+            except Exception:
+                pass
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:
+                pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
+
+def _generate_attachment_preview_file(source_path: Path) -> str:
+    ext = source_path.suffix.lower()
+    if ext not in OFFICE_PREVIEW_EXTENSIONS:
+        return ""
+
+    preview_dir = source_path.parent / "preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    output_pdf = preview_dir / f"{source_path.stem}_preview.pdf"
+    if output_pdf.exists():
+        try:
+            output_pdf.unlink()
+        except Exception:
+            pass
+
+    converted = _convert_with_libreoffice(source_path, output_pdf)
+    if not converted and ext in {".doc", ".docx"}:
+        converted = _convert_with_word(source_path, output_pdf)
+    if not converted and ext in {".xls", ".xlsx"}:
+        converted = _convert_with_excel(source_path, output_pdf)
+    if not converted and ext in {".ppt", ".pptx"}:
+        converted = _convert_with_powerpoint(source_path, output_pdf)
+
+    if not converted or not output_pdf.exists():
+        return ""
+
+    relative_path = output_pdf.relative_to(BASE_DIR).as_posix()
+    return f"/{relative_path}"
+
+
+def _get_task_buyer_comment_history(task: InquiryTask) -> list[dict]:
+    strategy = task.strategy_config or {}
+    history = strategy.get("buyer_comment_history") or []
+    normalized_history = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        comment = str(row.get("comment") or "").strip()
+        if not comment:
+            continue
+        normalized_history.append({
+            "comment": comment,
+            "submitted_at": row.get("submitted_at"),
+            "submitted_by": row.get("submitted_by"),
+            "action": row.get("action") or "submit"
+        })
+    return normalized_history
+
+
+def _append_buyer_comment_history(
+    strategy_config: dict,
+    comment: str,
+    submitted_by: str,
+    action: str
+) -> dict:
+    normalized_comment = str(comment or "").strip()
+    if not normalized_comment:
+        return strategy_config
+
+    history = strategy_config.get("buyer_comment_history") or []
+    normalized_history = [row for row in history if isinstance(row, dict)]
+    normalized_history.append({
+        "comment": normalized_comment,
+        "submitted_at": datetime.now().isoformat(),
+        "submitted_by": submitted_by,
+        "action": action
+    })
+    strategy_config["buyer_comment"] = normalized_comment
+    strategy_config["buyer_comment_history"] = normalized_history
+    return strategy_config
+
+
+def _ensure_task_supplier_links(db: Session, task: InquiryTask) -> None:
+    existing_supplier_ids = {
+        int(link.supplier_id)
+        for link in (task.suppliers or [])
+        if link.supplier_id is not None
+    }
+    for supplier_id in _get_task_pending_supplier_ids(task):
+        if supplier_id in existing_supplier_ids:
+            continue
+        supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier:
+            continue
+        db.add(InquirySupplier(
+            task_id=task.id,
+            supplier_id=supplier.id,
+            status=LinkStatus.SENT
+        ))
+
+
+def _get_task_activated_status(task: InquiryTask) -> str:
+    return TaskStatus.PENDING_FILL if task.type == "manual" else TaskStatus.ACTIVE
+
+
+def _revert_task_request_statuses(task: InquiryTask) -> None:
+    for item in (task.items or []):
+        if item.request and item.request.status == InquiryStatus.IN_PROCESS:
+            item.request.status = InquiryStatus.PENDING_POOL
 
 class ManualInterventionPayload(BaseModel):
     message: Optional[str] = None
@@ -519,6 +902,48 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
+
+@router.post("/attachments/upload")
+async def upload_inquiry_attachment(
+    file: UploadFile = File(...),
+    category: str = Form("inquiry_attachments"),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".zip", ".rar", ".7z", ".png", ".jpg", ".jpeg"
+    }
+    if ext not in allowed_extensions:
+        raise HTTPException(status_code=400, detail="附件格式不支持")
+
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="附件大小不能超过20MB")
+
+    safe_name = Path(file.filename).name
+    normalized_category, target_dir = _get_upload_directory(category)
+    month_bucket = target_dir.name
+    saved_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
+    saved_path = target_dir / saved_name
+    saved_path.write_bytes(content)
+    preview_file_path = _generate_attachment_preview_file(saved_path)
+
+    return {
+        "message": "Attachment uploaded successfully",
+        "name": safe_name,
+        "category": normalized_category,
+        "file_path": f"/static/uploads/{normalized_category}/{month_bucket}/{saved_name}",
+        "preview_file_path": preview_file_path,
+        "size": len(content),
+        "uploaded_at": datetime.now().isoformat()
+    }
+
 @router.post("/tasks", response_model=InquiryTaskSchema)
 def create_inquiry_task(
     task_in: InquiryTaskCreate,
@@ -596,12 +1021,27 @@ def create_inquiry_task(
     # 2. 创建任务
     strategy_config = dict(task_in.strategy_config.dict()) if task_in.strategy_config else {}
     item_supplier_map = {}
+    approval_required = _requires_task_approval(current_user)
+    if task_level_supplier_ids:
+        strategy_config["pending_supplier_ids"] = sorted(task_level_supplier_ids)
+    buyer_comment = str(getattr(task_in, "buyer_comment", "") or "").strip()
+    if buyer_comment:
+        strategy_config = _append_buyer_comment_history(
+            strategy_config,
+            buyer_comment,
+            current_user.username,
+            "create"
+        )
+    attachments = _normalize_task_attachments(getattr(task_in, "attachments", None))
+    if attachments:
+        strategy_config["attachments"] = attachments
+
     new_task = InquiryTask(
         title=task_in.title,
         type=task_in.type,
         strategy_config=strategy_config,
         deadline=task_in.deadline,
-        status=TaskStatus.PENDING_FILL if task_in.type == "manual" else TaskStatus.ACTIVE,
+        status=TaskStatus.PENDING_APPROVAL if approval_required else _get_task_activated_status(task_in),
         buyer_id=current_user.id,
         created_by=current_user.id
     )
@@ -647,7 +1087,7 @@ def create_inquiry_task(
             "item_supplier_map": item_supplier_map
         }
 
-    if task_level_supplier_ids:
+    if task_level_supplier_ids and not approval_required:
         for sup_id in sorted(task_level_supplier_ids):
             supplier = db.query(Supplier).get(sup_id)
             if supplier:
@@ -666,7 +1106,7 @@ def create_inquiry_task(
         db,
         current_user.id,
         "CREATE_INQUIRY",
-        f"创建了询价单: {new_task.title}",
+        f"{'提交了询价审批单' if approval_required else '创建了询价单'}: {new_task.title}",
         request=request,
         module="询价管理",
         target_type="询价任务",
@@ -675,8 +1115,11 @@ def create_inquiry_task(
         extra_data={
             "task_id": new_task.id,
             "task_type": new_task.type,
+            "approval_required": approval_required,
+            "task_status": new_task.status,
             "item_count": len(task_in.request_ids or []),
-            "supplier_count": len(task_level_supplier_ids)
+            "supplier_count": len(task_level_supplier_ids),
+            "has_buyer_comment": bool(buyer_comment)
         }
     )
     
@@ -770,7 +1213,15 @@ def get_my_tasks(
             "deadline": task.deadline,
             "created_at": task.created_at,
             "buyer_id": task.buyer_id,
-            "buyer_name": task.buyer.username if task.buyer else None
+            "buyer_name": task.buyer.username if task.buyer else None,
+            "buyer_department": task.buyer.department if task.buyer else None,
+            "buyer_comment": _get_task_buyer_comment(task),
+            "buyer_comment_history": _get_task_buyer_comment_history(task),
+            "attachments": _get_task_attachments(task),
+            "approved_by": task.approved_by,
+            "approved_at": task.approved_at,
+            "approval_comment": task.approval_comment,
+            "approver_name": task.approver.username if task.approver else None
         }
         result.append(task_dict)
     
@@ -923,6 +1374,22 @@ def get_task_details(
             "score_rank": rank_map.get(link.id)
         })
 
+    proposed_suppliers = []
+    pending_supplier_ids = _get_task_pending_supplier_ids(task)
+    if pending_supplier_ids:
+        suppliers = db.query(Supplier).filter(Supplier.id.in_(pending_supplier_ids)).all()
+        supplier_map = {supplier.id: supplier for supplier in suppliers}
+        for supplier_id in pending_supplier_ids:
+            supplier = supplier_map.get(supplier_id)
+            if not supplier:
+                continue
+            proposed_suppliers.append({
+                "supplier_id": supplier.id,
+                "supplier_name": supplier.name,
+                "supplier_code": supplier.code,
+                "supplier_grade": supplier.grade or ('A级' if supplier.level == 'core' else '一般')
+            })
+
     return {
         "id": task.id,
         "title": task.title,
@@ -933,9 +1400,21 @@ def get_task_details(
         "compare_ready": compare_meta["compare_ready"],
         "compare_ready_reason": compare_meta["compare_ready_reason"],
         "strategy_config": task.strategy_config,
+        "buyer_id": task.buyer_id,
+        "buyer_name": task.buyer.username if task.buyer else None,
+        "buyer_department": task.buyer.department if task.buyer else None,
+        "buyer_comment": _get_task_buyer_comment(task),
+        "buyer_comment_history": _get_task_buyer_comment_history(task),
+        "attachments": _get_task_attachments(task),
+        "approved_by": task.approved_by,
+        "approved_at": task.approved_at,
+        "approval_comment": task.approval_comment,
+        "approver_name": task.approver.username if task.approver else None,
         "items": items,
-        "links": links
+        "links": links,
+        "proposed_suppliers": proposed_suppliers
     }
+
 
 @router.delete("/tasks/{task_id}")
 def delete_inquiry_task(
@@ -969,6 +1448,8 @@ def delete_inquiry_task(
         if item.request:
             item.request.status = InquiryStatus.PENDING_POOL
         db.delete(item)
+
+    _delete_task_attachment_files(task)
         
     # 删除任务本身
     db.delete(task)
@@ -1134,7 +1615,7 @@ def get_compare_drafts(
     获取当前采购员的智能比价草稿列表
     """
     query = db.query(CompareDraft)
-    if current_user.role != "admin":
+    if not _is_admin_like(current_user):
         query = query.filter(CompareDraft.buyer_id == current_user.id)
     drafts = query.order_by(CompareDraft.updated_at.desc(), CompareDraft.id.desc()).all()
     return [
@@ -1160,7 +1641,7 @@ def delete_compare_draft(
     draft = db.query(CompareDraft).filter(CompareDraft.id == draft_id).first()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
-    if current_user.role != "admin" and draft.buyer_id != current_user.id:
+    if not _is_admin_like(current_user) and draft.buyer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     db.delete(draft)
@@ -1175,7 +1656,7 @@ def delete_compare_drafts_by_task(
     current_user: User = Depends(get_current_user)
 ) -> Any:
     query = db.query(CompareDraft).filter(CompareDraft.task_id == task_id)
-    if current_user.role != "admin":
+    if not _is_admin_like(current_user):
         query = query.filter(CompareDraft.buyer_id == current_user.id)
 
     deleted = query.delete()
@@ -1286,6 +1767,146 @@ def close_inquiry_task(
         "is_split_award": len(allocation_map) > 1
     }
 
+
+@router.post("/tasks/{task_id}/approve")
+def approve_inquiry_task(
+    task_id: int,
+    payload: TaskApprovalPayload = Body(default=TaskApprovalPayload()),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    request: Request = None
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="只有采购部经理或超级管理员可以审批")
+
+    task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in [TaskStatus.PENDING_APPROVAL, TaskStatus.APPROVAL_REJECTED]:
+        raise HTTPException(status_code=400, detail="当前任务不在待审批状态")
+
+    _ensure_task_supplier_links(db, task)
+    task.status = _get_task_activated_status(task)
+    task.approved_by = current_user.id
+    task.approved_at = datetime.now()
+    task.approval_comment = (payload.comment or "").strip() or "审批通过"
+    db.commit()
+
+    from routers.system import log_operation
+    log_operation(
+        db,
+        current_user.id,
+        "APPROVE_INQUIRY",
+        f"审批通过询价单: {task.title}",
+        request=request,
+        module="询价审批",
+        target_type="询价任务",
+        target_name=task.title,
+        result="success",
+        extra_data={
+            "task_id": task.id,
+            "task_type": task.type,
+            "buyer_name": task.buyer.username if task.buyer else None,
+            "comment": task.approval_comment
+        }
+    )
+    return {"message": "审批通过，任务已进入正式询价流程。"}
+
+
+@router.post("/tasks/{task_id}/reject")
+def reject_inquiry_task(
+    task_id: int,
+    payload: TaskApprovalPayload = Body(default=TaskApprovalPayload()),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    request: Request = None
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="只有采购部经理或超级管理员可以审批")
+
+    task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in [TaskStatus.PENDING_APPROVAL, TaskStatus.APPROVAL_REJECTED]:
+        raise HTTPException(status_code=400, detail="当前任务不在待审批状态")
+
+    task.status = TaskStatus.APPROVAL_REJECTED
+    task.approved_by = current_user.id
+    task.approved_at = datetime.now()
+    task.approval_comment = (payload.comment or "").strip() or "审批驳回"
+    _revert_task_request_statuses(task)
+    db.commit()
+
+    from routers.system import log_operation
+    log_operation(
+        db,
+        current_user.id,
+        "REJECT_INQUIRY",
+        f"审批驳回询价单: {task.title}",
+        request=request,
+        module="询价审批",
+        target_type="询价任务",
+        target_name=task.title,
+        result="success",
+        extra_data={
+            "task_id": task.id,
+            "task_type": task.type,
+            "buyer_name": task.buyer.username if task.buyer else None,
+            "comment": task.approval_comment
+        }
+    )
+    return {"message": "已驳回该询价申请。"}
+
+
+@router.post("/tasks/{task_id}/resubmit")
+def resubmit_inquiry_task(
+    task_id: int,
+    payload: TaskApprovalPayload = Body(default=TaskApprovalPayload()),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    request: Request = None
+) -> Any:
+    task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if current_user.role != "buyer" or task.buyer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="只有原采购员可以重新提交审批")
+    if task.status != TaskStatus.APPROVAL_REJECTED:
+        raise HTTPException(status_code=400, detail="当前任务不是审批驳回状态")
+
+    strategy_config = dict(task.strategy_config or {})
+    buyer_comment = (payload.comment or "").strip()
+    if buyer_comment:
+        strategy_config = _append_buyer_comment_history(
+            strategy_config,
+            buyer_comment,
+            current_user.username,
+            "resubmit"
+        )
+    task.strategy_config = strategy_config
+    task.status = TaskStatus.PENDING_APPROVAL
+    db.commit()
+
+    from routers.system import log_operation
+    log_operation(
+        db,
+        current_user.id,
+        "RESUBMIT_INQUIRY",
+        f"重新提交询价审批单: {task.title}",
+        request=request,
+        module="询价审批",
+        target_type="询价任务",
+        target_name=task.title,
+        result="success",
+        extra_data={
+            "task_id": task.id,
+            "task_type": task.type,
+            "buyer_name": task.buyer.username if task.buyer else None,
+            "buyer_comment": _get_task_buyer_comment(task)
+        }
+    )
+    return {"message": "已重新提交经理审核。"}
+
 @router.post("/tasks/{task_id}/links/{link_id}/manual-continue")
 def manual_continue_negotiation(
     task_id: int,
@@ -1294,7 +1915,7 @@ def manual_continue_negotiation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ) -> Any:
-    if current_user.role not in ["admin", "buyer"]:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
@@ -1324,7 +1945,7 @@ def manual_reject_link(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ) -> Any:
-    if current_user.role not in ["admin", "buyer"]:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()

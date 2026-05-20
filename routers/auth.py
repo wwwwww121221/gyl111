@@ -14,6 +14,10 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
 
+def _is_admin_like(user: User | None) -> bool:
+    return bool(user and user.role in ["admin", "buyer_manager"])
+
+
 def _find_user_for_login(db: Session, login_value: str):
     user = db.query(User).filter(User.username == login_value).first()
     if user:
@@ -113,7 +117,13 @@ def login_access_token(
         extra_data={"role": user.role}
     )
     
-    return {"access_token": access_token, "token_type": "bearer", "role": user.role, "username": user.username}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": user.role,
+        "username": user.username,
+        "department": user.department
+    }
 
 @router.post("/register", response_model=UserSchema)
 def register_user(
@@ -135,7 +145,8 @@ def register_user(
     user = User(
         username=user_in.username,
         password_hash=security.get_password_hash(user_in.password),
-        role=user_in.role
+        role=user_in.role,
+        department=user_in.department or ("采购部" if user_in.role in ["buyer", "buyer_manager"] else None)
     )
     db.add(user)
     db.commit()
@@ -183,11 +194,11 @@ def get_users(
     """
     获取采购员和管理员列表（仅超级管理员可访问）
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="只有超级管理员可以访问账号列表")
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以访问账号列表")
         
-    users = db.query(User).filter(User.role.in_(["admin", "buyer"])).all()
-    return [{"id": u.id, "username": u.username, "role": u.role} for u in users]
+    users = db.query(User).filter(User.role.in_(["admin", "buyer", "buyer_manager"])).all()
+    return [{"id": u.id, "username": u.username, "role": u.role, "department": u.department} for u in users]
 
 @router.delete("/users/{user_id}")
 def delete_user(
@@ -200,15 +211,15 @@ def delete_user(
     删除采购员账号（仅超级管理员可访问）
     处理外键约束问题，将关联记录的 buyer_id 置空
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="只有超级管理员可以删除账号")
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以删除账号")
         
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="账号不存在")
         
-    if user.role == "admin" and user.id == current_user.id:
-        raise HTTPException(status_code=400, detail="不能删除当前正在使用的超级管理员账号")
+    if user.role in ["admin", "buyer_manager"] and user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="不能删除当前正在使用的管理账号")
         
     try:
         from models import InquiryTask, WarningMessage, Supplier

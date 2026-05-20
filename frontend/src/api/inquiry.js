@@ -8,6 +8,17 @@ export const createInquiryTask = (data) => {
   return api.post(`${INQUIRY_BASE}/tasks`, data)
 }
 
+export const uploadInquiryAttachment = (file, category = 'inquiry_attachments') => {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('category', category)
+  return api.post(`${INQUIRY_BASE}/attachments/upload`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
 export const getInquiryTasks = (params = {}) => {
   return api.get(`${INQUIRY_BASE}/tasks`, { params })
 }
@@ -34,6 +45,18 @@ export const closeInquiryTask = (taskId, closeData = null) => {
   }
 
   return api.post(`${INQUIRY_BASE}/tasks/${taskId}/close`, closeData)
+}
+
+export const approveInquiryTask = (taskId, data = {}) => {
+  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/approve`, data)
+}
+
+export const rejectInquiryTask = (taskId, data = {}) => {
+  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/reject`, data)
+}
+
+export const resubmitInquiryTask = (taskId, data = {}) => {
+  return api.post(`${INQUIRY_BASE}/tasks/${taskId}/resubmit`, data)
 }
 
 export const saveManualQuotes = (taskId, data) => {

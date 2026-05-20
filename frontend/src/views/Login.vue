@@ -115,9 +115,10 @@ const handleLogin = async () => {
           }
         })
         
-        const { access_token, role, username } = res.data
+        const { access_token, role, username, department } = res.data
         localStorage.setItem('token', access_token)
         localStorage.setItem('role', role)
+        localStorage.setItem('department', department || '')
         if (username) {
           localStorage.setItem('username', username)
         } else {

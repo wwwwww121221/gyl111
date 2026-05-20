@@ -46,6 +46,13 @@ def sync_purchase_requisitions(
                 material_model=item.get("material_model"),
                 qty=item.get("purchase_qty", 0),
                 delivery_date=item.get("delivery_date"),
+                purchaser_name=item.get("purchaser_name"),
+                purchaser_detail_name=item.get("purchaser_detail_name"),
+                purchaser_base_name=item.get("purchaser_base_name"),
+                remark=item.get("remark"),
+                remark_detail=item.get("remark_detail"),
+                remark_base=item.get("remark_base"),
+                technician_name=item.get("technician_name"),
                 status=InquiryStatus.PENDING_POOL,
                 id=None, # No ID yet
                 created_at=item.get("created_date")

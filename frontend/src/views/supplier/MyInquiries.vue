@@ -185,6 +185,28 @@
           </div>
         </div>
 
+        <div v-if="currentInquiry.attachments?.length" class="feedback-box">
+          <div class="feedback-title">询价附件</div>
+          <div class="attachment-list">
+            <div
+              v-for="(attachment, index) in currentInquiry.attachments"
+              :key="`${attachment.file_path || 'attachment'}_${index}`"
+              class="attachment-item"
+            >
+              <a
+                href="#"
+                class="attachment-link"
+                @click.prevent="previewAttachment(attachment)"
+              >
+                {{ attachment.name }}
+              </a>
+              <span class="attachment-meta">{{ formatFileSize(attachment.size) }}</span>
+              <el-button type="primary" link @click="previewAttachment(attachment)">预览</el-button>
+              <el-button type="primary" link @click="openAttachmentInNewTab(attachment)">新窗口打开</el-button>
+            </div>
+          </div>
+        </div>
+
         <div class="table-section-title"><span class="title-text">物料明细及报价</span></div>
         <div class="detail-table-wrap">
           <el-table :data="currentInquiry.items" style="width: 100%" border stripe size="small">
@@ -267,6 +289,37 @@
     </el-dialog>
 
     <el-dialog
+      v-model="attachmentPreviewVisible"
+      title="附件预览"
+      :width="isMobile ? '96%' : '70%'"
+      top="6vh"
+      destroy-on-close
+      draggable
+      overflow
+    >
+      <div v-if="previewingAttachment" class="attachment-preview-container">
+        <div class="attachment-preview-toolbar">
+          <span class="attachment-preview-name">{{ previewingAttachment.name }}</span>
+          <el-button type="primary" link @click="openAttachmentInNewTab(previewingAttachment)">新窗口打开</el-button>
+        </div>
+        <img
+          v-if="getAttachmentPreviewType(previewingAttachment) === 'image'"
+          :src="getAttachmentPreviewUrl(previewingAttachment)"
+          class="attachment-preview-image"
+        />
+        <iframe
+          v-else-if="getAttachmentPreviewType(previewingAttachment) === 'iframe'"
+          :src="getAttachmentPreviewUrl(previewingAttachment)"
+          class="attachment-preview-frame"
+        />
+        <el-empty
+          v-else
+          description="当前文件类型暂不支持直接在线预览，请使用“新窗口打开”查看或下载。"
+        />
+      </div>
+    </el-dialog>
+
+    <el-dialog
       v-model="showChangePasswordDialog"
       title="修改登录密码"
       width="450px"
@@ -335,6 +388,8 @@ const filteredInquiries = computed(() => {
 
 const dialogVisible = ref(false)
 const currentInquiry = ref(null)
+const attachmentPreviewVisible = ref(false)
+const previewingAttachment = ref(null)
 const quoteForm = ref({})
 const submitLoading = ref(false)
 const currentLinkId = ref(null)
@@ -562,6 +617,56 @@ const formatDate = (row, column, cellValue) => {
   const date = new Date(cellValue)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+const getAttachmentBaseUrl = () => {
+  return (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+}
+
+const normalizeAttachmentUrl = (filePath) => {
+  const normalized = String(filePath || '').trim()
+  if (!normalized) return '#'
+  if (normalized.startsWith('http://') || normalized.startsWith('https://')) return normalized
+  const normalizedPath = normalized.startsWith('/') ? normalized : `/${normalized}`
+  return `${getAttachmentBaseUrl()}${normalizedPath}`
+}
+
+const getAttachmentPreviewUrl = (attachment) => {
+  return normalizeAttachmentUrl(attachment?.preview_file_path || attachment?.file_path)
+}
+
+const formatFileSize = (size) => {
+  const numericSize = Number(size || 0)
+  if (!numericSize) return '-'
+  if (numericSize < 1024) return `${numericSize} B`
+  if (numericSize < 1024 * 1024) return `${(numericSize / 1024).toFixed(1)} KB`
+  return `${(numericSize / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const getAttachmentExtension = (attachment) => {
+  const fileName = String(attachment?.name || attachment?.file_path || '').toLowerCase()
+  const matched = fileName.match(/\.([a-z0-9]+)(?:\?|$)/)
+  return matched ? matched[1] : ''
+}
+
+const getAttachmentPreviewType = (attachment) => {
+  if (attachment?.preview_file_path) return 'iframe'
+  const ext = getAttachmentExtension(attachment)
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) return 'image'
+  if (['pdf', 'txt', 'md', 'csv', 'json', 'log'].includes(ext)) return 'iframe'
+  return 'unsupported'
+}
+
+const previewAttachment = (attachment) => {
+  previewingAttachment.value = attachment
+  attachmentPreviewVisible.value = true
+}
+
+const openAttachmentInNewTab = (attachment) => {
+  const url = normalizeAttachmentUrl(attachment?.file_path)
+  if (url && url !== '#') {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 }
 
 const handleDetail = async (row) => {
@@ -841,6 +946,70 @@ const submitQuote = async () => {
 
 .feedback-line + .feedback-line {
   margin-top: 6px;
+}
+
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.attachment-link {
+  color: #409eff;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.attachment-link:hover {
+  text-decoration: underline;
+}
+
+.attachment-meta {
+  font-size: 12px;
+  color: #909399;
+}
+
+.attachment-preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 420px;
+}
+
+.attachment-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.attachment-preview-name {
+  color: #303133;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.attachment-preview-frame {
+  width: 100%;
+  min-height: 70vh;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+}
+
+.attachment-preview-image {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fff;
 }
 
 .table-section-title {

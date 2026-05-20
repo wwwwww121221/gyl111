@@ -52,7 +52,7 @@
             </template>
             <el-menu-item index="/analysis/supplier" class="submenu-item">供应商分析</el-menu-item>
             <el-menu-item index="/analysis/material" class="submenu-item">物料分析</el-menu-item>
-            <el-menu-item index="/analysis/buyer" class="submenu-item" v-if="userRole === 'admin'">采购员分析</el-menu-item>
+            <el-menu-item index="/analysis/buyer" class="submenu-item" v-if="isAdminLike">采购员分析</el-menu-item>
           </el-sub-menu>
 
           <!-- 供应商管理 -->
@@ -65,7 +65,7 @@
             <el-menu-item index="/suppliers/manage" class="submenu-item">供应商名册</el-menu-item>
           </el-sub-menu>
           <!-- 系统管理 (仅管理员) -->
-          <el-sub-menu index="/system" class="sub-menu" v-if="userRole === 'admin'">
+          <el-sub-menu index="/system" class="sub-menu" v-if="isAdminLike">
             <template #title>
               <el-icon class="menu-icon"><Setting /></el-icon>
               <span class="menu-text">系统管理</span>
@@ -89,7 +89,7 @@
           <div class="header-right">
             <el-dropdown trigger="click">
               <span class="el-dropdown-link">
-                {{ userRole === 'admin' ? '超级管理员' : '采购员' }} <span v-if="userName">({{ userName }})</span> <el-icon class="el-icon--right"><arrow-down /></el-icon>
+                {{ roleLabel }} <span v-if="userDepartment">-{{ userDepartment }}</span> <span v-if="userName">({{ userName }})</span> <el-icon class="el-icon--right"><arrow-down /></el-icon>
               </span>
               <template #dropdown>
                 <el-dropdown-menu>
@@ -113,7 +113,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { DataBoard, User, Goods, Expand, ArrowDown, List, PieChart, Setting } from '@element-plus/icons-vue'
+import { DataBoard, User, Expand, ArrowDown, List, PieChart, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
@@ -122,6 +122,14 @@ const isCollapse = ref(false)
 
 const userRole = computed(() => localStorage.getItem('role') || '')
 const userName = computed(() => localStorage.getItem('username') || '')
+const userDepartment = computed(() => localStorage.getItem('department') || '')
+const isAdminLike = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
+const roleLabel = computed(() => {
+  if (userRole.value === 'admin') return '超级管理员'
+  if (userRole.value === 'buyer_manager') return '部门经理'
+  if (userRole.value === 'buyer') return '采购员'
+  return userRole.value || '未知角色'
+})
 
 const activeMenu = computed(() => {
   return route.path
@@ -153,6 +161,9 @@ const toggleSidebar = () => {
 
 const handleLogout = () => {
   localStorage.removeItem('token')
+  localStorage.removeItem('role')
+  localStorage.removeItem('department')
+  localStorage.removeItem('username')
   ElMessage.success('已退出登录')
   router.push('/login')
 }

@@ -10,6 +10,8 @@ import SupplierLayout from '../layout/SupplierLayout.vue'
 const clearAuth = () => {
   localStorage.removeItem('token')
   localStorage.removeItem('role')
+  localStorage.removeItem('department')
+  localStorage.removeItem('username')
 }
 
 const isTokenValid = (token) => {
@@ -60,13 +62,13 @@ const routes = [
         path: 'supplier',
         name: 'SupplierWarning',
         component: SupplierWarning,
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'warehouse',
         name: 'WarehouseWarning',
         component: WarehouseWarning,
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       }
     ]
   },
@@ -79,31 +81,31 @@ const routes = [
         path: 'requests',
         name: 'PurchaseRequests',
         component: () => import('../views/inquiries/PurchaseRequests.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'tasks',
         name: 'InquiryTasks',
         component: () => import('../views/inquiries/InquiryTasks.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'compare',
         name: 'IntelligentCompare',
         component: () => import('../views/inquiry/IntelligentCompare.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'contracts',
         name: 'ContractManagement',
         component: () => import('../views/ContractManagement.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'templates',
         name: 'TemplateManagement',
         component: () => import('../views/TemplateManagement.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       }
     ]
   },
@@ -116,13 +118,13 @@ const routes = [
         path: 'manage',
         name: 'SupplierManagement',
         component: () => import('../views/suppliers/SupplierManagement.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'pending',
         name: 'SupplierPending',
         component: () => import('../views/suppliers/SupplierPending.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       }
     ]
   },
@@ -135,19 +137,19 @@ const routes = [
         path: 'supplier',
         name: 'SupplierAnalysis',
         component: () => import('../views/analysis/SupplierAnalysis.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'material',
         name: 'MaterialAnalysis',
         component: () => import('../views/analysis/MaterialAnalysis.vue'),
-        meta: { requiresRole: ['admin', 'buyer'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       },
       {
         path: 'buyer',
         name: 'BuyerAnalysis',
         component: () => import('../views/analysis/BuyerAnalysis.vue'),
-        meta: { requiresRole: ['admin'] } // 只有管理员能看采购员分析
+        meta: { requiresRole: ['admin', 'buyer_manager'] } // 管理角色可看采购员分析
       }
     ]
   },
@@ -160,13 +162,13 @@ const routes = [
         path: 'users',
         name: 'UserManagement',
         component: () => import('../views/UserManagement.vue'),
-        meta: { requiresRole: ['admin'] } // 只有 admin 能访问
+        meta: { requiresRole: ['admin', 'buyer_manager'] } // 管理角色可访问
       },
       {
         path: 'logs',
         name: 'OperationLogs',
         component: () => import('../views/OperationLogs.vue'),
-        meta: { requiresRole: ['admin'] } // 只有 admin 能访问
+        meta: { requiresRole: ['admin', 'buyer_manager'] } // 管理角色可访问
       }
     ]
   },

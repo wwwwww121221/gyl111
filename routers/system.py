@@ -9,6 +9,10 @@ from sqlalchemy import func, or_
 router = APIRouter()
 
 
+def _is_admin_like(user: User | None) -> bool:
+    return bool(user and user.role in ["admin", "buyer_manager"])
+
+
 def _infer_module(action_type: str, detail: str) -> str:
     action_type = str(action_type or "").upper()
     mapping = {
@@ -144,8 +148,8 @@ def get_operation_logs(
     """
     获取操作日志列表（仅限超级管理员）
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="只有超级管理员可以查看操作日志")
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以查看操作日志")
 
     logs_query = db.query(OperationLog).outerjoin(User, OperationLog.user_id == User.id)
 
@@ -222,11 +226,11 @@ def get_buyer_analysis(
     """
     获取采购员数据分析（仅限超级管理员）
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="只有超级管理员可以查看采购员分析")
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以查看采购员分析")
         
-    # 获取所有的 buyer 和 admin (因为 admin 也可能发单)
-    buyers = db.query(User).filter(User.role.in_(["buyer", "admin"])).all()
+    # 获取所有的 buyer/admin/buyer_manager (管理角色也可能发单)
+    buyers = db.query(User).filter(User.role.in_(["buyer", "admin", "buyer_manager"])).all()
     
     result = []
     for buyer in buyers:

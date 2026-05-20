@@ -57,7 +57,7 @@
               发起智能比价
             </el-button>
             <el-button type="primary" @click="showCreateTaskDialog" :disabled="selectedRequests.length === 0" style="margin-left: 15px;">
-              发起询价任务
+              {{ isApprovalRequired ? '提交经理审核' : '发起询价任务' }}
             </el-button>
           </div>
         </div>
@@ -69,15 +69,20 @@
           v-loading="syncingErp"
           :data="paginatedRequestList"
           @selection-change="handleSelectionChange"
+          @header-dragend="handleHeaderDragend"
+          :cell-style="{ textAlign: 'center' }"
+          :header-cell-style="{ textAlign: 'center' }"
           style="width: 100%"
           row-key="_uid"
+          border
           size="small"
           height="100%"
+          :fit="false"
         >
           <el-table-column type="selection" width="45" :reserve-selection="true" />
-          <el-table-column prop="bill_no" label="单据编号" width="130" show-overflow-tooltip />
-          <el-table-column prop="bill_type" label="单据类型" width="90" />
-          <el-table-column label="项目信息" min-width="160" show-overflow-tooltip>
+          <el-table-column prop="bill_no" label="单据编号" :width="getColumnWidth('bill_no', 130)" resizable show-overflow-tooltip />
+          <el-table-column prop="bill_type" label="单据类型" :width="getColumnWidth('bill_type', 90)" resizable />
+          <el-table-column label="项目信息" :width="getColumnWidth('project_info', 160)" resizable show-overflow-tooltip>
             <template #default="scope">
               <div v-if="scope.row.project_info">
                 <div style="font-weight: 500;">{{ scope.row.project_info.number }}</div>
@@ -86,16 +91,53 @@
               <span v-else style="color: #ccc;">-</span>
             </template>
           </el-table-column>
-          <el-table-column prop="material_name" label="物料名称" min-width="150" show-overflow-tooltip />
-          <el-table-column prop="material_code" label="物料编码" width="120" show-overflow-tooltip />
-          <el-table-column prop="material_model" label="规格型号" width="160" show-overflow-tooltip />
-          <el-table-column prop="qty" label="数量" width="80" align="right" />
-          <el-table-column prop="delivery_date" label="需求日期" width="100" align="center">
+          <el-table-column label="采购员" :width="getColumnWidth('purchaser', 150)" resizable>
+            <template #default="scope">
+              <div class="multi-line-cell">
+                <template v-if="getPurchaserLines(scope.row).length">
+                  <div
+                    v-for="(line, index) in getPurchaserLines(scope.row)"
+                    :key="`purchaser_${scope.row._uid || scope.row.erp_request_id}_${index}`"
+                    class="multi-line-cell__item"
+                  >
+                    {{ line }}
+                  </div>
+                </template>
+                <span v-else class="empty-text">-</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="technician_name" label="技术员" :width="getColumnWidth('technician_name', 90)" resizable show-overflow-tooltip>
+            <template #default="scope">
+              {{ scope.row.technician_name || '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="material_name" label="物料名称" :width="getColumnWidth('material_name', 150)" resizable show-overflow-tooltip />
+          <el-table-column prop="material_code" label="物料编码" :width="getColumnWidth('material_code', 120)" resizable show-overflow-tooltip />
+          <el-table-column prop="material_model" label="规格型号" :width="getColumnWidth('material_model', 160)" resizable show-overflow-tooltip />
+          <el-table-column label="备注" :width="getColumnWidth('remark', 220)" resizable>
+            <template #default="scope">
+              <div class="multi-line-cell">
+                <template v-if="getRemarkLines(scope.row).length">
+                  <div
+                    v-for="(line, index) in getRemarkLines(scope.row)"
+                    :key="`remark_${scope.row._uid || scope.row.erp_request_id}_${index}`"
+                    class="multi-line-cell__item"
+                  >
+                    {{ line }}
+                  </div>
+                </template>
+                <span v-else class="empty-text">-</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="qty" label="数量" :width="getColumnWidth('qty', 80)" resizable />
+          <el-table-column prop="delivery_date" label="需求日期" :width="getColumnWidth('delivery_date', 100)" resizable>
             <template #default="scope">
               {{ formatDate(scope.row.delivery_date) }}
             </template>
           </el-table-column>
-          <el-table-column prop="created_at" label="创建时间" width="150" align="center">
+          <el-table-column prop="created_at" label="创建时间" :width="getColumnWidth('created_at', 150)" resizable>
             <template #default="scope">
               {{ formatDateTime(scope.row.created_at) }}
             </template>
@@ -120,7 +162,7 @@
     <!-- Dialog: Create Task -->
     <el-dialog
       v-model="dialogVisible"
-      title="创建新询价任务"
+      :title="isApprovalRequired ? '提交询价审批' : '创建新询价任务'"
       width="800px"
       draggable
       overflow
@@ -169,6 +211,51 @@
             </el-form-item>
           </el-col>
         </el-row>
+
+        <el-form-item v-if="isApprovalRequired" label="提交说明">
+          <el-input
+            v-model="taskForm.buyer_comment"
+            type="textarea"
+            :rows="3"
+            maxlength="300"
+            show-word-limit
+            placeholder="请输入提交给采购经理的审批说明、采购思路或关注事项"
+          />
+        </el-form-item>
+
+        <el-form-item label="上传附件">
+          <div class="attachment-upload-wrapper">
+            <el-upload
+              ref="attachmentUploadRef"
+              :auto-upload="false"
+              :show-file-list="false"
+              :before-upload="beforeAttachmentUpload"
+              :on-change="handleAttachmentChange"
+            >
+              <el-button type="primary" plain :loading="uploadingAttachment">选择并上传附件</el-button>
+              <template #tip>
+                <div class="upload-tip">
+                  支持 pdf、doc、docx、xls、xlsx、ppt、pptx、zip、rar、7z、png、jpg、jpeg，单个文件不超过 20MB
+                </div>
+              </template>
+            </el-upload>
+            <div v-if="taskForm.attachments.length" class="task-attachment-list">
+              <div
+                v-for="(attachment, index) in taskForm.attachments"
+                :key="`${attachment.file_path}_${index}`"
+                class="task-attachment-item"
+              >
+                <a href="#" class="task-attachment-link" @click.prevent="previewAttachment(attachment)">
+                  {{ attachment.name }}
+                </a>
+                <span class="task-attachment-size">{{ formatFileSize(attachment.size) }}</span>
+                <el-button type="primary" link @click="previewAttachment(attachment)">预览</el-button>
+                <el-button type="primary" link @click="openAttachmentInNewTab(attachment)">新窗口打开</el-button>
+                <el-button type="danger" link @click="removeTaskAttachment(index)">移除</el-button>
+              </div>
+            </div>
+          </div>
+        </el-form-item>
 
         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px;">
           <span style="font-size: 14px; color: #606266; font-weight: bold;">询价物料清单</span>
@@ -277,7 +364,7 @@
         <span class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
           <el-button type="primary" @click="confirmCreateTask" :loading="creatingTask">
-            创建任务
+            {{ isApprovalRequired ? '提交审核' : '创建任务' }}
           </el-button>
         </span>
       </template>
@@ -306,17 +393,48 @@
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 10px;">
           <el-button @click="cartVisible = false">关闭</el-button>
-          <el-button type="primary" @click="showCreateTaskDialog" :disabled="selectedRequests.length === 0">去发起询价</el-button>
+          <el-button type="primary" @click="showCreateTaskDialog" :disabled="selectedRequests.length === 0">{{ isApprovalRequired ? '去提交审核' : '去发起询价' }}</el-button>
         </div>
       </template>
     </el-drawer>
+
+    <el-dialog
+      v-model="attachmentPreviewVisible"
+      title="附件预览"
+      width="70%"
+      top="6vh"
+      destroy-on-close
+      draggable
+      overflow
+    >
+      <div v-if="previewingAttachment" class="attachment-preview-container">
+        <div class="attachment-preview-toolbar">
+          <span class="attachment-preview-name">{{ previewingAttachment.name }}</span>
+          <el-button type="primary" link @click="openAttachmentInNewTab(previewingAttachment)">新窗口打开</el-button>
+        </div>
+        <img
+          v-if="getAttachmentPreviewType(previewingAttachment) === 'image'"
+          :src="getAttachmentPreviewUrl(previewingAttachment)"
+          class="attachment-preview-image"
+        />
+        <iframe
+          v-else-if="getAttachmentPreviewType(previewingAttachment) === 'iframe'"
+          :src="getAttachmentPreviewUrl(previewingAttachment)"
+          class="attachment-preview-frame"
+        />
+        <el-empty
+          v-else
+          description="当前文件类型暂不支持直接在线预览，请使用“新窗口打开”查看或下载。"
+        />
+      </div>
+    </el-dialog>
 
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted, computed, watch } from 'vue'
-import { createInquiryTask, syncErpRequisitions } from '../../api/inquiry'
+import { createInquiryTask, syncErpRequisitions, uploadInquiryAttachment } from '../../api/inquiry'
 import api from '../../api/index'
 import { ElMessage } from 'element-plus'
 import { Download, Search } from '@element-plus/icons-vue'
@@ -328,8 +446,54 @@ const requestList = ref([])
 const selectedRequests = ref([])
 const selectedRequestsForTask = ref([])
 const cartVisible = ref(false)
+const userRole = computed(() => localStorage.getItem('role') || '')
+const isApprovalRequired = computed(() => userRole.value === 'buyer')
 
 const tableRef = ref(null)
+const attachmentUploadRef = ref(null)
+const REQUEST_TABLE_WIDTHS_STORAGE_KEY = 'purchaseRequestsTableWidths'
+const requestTableColumnWidths = ref({})
+
+const loadRequestTableColumnWidths = () => {
+  try {
+    const raw = localStorage.getItem(REQUEST_TABLE_WIDTHS_STORAGE_KEY)
+    requestTableColumnWidths.value = raw ? JSON.parse(raw) : {}
+  } catch (error) {
+    requestTableColumnWidths.value = {}
+  }
+}
+
+const persistRequestTableColumnWidths = () => {
+  localStorage.setItem(
+    REQUEST_TABLE_WIDTHS_STORAGE_KEY,
+    JSON.stringify(requestTableColumnWidths.value || {})
+  )
+}
+
+const getColumnWidth = (key, fallback) => {
+  const value = Number(requestTableColumnWidths.value?.[key])
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+const getColumnResizeKey = (column) => {
+  const property = String(column?.property || '').trim()
+  const label = String(column?.label || '').trim()
+  if (property) return property
+  if (label === '项目信息') return 'project_info'
+  if (label === '采购员') return 'purchaser'
+  if (label === '备注') return 'remark'
+  return ''
+}
+
+const handleHeaderDragend = (newWidth, _oldWidth, column) => {
+  const key = getColumnResizeKey(column)
+  if (!key) return
+  requestTableColumnWidths.value = {
+    ...requestTableColumnWidths.value,
+    [key]: Math.max(Number(newWidth) || 0, 60)
+  }
+  persistRequestTableColumnWidths()
+}
 
 const removeFromCart = (row) => {
   if (tableRef.value) {
@@ -412,6 +576,9 @@ const handleCurrentChange = (val) => {
 // Create Task Dialog
 const dialogVisible = ref(false)
 const creatingTask = ref(false)
+const uploadingAttachment = ref(false)
+const attachmentPreviewVisible = ref(false)
+const previewingAttachment = ref(null)
 const supplierList = ref([])
 const supplierListLoaded = ref(false)
 const recommendationLoading = ref(false)
@@ -421,6 +588,8 @@ const taskFormRef = ref(null)
 const taskForm = reactive({
   title: '',
   type: 'auto',
+  buyer_comment: '',
+  attachments: [],
   deadline: '',
   deadlineDate: '',
   deadlineTime: '',
@@ -883,6 +1052,8 @@ const showCreateTaskDialog = async (isJump = false) => {
   const date = new Date().toISOString().slice(0, 10)
   taskForm.title = `${date} 批量询价 (${selectedRequestsForTask.value.length}项物料)`
   taskForm.type = lockedTaskType.value
+  taskForm.buyer_comment = ''
+  taskForm.attachments = []
   taskForm.deadline = ''
   if (isJump === true) {
     taskForm.deadlineDate = ''
@@ -920,6 +1091,8 @@ const confirmCreateTask = async () => {
     const payload = {
       title: taskForm.title,
       type: taskForm.type,
+      buyer_comment: isApprovalRequired.value ? (taskForm.buyer_comment || '').trim() : undefined,
+      attachments: Array.isArray(taskForm.attachments) ? taskForm.attachments : [],
       deadline: taskForm.type === 'auto' ? (taskForm.deadline || null) : null,
       strategy_config: taskForm.strategy_config,
       raw_requests: selectedRequestsForTask.value.map(item => ({
@@ -932,8 +1105,8 @@ const confirmCreateTask = async () => {
     const res = await createInquiryTask(payload)
     const createdTaskId = res.data?.id || res.id
 
-    // 保存手动录入的报价 (如果有)
-    if (taskForm.type === 'manual') {
+    // 手动询价只有在“无需审批”的情况下才允许立即写入报价，避免绕过经理审批流程
+    if (taskForm.type === 'manual' && !isApprovalRequired.value) {
       for (const item of selectedRequestsForTask.value) {
         if (!item.material_code) continue; // 必须有物料编码才能保存报价
         
@@ -967,18 +1140,18 @@ const confirmCreateTask = async () => {
       }
     }
 
-    ElMessage.success('询价任务创建成功')
+    ElMessage.success(isApprovalRequired.value ? '询价申请已提交，待采购经理审核' : '询价任务创建成功')
     const selectedIds = new Set(selectedRequests.value.map(r => r.erp_request_id))
     requestList.value = requestList.value.filter(r => !selectedIds.has(r.erp_request_id))
     
     const shouldJump = isJumpToCompare.value
     dialogVisible.value = false
     
-    if (shouldJump) {
+    if (shouldJump && !isApprovalRequired.value) {
       isJumpToCompare.value = false
       router.push({ name: 'IntelligentCompare', query: { taskId: res.data.id || res.id } })
     } else {
-      // Switch to tasks page
+      // 审批流和普通流都跳转任务列表，查看状态和后续动作
       router.push('/inquiries/tasks')
     }
   } catch (error) {
@@ -999,7 +1172,113 @@ const formatDate = (dateStr) => {
   return new Date(dateStr).toLocaleDateString()
 }
 
+const beforeAttachmentUpload = () => false
+
+const getAttachmentBaseUrl = () => {
+  return (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+}
+
+const normalizeAttachmentUrl = (filePath) => {
+  const normalized = String(filePath || '').trim()
+  if (!normalized) return '#'
+  if (normalized.startsWith('http://') || normalized.startsWith('https://')) return normalized
+  const normalizedPath = normalized.startsWith('/') ? normalized : `/${normalized}`
+  return `${getAttachmentBaseUrl()}${normalizedPath}`
+}
+
+const getAttachmentPreviewUrl = (attachment) => {
+  return normalizeAttachmentUrl(attachment?.preview_file_path || attachment?.file_path)
+}
+
+const getAttachmentExtension = (attachment) => {
+  const fileName = String(attachment?.name || attachment?.file_path || '').toLowerCase()
+  const matched = fileName.match(/\.([a-z0-9]+)(?:\?|$)/)
+  return matched ? matched[1] : ''
+}
+
+const getAttachmentPreviewType = (attachment) => {
+  if (attachment?.preview_file_path) return 'iframe'
+  const ext = getAttachmentExtension(attachment)
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) return 'image'
+  if (['pdf', 'txt', 'md', 'csv', 'json', 'log'].includes(ext)) return 'iframe'
+  return 'unsupported'
+}
+
+const previewAttachment = (attachment) => {
+  previewingAttachment.value = attachment
+  attachmentPreviewVisible.value = true
+}
+
+const openAttachmentInNewTab = (attachment) => {
+  const url = normalizeAttachmentUrl(attachment?.file_path)
+  if (url && url !== '#') {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
+const formatFileSize = (size) => {
+  const numericSize = Number(size || 0)
+  if (!numericSize) return '-'
+  if (numericSize < 1024) return `${numericSize} B`
+  if (numericSize < 1024 * 1024) return `${(numericSize / 1024).toFixed(1)} KB`
+  return `${(numericSize / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const removeTaskAttachment = (index) => {
+  taskForm.attachments.splice(index, 1)
+}
+
+const handleAttachmentChange = async (uploadFile) => {
+  const rawFile = uploadFile?.raw
+  if (!rawFile) return
+
+  const duplicated = taskForm.attachments.some(
+    (item) => item.name === rawFile.name && Number(item.size || 0) === Number(rawFile.size || 0)
+  )
+  if (duplicated) {
+    ElMessage.warning('该附件已上传')
+    attachmentUploadRef.value?.clearFiles?.()
+    return
+  }
+
+  uploadingAttachment.value = true
+  try {
+    const res = await uploadInquiryAttachment(rawFile)
+    const uploadedAttachment = res.data || res
+    taskForm.attachments.push(uploadedAttachment)
+    ElMessage.success('附件上传成功')
+  } catch (error) {
+    console.error('上传附件失败:', error)
+    ElMessage.error(error.response?.data?.detail || '附件上传失败')
+  } finally {
+    uploadingAttachment.value = false
+    attachmentUploadRef.value?.clearFiles?.()
+  }
+}
+
+const buildUniqueLines = (items = []) => {
+  const seen = new Set()
+  return items
+    .map(item => String(item || '').trim())
+    .filter((item) => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+const getPurchaserLines = (row) => buildUniqueLines([
+  row?.purchaser_detail_name,
+  row?.purchaser_base_name
+])
+
+const getRemarkLines = (row) => buildUniqueLines([
+  row?.remark_detail,
+  row?.remark_base
+])
+
 onMounted(() => {
+  loadRequestTableColumnWidths()
   handleSyncErp()
 })
 </script>
@@ -1076,6 +1355,82 @@ onMounted(() => {
   gap: 12px;
 }
 
+.attachment-upload-wrapper {
+  width: 100%;
+}
+
+.upload-tip {
+  color: #909399;
+  line-height: 1.4;
+}
+
+.task-attachment-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.task-attachment-link {
+  color: #409eff;
+  text-decoration: none;
+}
+
+.task-attachment-link:hover {
+  text-decoration: underline;
+}
+
+.task-attachment-size {
+  color: #909399;
+  font-size: 12px;
+}
+
+.attachment-preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 520px;
+}
+
+.attachment-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.attachment-preview-name {
+  color: #303133;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.attachment-preview-frame {
+  width: 100%;
+  min-height: 70vh;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+}
+
+.attachment-preview-image {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fff;
+}
+
 .pagination-container {
   margin-top: 15px;
   display: flex;
@@ -1103,6 +1458,24 @@ onMounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.multi-line-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  text-align: center;
+}
+
+.multi-line-cell__item {
+  white-space: pre-wrap;
+  line-height: 1.4;
+  color: #303133;
+}
+
+.empty-text {
+  color: #c0c4cc;
 }
 
 :deep(.el-table .cell) {

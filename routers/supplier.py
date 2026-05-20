@@ -31,7 +31,7 @@ router = APIRouter()
 
 
 def _require_admin_or_buyer(current_user: User) -> None:
-    if current_user.role not in ["admin", "buyer"]:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
 
@@ -67,6 +67,36 @@ def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplie
             allowed_items.append(item)
 
     return allowed_items
+
+
+def _get_task_attachments(task: InquiryTask) -> list[dict]:
+    strategy = task.strategy_config or {}
+    attachments = strategy.get("attachments") or []
+    normalized_attachments = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("filename") or "").strip()
+        file_path = str(item.get("file_path") or "").strip()
+        if not name or not file_path:
+            continue
+        preview_file_path = str(item.get("preview_file_path") or "").strip() or None
+        if not preview_file_path:
+            file_path_obj = Path(file_path)
+            relative_path = file_path_obj.as_posix().lstrip("/")
+            source_path = Path(__file__).resolve().parents[1] / relative_path
+            preview_candidate = source_path.parent / "preview" / f"{source_path.stem}_preview.pdf"
+            if preview_candidate.exists():
+                preview_file_path = f"/{preview_candidate.relative_to(Path(__file__).resolve().parents[1]).as_posix()}"
+
+        normalized_attachments.append({
+            "name": name,
+            "file_path": file_path,
+            "preview_file_path": preview_file_path,
+            "size": item.get("size"),
+            "uploaded_at": item.get("uploaded_at")
+        })
+    return normalized_attachments
 
 
 def _generate_contract_pdf_background(inquiry_id: int) -> None:
@@ -588,8 +618,8 @@ def delete_supplier(
     """
     删除供应商（仅超级管理员可操作）
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="只有超级管理员可以删除供应商")
+    if current_user.role not in ["admin", "buyer_manager"]:
+        raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以删除供应商")
         
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
@@ -782,6 +812,7 @@ def get_inquiry_details(
         "contract_pdf": contract_pdf_path,
         "contract_pdf_path": contract_pdf_path,
         "contract_no": contract_no,
+        "attachments": _get_task_attachments(task),
         "items": items
     }
 

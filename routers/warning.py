@@ -107,7 +107,7 @@ def send_warning_to_supplier(
     """
     采购员向供应商发送发货预警通知
     """
-    if current_user.role not in ["admin", "buyer"]:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     supplier = db.query(Supplier).filter(Supplier.name == req.supplier_name).first()
@@ -209,7 +209,7 @@ def get_sent_warning_messages(
     采购员获取发送过的预警消息及回复状态
     如果是 admin，获取所有；如果是 buyer，只获取自己发送的
     """
-    if current_user.role not in ["admin", "buyer"]:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     query = db.query(WarningMessage).join(Supplier, WarningMessage.supplier_id == Supplier.id)

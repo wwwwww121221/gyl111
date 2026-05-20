@@ -16,7 +16,7 @@ from routers.inquiry import get_current_user
 router = APIRouter()
 
 def _require_buyer_or_admin(current_user: User):
-    if current_user.role not in ["admin", "buyer"]:
+    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
 @router.get("/list")

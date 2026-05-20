@@ -38,6 +38,12 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN type VARCHAR DEFAULT 'auto'")
         if "buyer_id" not in inquiry_task_columns:
             alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN buyer_id INTEGER")
+        if "approved_by" not in inquiry_task_columns:
+            alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN approved_by INTEGER")
+        if "approved_at" not in inquiry_task_columns:
+            alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN approved_at TIMESTAMP")
+        if "approval_comment" not in inquiry_task_columns:
+            alter_statements.append("ALTER TABLE inquiry_tasks ADD COLUMN approval_comment TEXT")
 
     if "inquiry_requests" in table_names:
         inquiry_request_columns = {col["name"] for col in inspector.get_columns("inquiry_requests")}
@@ -67,6 +73,11 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE operation_logs ADD COLUMN result VARCHAR DEFAULT 'success'")
         if "extra_data" not in operation_log_columns:
             alter_statements.append("ALTER TABLE operation_logs ADD COLUMN extra_data JSON")
+
+    if "users" in table_names:
+        user_columns = {col["name"] for col in inspector.get_columns("users")}
+        if "department" not in user_columns:
+            alter_statements.append("ALTER TABLE users ADD COLUMN department VARCHAR DEFAULT '采购部'")
 
     if "contracts" in table_names:
         contract_columns = {col["name"] for col in inspector.get_columns("contracts")}
@@ -107,6 +118,7 @@ def ensure_runtime_schema_columns():
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
     BUYER = "buyer"
+    BUYER_MANAGER = "buyer_manager"
     SUPPLIER = "supplier"
 
 class InquiryStatus(str, enum.Enum):
@@ -116,6 +128,8 @@ class InquiryStatus(str, enum.Enum):
 
 class TaskStatus(str, enum.Enum):
     DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVAL_REJECTED = "approval_rejected"
     ACTIVE = "active"
     CLOSED = "closed"
     AWAITING_AWARD = "awaiting_award"
@@ -140,6 +154,7 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     role = Column(String, default=UserRole.BUYER)
+    department = Column(String, nullable=True, default="采购部")
     created_at = Column(DateTime, default=datetime.now)
 
 class InquiryRequest(Base):
@@ -174,12 +189,16 @@ class InquiryTask(Base):
     deadline = Column(DateTime, nullable=True, comment="询价截止时间")
     status = Column(String, default=TaskStatus.DRAFT)
     buyer_id = Column(Integer, ForeignKey("users.id"), comment="负责的采购员")
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True, comment="审批人")
+    approved_at = Column(DateTime, nullable=True, comment="审批时间")
+    approval_comment = Column(Text, nullable=True, comment="审批意见")
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.now)
 
     # 关系
     creator = relationship("User", foreign_keys=[created_by])
     buyer = relationship("User", foreign_keys=[buyer_id])
+    approver = relationship("User", foreign_keys=[approved_by])
     items = relationship("InquiryTaskItem", back_populates="task")
     suppliers = relationship("InquirySupplier", back_populates="task")
     contracts = relationship("Contract", back_populates="task")

@@ -55,7 +55,7 @@ def get_purchase_requisition_data(keyword: str = None, bill_type_id: str = None,
 
     para = {
         "FormId": "PUR_Requisition",
-        "FieldKeys": "FBILLTYPEID,F_XJPJ_BASE3.FNUMBER,F_XJPJ_BASEPROPERTY1,FMATERIALID.FNUMBER,FMATERIALNAME,FMATERIALMODEL,FAPPROVEQTY,FARRIVALDATE,FBILLNO,FCREATEDATE",
+        "FieldKeys": "FBILLTYPEID,F_XJPJ_BASE3.FNUMBER,F_XJPJ_BASEPROPERTY1,FMATERIALID.FNUMBER,FMATERIALNAME,FMATERIALMODEL,FAPPROVEQTY,FARRIVALDATE,FBILLNO,FCREATEDATE,FPURCHASERID.FNAME,F_XJPJ_BASE.FNAME,FNOTE,F_XJPJ_REMARKS_QTR,F_VBDA_USERID_83G.FNAME",
         "FilterString": filter_string,
         "OrderString": "FCREATEDATE DESC",
         "TopRowCount": 0,
@@ -84,6 +84,11 @@ def process_purchase_data(rows):
         delivery_date = r[7] if len(r) > 7 else ""
         bill_no = r[8] if len(r) > 8 else ""
         created_date = r[9] if len(r) > 9 else ""
+        purchaser_detail_name = r[10] if len(r) > 10 else ""
+        purchaser_base_name = r[11] if len(r) > 11 else ""
+        remark_base = r[12] if len(r) > 12 else ""
+        remark_detail = r[13] if len(r) > 13 else ""
+        technician_name = r[14] if len(r) > 14 else ""
 
         # 单据类型替换
         bill_type_name = BILL_TYPE_MAP.get(bill_type_id, bill_type_id)
@@ -98,7 +103,14 @@ def process_purchase_data(rows):
             "material_model": material_model,
             "purchase_qty": purchase_qty,
             "delivery_date": delivery_date,
-            "created_date": created_date
+            "created_date": created_date,
+            "purchaser_detail_name": purchaser_detail_name,
+            "purchaser_base_name": purchaser_base_name,
+            "purchaser_name": purchaser_detail_name or purchaser_base_name,
+            "remark_base": remark_base,
+            "remark_detail": remark_detail,
+            "remark": remark_detail or remark_base,
+            "technician_name": technician_name
         }
 
         result.append(item)

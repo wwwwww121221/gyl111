@@ -17,6 +17,9 @@
           />
         </div>
         <div class="toolbar-right">
+          <el-select v-model="statusFilter" clearable placeholder="按状态筛选" style="width: 180px;">
+            <el-option v-for="item in statusFilterOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
           <el-button type="primary" @click="fetchTasks" :icon="Refresh" circle />
         </div>
       </div>
@@ -33,7 +36,8 @@
         >
           <el-table-column type="index" label="序号" width="80" align="center" />
           <el-table-column prop="title" label="任务标题" />
-          <el-table-column prop="buyer_name" label="负责采购员" width="120" align="center" v-if="userRole === 'admin'" />
+          <el-table-column prop="buyer_name" label="负责采购员" width="120" align="center" v-if="isAdminLike" />
+          <el-table-column prop="buyer_department" label="所属部门" width="120" align="center" v-if="isAdminLike" />
           <el-table-column prop="deadline" label="截止时间" width="190" align="center">
             <template #default="scope">
               <div>{{ formatDateTime(scope.row.deadline) }}</div>
@@ -52,11 +56,35 @@
               {{ formatDateTime(scope.row.created_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="320" align="left">
+          <el-table-column label="操作" width="420" align="left">
             <template #default="scope">
               <div class="task-table-action-group">
+                <template v-if="canApproveTask(scope.row)">
+                  <el-button size="small" type="success" class="task-action-secondary-btn" @click="openApprovalDialog(scope.row, 'approve')">
+                    审批通过
+                  </el-button>
+                  <el-button size="small" type="danger" plain class="task-action-secondary-btn" @click="openApprovalDialog(scope.row, 'reject')">
+                    驳回
+                  </el-button>
+                </template>
+                <el-button
+                  v-if="canResubmitTask(scope.row)"
+                  size="small"
+                  type="warning"
+                  plain
+                  class="task-action-secondary-btn"
+                  @click="openResubmitDialog(scope.row)"
+                >
+                  重新提交
+                </el-button>
                 <template v-if="scope.row.type === 'manual'">
-                  <el-button size="small" type="primary" class="task-action-primary-btn" @click="goToCompare(scope.row)">
+                  <el-button
+                    size="small"
+                    type="primary"
+                    class="task-action-primary-btn"
+                    :disabled="isTaskApprovalPending(scope.row)"
+                    @click="goToCompare(scope.row)"
+                  >
                     {{ isTaskCompareResultReadonly(scope.row) ? '查看比价结果' : '智能比价' }}
                   </el-button>
                   <el-button
@@ -129,6 +157,29 @@
               </div>
               <div class="header-actions">
                 <el-button
+                  v-if="canApproveTask(currentTaskDetails)"
+                  type="success"
+                  @click="openApprovalDialog(currentTaskDetails, 'approve')"
+                >
+                  审批通过
+                </el-button>
+                <el-button
+                  v-if="canApproveTask(currentTaskDetails)"
+                  type="danger"
+                  plain
+                  @click="openApprovalDialog(currentTaskDetails, 'reject')"
+                >
+                  驳回
+                </el-button>
+                <el-button
+                  v-if="canResubmitTask(currentTaskDetails)"
+                  type="warning"
+                  plain
+                  @click="openResubmitDialog(currentTaskDetails)"
+                >
+                  重新提交审核
+                </el-button>
+                <el-button
                   v-if="isCurrentTaskCompareReady"
                   type="warning"
                   @click="openCurrentTaskAllocationTab"
@@ -142,6 +193,18 @@
             </div>
           </template>
           <el-descriptions :column="4" border size="small">
+            <el-descriptions-item label="负责采购员">
+              {{ currentTaskDetails.buyer_name || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="所属部门">
+              {{ currentTaskDetails.buyer_department || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="审批人">
+              {{ currentTaskDetails.approver_name || '待审批' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="审批时间">
+              {{ formatDateTime(currentTaskDetails.approved_at) }}
+            </el-descriptions-item>
             <el-descriptions-item label="期望单价(¥)">
               <span style="color: #f56c6c; font-weight: bold; font-size: 16px;">详见下方明细</span>
             </el-descriptions-item>
@@ -159,7 +222,96 @@
                 {{ detailCountdownText }}
               </span>
             </el-descriptions-item>
+            <el-descriptions-item label="审批意见" :span="4">
+              {{ currentTaskDetails.approval_comment || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="采购员提交说明" :span="4">
+              {{ currentTaskDetails.buyer_comment || '-' }}
+            </el-descriptions-item>
           </el-descriptions>
+        </el-card>
+
+        <el-alert
+          v-if="currentTaskDetails.buyer_comment"
+          type="info"
+          :closable="false"
+          show-icon
+          class="buyer-comment-alert"
+        >
+          <template #title>
+            <span class="buyer-comment-title">采购员提交说明</span>
+          </template>
+          <div class="buyer-comment-content">{{ currentTaskDetails.buyer_comment }}</div>
+        </el-alert>
+
+        <el-card
+          v-if="currentTaskDetails.buyer_comment_history?.length"
+          shadow="never"
+          class="info-card"
+        >
+          <template #header>
+            <div class="card-header">
+              <span>采购员历史意见</span>
+            </div>
+          </template>
+          <div class="buyer-comment-history">
+            <div
+              v-for="(historyItem, index) in currentTaskDetails.buyer_comment_history"
+              :key="`${historyItem.submitted_at || 'history'}_${index}`"
+              class="buyer-comment-history-item"
+            >
+              <div class="buyer-comment-history-meta">
+                <span>{{ getBuyerCommentActionLabel(historyItem.action) }}</span>
+                <span>{{ historyItem.submitted_by || currentTaskDetails.buyer_name || '-' }}</span>
+                <span>{{ formatDateTime(historyItem.submitted_at) }}</span>
+              </div>
+              <div class="buyer-comment-history-content">{{ historyItem.comment }}</div>
+            </div>
+          </div>
+        </el-card>
+
+        <el-card v-if="currentTaskDetails.proposed_suppliers?.length" shadow="never" class="info-card">
+          <template #header>
+            <div class="card-header">
+              <span>拟发起供应商名单</span>
+            </div>
+          </template>
+          <div class="proposed-supplier-list">
+            <el-tag v-for="supplier in currentTaskDetails.proposed_suppliers" :key="supplier.supplier_id" type="info" effect="plain">
+              {{ supplier.supplier_name }}<span v-if="supplier.supplier_code">（{{ supplier.supplier_code }}）</span>
+            </el-tag>
+          </div>
+        </el-card>
+
+        <el-card v-if="currentTaskDetails.attachments?.length" shadow="never" class="info-card">
+          <template #header>
+            <div class="card-header">
+              <span>询价附件</span>
+            </div>
+          </template>
+          <div class="task-attachment-list">
+            <div
+              v-for="(attachment, index) in currentTaskDetails.attachments"
+              :key="`${attachment.file_path || 'attachment'}_${index}`"
+              class="task-attachment-item"
+            >
+              <a
+                href="#"
+                class="task-attachment-link"
+                @click.prevent="previewAttachment(attachment)"
+              >
+                {{ attachment.name }}
+              </a>
+              <span class="task-attachment-meta">
+                {{ formatFileSize(attachment.size) }}
+              </span>
+              <span class="task-attachment-meta">
+                {{ formatDateTime(attachment.uploaded_at) }}
+              </span>
+              <el-button type="primary" link @click="previewAttachment(attachment)">预览</el-button>
+              <el-button type="primary" link @click="openAttachmentInNewTab(attachment)">新窗口打开</el-button>
+            </div>
+          </div>
         </el-card>
 
         <el-alert
@@ -515,6 +667,37 @@
     </el-dialog>
 
     <el-dialog
+      v-model="attachmentPreviewVisible"
+      title="附件预览"
+      width="70%"
+      top="6vh"
+      destroy-on-close
+      draggable
+      overflow
+    >
+      <div v-if="previewingAttachment" class="attachment-preview-container">
+        <div class="attachment-preview-toolbar">
+          <span class="attachment-preview-name">{{ previewingAttachment.name }}</span>
+          <el-button type="primary" link @click="openAttachmentInNewTab(previewingAttachment)">新窗口打开</el-button>
+        </div>
+        <img
+          v-if="getAttachmentPreviewType(previewingAttachment) === 'image'"
+          :src="getAttachmentPreviewUrl(previewingAttachment)"
+          class="attachment-preview-image"
+        />
+        <iframe
+          v-else-if="getAttachmentPreviewType(previewingAttachment) === 'iframe'"
+          :src="getAttachmentPreviewUrl(previewingAttachment)"
+          class="attachment-preview-frame"
+        />
+        <el-empty
+          v-else
+          description="当前文件类型暂不支持直接在线预览，请使用“新窗口打开”查看或下载。"
+        />
+      </div>
+    </el-dialog>
+
+    <el-dialog
       v-model="manualInterventionDialogVisible"
       :title="manualInterventionMode === 'continue' ? '人工通过谈判' : '人工淘汰供应商'"
       width="520px"
@@ -538,24 +721,87 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="approvalDialogVisible"
+      :title="approvalMode === 'approve' ? '审批通过' : '驳回询价申请'"
+      width="520px"
+      draggable
+      overflow
+    >
+      <el-form :model="approvalForm" label-width="92px">
+        <el-form-item label="审批意见">
+          <el-input
+            v-model="approvalForm.comment"
+            type="textarea"
+            :rows="4"
+            :placeholder="approvalMode === 'approve' ? '请输入审批通过意见，可留空' : '请输入驳回原因'"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="approvalDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="approvalSubmitting" @click="submitTaskApproval">
+          确认提交
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="resubmitDialogVisible"
+      title="重新提交经理审核"
+      width="560px"
+      draggable
+      overflow
+    >
+      <el-form :model="resubmitForm" label-width="108px">
+        <el-form-item label="提交说明">
+          <el-input
+            v-model="resubmitForm.comment"
+            type="textarea"
+            :rows="5"
+            maxlength="300"
+            show-word-limit
+            placeholder="请补充调整原因、采购思路或需要经理再次关注的点"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resubmitDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="resubmitSubmitting" @click="submitTaskResubmit">
+          确认重新提交
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getInquiryTasks, addSupplierToTask, getTaskDetails, closeInquiryTask, updateTaskStatus } from '../../api/inquiry'
+import { getInquiryTasks, addSupplierToTask, getTaskDetails, closeInquiryTask, updateTaskStatus, approveInquiryTask, rejectInquiryTask, resubmitInquiryTask } from '../../api/inquiry'
 import api from '../../api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DocumentCopy, Search, Warning } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const userRole = computed(() => localStorage.getItem('role') || '')
+const isAdminLike = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
 
 const activeTaskType = ref('auto')
 const loadingTasks = ref(false)
 const taskList = ref([])
 const searchQuery = ref('')
+const statusFilter = ref('')
+const statusFilterOptions = [
+  { label: '待审批', value: 'pending_approval' },
+  { label: '审批驳回', value: 'approval_rejected' },
+  { label: '进行中', value: 'active' },
+  { label: '待填写', value: 'pending_fill' },
+  { label: '分析中', value: 'analyzing' },
+  { label: '待份额分配', value: 'awaiting_award' },
+  { label: '已结束', value: 'closed' }
+]
 const isTaskCompareResultReadonly = (task) => ['closed', 'cancelled'].includes(String(task?.status || '').toLowerCase())
 
 const handleTaskTypeChange = () => {
@@ -564,8 +810,13 @@ const handleTaskTypeChange = () => {
 
 const getTaskDisplayStatus = (task) => task?.effective_status || task?.status || ''
 const isTaskCompareReady = (task) => Boolean(task?.compare_ready)
+const isTaskApprovalPending = (task) => ['pending_approval', 'approval_rejected'].includes(String(task?.status || '').toLowerCase())
 
 const goToCompare = (task) => {
+  if (isTaskApprovalPending(task)) {
+    ElMessage.warning('当前任务尚未通过经理审批，暂不可进入智能比价')
+    return
+  }
   if (task.status === 'pending_fill') {
     updateTaskStatus(task.id, 'analyzing').then(() => {
       fetchTasks()
@@ -595,8 +846,12 @@ const handleFinishManualTask = async (task) => {
 }
 
 const filteredTaskList = computed(() => {
-  if (!searchQuery.value) return taskList.value
-  return taskList.value.filter(task => 
+  let result = taskList.value
+  if (statusFilter.value) {
+    result = result.filter(task => getTaskDisplayStatus(task) === statusFilter.value || String(task?.status || '') === statusFilter.value)
+  }
+  if (!searchQuery.value) return result
+  return result.filter(task =>
     task.title.toLowerCase().includes(searchQuery.value.toLowerCase())
   )
 })
@@ -605,6 +860,8 @@ const detailsVisible = ref(false)
 const detailsActiveTab = ref('suppliers')
 const currentTask = ref(null)
 const currentTaskDetails = ref(null)
+const attachmentPreviewVisible = ref(false)
+const previewingAttachment = ref(null)
 const loadingDetails = ref(false)
 const addingSupplier = ref(false)
 const supplierForm = reactive({
@@ -618,6 +875,19 @@ const manualInterventionMode = ref('continue')
 const manualInterventionLinkId = ref(null)
 const manualInterventionForm = reactive({
   message: ''
+})
+const approvalDialogVisible = ref(false)
+const approvalSubmitting = ref(false)
+const approvalMode = ref('approve')
+const approvalTargetTask = ref(null)
+const approvalForm = reactive({
+  comment: ''
+})
+const resubmitDialogVisible = ref(false)
+const resubmitSubmitting = ref(false)
+const resubmitTargetTask = ref(null)
+const resubmitForm = reactive({
+  comment: ''
 })
 const pressureCommonRatio = ref(80)
 const pressureLowestRatio = ref(20)
@@ -700,6 +970,74 @@ const handleDeleteTask = async (task) => {
       console.error(e)
       ElMessage.error('删除失败')
     }
+  }
+}
+
+const canApproveTask = (task) => {
+  if (!task || !isAdminLike.value) return false
+  return ['pending_approval', 'approval_rejected'].includes(String(task.status || '').toLowerCase())
+}
+
+const canResubmitTask = (task) => {
+  if (!task || userRole.value !== 'buyer') return false
+  return String(task.status || '').toLowerCase() === 'approval_rejected'
+}
+
+const openApprovalDialog = (task, mode) => {
+  approvalTargetTask.value = task
+  approvalMode.value = mode
+  approvalForm.comment = ''
+  approvalDialogVisible.value = true
+}
+
+const submitTaskApproval = async () => {
+  if (!approvalTargetTask.value) return
+  approvalSubmitting.value = true
+  try {
+    if (approvalMode.value === 'approve') {
+      await approveInquiryTask(approvalTargetTask.value.id, { comment: approvalForm.comment || undefined })
+      ElMessage.success('审批通过，任务已进入正式询价流程')
+    } else {
+      await rejectInquiryTask(approvalTargetTask.value.id, { comment: approvalForm.comment || undefined })
+      ElMessage.success('已驳回该询价申请')
+    }
+    approvalDialogVisible.value = false
+    await fetchTasks()
+    if (detailsVisible.value && currentTaskDetails.value?.id === approvalTargetTask.value.id) {
+      await viewTaskDetails(approvalTargetTask.value, detailsActiveTab.value)
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '审批操作失败')
+  } finally {
+    approvalSubmitting.value = false
+  }
+}
+
+const openResubmitDialog = (task) => {
+  resubmitTargetTask.value = task
+  resubmitForm.comment = task?.buyer_comment || currentTaskDetails.value?.buyer_comment || ''
+  resubmitDialogVisible.value = true
+}
+
+const submitTaskResubmit = async () => {
+  if (!resubmitTargetTask.value) return
+  resubmitSubmitting.value = true
+  try {
+    await resubmitInquiryTask(resubmitTargetTask.value.id, {
+      comment: (resubmitForm.comment || '').trim() || undefined
+    })
+    ElMessage.success('已重新提交经理审核')
+    resubmitDialogVisible.value = false
+    await fetchTasks()
+    if (detailsVisible.value && currentTaskDetails.value?.id === resubmitTargetTask.value.id) {
+      await viewTaskDetails(resubmitTargetTask.value, detailsActiveTab.value)
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '重新提交失败')
+  } finally {
+    resubmitSubmitting.value = false
   }
 }
 
@@ -787,6 +1125,64 @@ const formatDate = (dateStr) => {
   return new Date(dateStr).toLocaleDateString()
 }
 
+const getAttachmentBaseUrl = () => {
+  return (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+}
+
+const normalizeAttachmentUrl = (filePath) => {
+  const normalized = String(filePath || '').trim()
+  if (!normalized) return '#'
+  if (normalized.startsWith('http://') || normalized.startsWith('https://')) return normalized
+  const normalizedPath = normalized.startsWith('/') ? normalized : `/${normalized}`
+  return `${getAttachmentBaseUrl()}${normalizedPath}`
+}
+
+const getAttachmentPreviewUrl = (attachment) => {
+  return normalizeAttachmentUrl(attachment?.preview_file_path || attachment?.file_path)
+}
+
+const getAttachmentExtension = (attachment) => {
+  const fileName = String(attachment?.name || attachment?.file_path || '').toLowerCase()
+  const matched = fileName.match(/\.([a-z0-9]+)(?:\?|$)/)
+  return matched ? matched[1] : ''
+}
+
+const getAttachmentPreviewType = (attachment) => {
+  if (attachment?.preview_file_path) return 'iframe'
+  const ext = getAttachmentExtension(attachment)
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) return 'image'
+  if (['pdf', 'txt', 'md', 'csv', 'json', 'log'].includes(ext)) return 'iframe'
+  return 'unsupported'
+}
+
+const previewAttachment = (attachment) => {
+  previewingAttachment.value = attachment
+  attachmentPreviewVisible.value = true
+}
+
+const openAttachmentInNewTab = (attachment) => {
+  const url = normalizeAttachmentUrl(attachment?.file_path)
+  if (url && url !== '#') {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
+const formatFileSize = (size) => {
+  const numericSize = Number(size || 0)
+  if (!numericSize) return '-'
+  if (numericSize < 1024) return `${numericSize} B`
+  if (numericSize < 1024 * 1024) return `${(numericSize / 1024).toFixed(1)} KB`
+  return `${(numericSize / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const getBuyerCommentActionLabel = (action) => {
+  const map = {
+    create: '首次提交',
+    resubmit: '重新提交'
+  }
+  return map[action] || '提交说明'
+}
+
 const getCountdownMeta = (deadline) => {
   if (!deadline) return { text: '未设置截止时间', urgent: false }
   const deadlineMs = new Date(deadline).getTime()
@@ -846,6 +1242,8 @@ const canSubmitAutoAllocations = computed(() => {
 const getTaskStatusType = (status) => {
   const map = {
     'draft': 'info',
+    'pending_approval': 'warning',
+    'approval_rejected': 'danger',
     'active': 'success',
     'closed': 'info',
     'awaiting_award': 'warning',
@@ -859,6 +1257,8 @@ const getTaskStatusType = (status) => {
 const getTaskStatusLabel = (status) => {
   const map = {
     'draft': '草稿',
+    'pending_approval': '待审批',
+    'approval_rejected': '审批驳回',
     'active': '进行中',
     'closed': '已结束',
     'awaiting_award': '待份额分配',
@@ -1200,6 +1600,116 @@ onUnmounted(() => {
   margin-top: -8px;
 }
 
+.buyer-comment-alert {
+  margin-top: -8px;
+}
+
+.buyer-comment-title {
+  font-weight: 700;
+}
+
+.buyer-comment-content {
+  white-space: pre-wrap;
+  line-height: 1.7;
+  color: #303133;
+}
+
+.buyer-comment-history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.buyer-comment-history-item {
+  padding: 12px 14px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.buyer-comment-history-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.buyer-comment-history-content {
+  white-space: pre-wrap;
+  line-height: 1.7;
+  color: #303133;
+}
+
+.task-attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fafafa;
+  flex-wrap: wrap;
+}
+
+.task-attachment-link {
+  color: #409eff;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.task-attachment-link:hover {
+  text-decoration: underline;
+}
+
+.task-attachment-meta {
+  color: #909399;
+  font-size: 12px;
+}
+
+.attachment-preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 520px;
+}
+
+.attachment-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.attachment-preview-name {
+  color: #303133;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.attachment-preview-frame {
+  width: 100%;
+  min-height: 70vh;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+}
+
+.attachment-preview-image {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fff;
+}
+
 .tab-label-with-status {
   display: inline-flex;
   align-items: center;
@@ -1345,6 +1855,18 @@ onUnmounted(() => {
 .task-action-secondary-btn {
   width: 78px;
   margin: 0;
+}
+
+.approval-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.approval-subtext {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .supplier-name-cell {

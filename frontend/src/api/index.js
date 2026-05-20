@@ -31,6 +31,10 @@ api.interceptors.response.use(
         // Clear token and redirect to login
         localStorage.removeItem('token')
         localStorage.removeItem('role')
+        localStorage.removeItem('department')
+        localStorage.removeItem('username')
+        localStorage.removeItem('supplier_id')
+        localStorage.removeItem('supplier_name')
         ElMessage.error('登录已过期，请重新登录')
         // Use window.location to avoid circular dependency with router
         window.location.href = '/login'

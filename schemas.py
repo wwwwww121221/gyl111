@@ -8,6 +8,10 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     role: Optional[str] = None
+    username: Optional[str] = None
+    department: Optional[str] = None
+    supplier_id: Optional[int] = None
+    supplier_name: Optional[str] = None
 
 class TokenData(BaseModel):
     username: Optional[str] = None
@@ -23,6 +27,70 @@ class UserCreate(UserBase):
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
+
+
+class SupplierPasswordLogin(BaseModel):
+    phone: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    openid: Optional[str] = None
+
+
+class SupplierSmsLogin(BaseModel):
+    phone: str = Field(..., min_length=1)
+    sms_code: str = Field(..., min_length=1)
+    openid: Optional[str] = None
+
+
+class SupplierSmsCodeSendRequest(BaseModel):
+    phone: str = Field(..., min_length=1)
+    scene: str = Field(..., min_length=1)
+
+
+class SupplierPasswordReset(BaseModel):
+    phone: str = Field(..., min_length=1)
+    sms_code: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6)
+
+
+class SupplierOnboardingCreate(BaseModel):
+    company_name: str = Field(..., min_length=1)
+    social_credit_code: Optional[str] = None
+    contact_person: str = Field(..., min_length=1)
+    phone: str = Field(..., min_length=1)
+    sms_code: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=6)
+    email: Optional[str] = None
+    onboarding_note: Optional[str] = None
+    attachments: Optional[List[dict]] = None
+    openid: Optional[str] = None
+
+
+class SupplierJoinRequestCreate(BaseModel):
+    phone: str = Field(..., min_length=1)
+    sms_code: str = Field(..., min_length=1)
+    company_name: Optional[str] = None
+    social_credit_code: Optional[str] = None
+    member_name: str = Field(..., min_length=1)
+    position: Optional[str] = None
+    application_note: Optional[str] = None
+    attachments: Optional[List[dict]] = None
+    approval_mode: str = "platform_admin"
+    password: Optional[str] = Field(default=None, min_length=6)
+    openid: Optional[str] = None
+
+
+class SupplierWechatBindRequest(BaseModel):
+    openid: str = Field(..., min_length=1)
+
+
+class SupplierWechatLoginRequest(BaseModel):
+    openid: str = Field(..., min_length=1)
+
+
+class SupplierJoinRequestReview(BaseModel):
+    status: str = Field(..., min_length=1)
+    role: Optional[str] = None
+    review_comment: Optional[str] = None
 
 class User(UserBase):
     id: int

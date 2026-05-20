@@ -12,6 +12,8 @@ const clearAuth = () => {
   localStorage.removeItem('role')
   localStorage.removeItem('department')
   localStorage.removeItem('username')
+  localStorage.removeItem('supplier_id')
+  localStorage.removeItem('supplier_name')
 }
 
 const isTokenValid = (token) => {

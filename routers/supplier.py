@@ -8,7 +8,7 @@ import asyncio
 
 from models import (
     get_db, SessionLocal, InquirySupplier, InquiryTaskItem,
-    Quotation, LinkStatus, InquiryRequest, TaskStatus, InquiryTask, Supplier, User, Contract, SupplierMetric, PurchaseOrderHistory
+    Quotation, LinkStatus, InquiryRequest, TaskStatus, InquiryTask, Supplier, SupplierMember, User, Contract, SupplierMetric, PurchaseOrderHistory
 )
 from schemas_supplier import (
     QuoteSubmission,
@@ -21,6 +21,7 @@ from schemas_supplier import (
 )
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
+from services.supplier_access import get_supplier_context_for_user
 import logging
 from routers.inquiry import get_current_user
 from core.security import get_password_hash
@@ -33,6 +34,10 @@ router = APIRouter()
 def _require_admin_or_buyer(current_user: User) -> None:
     if current_user.role not in ["admin", "buyer", "buyer_manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def _get_supplier_context(db: Session, current_user: User) -> tuple[Supplier, SupplierMember]:
+    return get_supplier_context_for_user(db, current_user)
 
 
 def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplier) -> list[InquiryTaskItem]:
@@ -473,7 +478,7 @@ def change_password(
 
     from core.security import verify_password
 
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="未找到供应商信息")
 
@@ -521,6 +526,31 @@ def update_supplier(
         if supplier_update.status in ["approved", "rejected"]:
             supplier.reviewer_id = current_user.id
             supplier.reviewed_at = datetime.now()
+        if supplier_update.status == "approved":
+            db.query(SupplierMember).filter(
+                SupplierMember.supplier_id == supplier.id,
+                SupplierMember.status == "pending"
+            ).update(
+                {
+                    "status": "active",
+                    "reviewed_by": current_user.id,
+                    "reviewed_at": datetime.now(),
+                },
+                synchronize_session=False,
+            )
+        elif supplier_update.status == "rejected":
+            db.query(SupplierMember).filter(
+                SupplierMember.supplier_id == supplier.id,
+                SupplierMember.status.in_(["pending", "active"])
+            ).update(
+                {
+                    "status": "disabled",
+                    "reviewed_by": current_user.id,
+                    "reviewed_at": datetime.now(),
+                    "review_comment": supplier.review_comment or "企业审核未通过",
+                },
+                synchronize_session=False,
+            )
     if supplier_update.level:
         supplier.level = supplier_update.level
 
@@ -682,7 +712,7 @@ def get_my_inquiries(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier profile not found")
         
@@ -727,7 +757,7 @@ def get_my_supplier_profile(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier profile not found")
 
@@ -752,7 +782,7 @@ def get_inquiry_details(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     
     link = db.query(InquirySupplier).filter(
         InquirySupplier.id == inquiry_supplier_id,
@@ -828,7 +858,7 @@ def confirm_contract(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier profile not found")
 
@@ -884,7 +914,7 @@ def get_last_contract_info(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier profile not found")
 
@@ -923,7 +953,7 @@ async def submit_quote(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _ = _get_supplier_context(db, current_user)
     
     link = db.query(InquirySupplier).filter(
         InquirySupplier.id == inquiry_supplier_id,

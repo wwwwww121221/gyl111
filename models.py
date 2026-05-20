@@ -78,6 +78,10 @@ def ensure_runtime_schema_columns():
         user_columns = {col["name"] for col in inspector.get_columns("users")}
         if "department" not in user_columns:
             alter_statements.append("ALTER TABLE users ADD COLUMN department VARCHAR DEFAULT '采购部'")
+        if "phone" not in user_columns:
+            alter_statements.append("ALTER TABLE users ADD COLUMN phone VARCHAR")
+        if "openid" not in user_columns:
+            alter_statements.append("ALTER TABLE users ADD COLUMN openid VARCHAR")
 
     if "contracts" in table_names:
         contract_columns = {col["name"] for col in inspector.get_columns("contracts")}
@@ -87,6 +91,17 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE contracts ADD COLUMN template_name VARCHAR")
         if "template_file_path" not in contract_columns:
             alter_statements.append("ALTER TABLE contracts ADD COLUMN template_file_path VARCHAR")
+
+    if "suppliers" in table_names:
+        supplier_columns = {col["name"] for col in inspector.get_columns("suppliers")}
+        if "social_credit_code" not in supplier_columns:
+            alter_statements.append("ALTER TABLE suppliers ADD COLUMN social_credit_code VARCHAR")
+        if "application_attachments" not in supplier_columns:
+            alter_statements.append("ALTER TABLE suppliers ADD COLUMN application_attachments JSON")
+        if "onboarding_note" not in supplier_columns:
+            alter_statements.append("ALTER TABLE suppliers ADD COLUMN onboarding_note TEXT")
+        if "review_comment" not in supplier_columns:
+            alter_statements.append("ALTER TABLE suppliers ADD COLUMN review_comment TEXT")
 
     if "compare_drafts" not in table_names:
         alter_statements.extend([
@@ -155,6 +170,8 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     role = Column(String, default=UserRole.BUYER)
     department = Column(String, nullable=True, default="采购部")
+    phone = Column(String, unique=True, index=True, nullable=True)
+    openid = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
 class InquiryRequest(Base):
@@ -248,15 +265,45 @@ class Supplier(Base):
     contact_person = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     email = Column(String, nullable=True)
+    social_credit_code = Column(String, nullable=True, unique=True, index=True)
     level = Column(String, default="general", comment="general/core")
     status = Column(String, default="pending", comment="pending/approved/rejected")
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    application_attachments = Column(JSON, nullable=True)
+    onboarding_note = Column(Text, nullable=True)
+    review_comment = Column(Text, nullable=True)
     rating_score = Column(Float, default=0.0)
     reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="审核人ID")
     reviewed_at = Column(DateTime, nullable=True, comment="审核时间")
 
     user = relationship("User", foreign_keys=[user_id], backref="supplier_profile")
     reviewer = relationship("User", foreign_keys=[reviewer_id])
+    members = relationship("SupplierMember", back_populates="supplier")
+
+
+class SupplierMember(Base):
+    __tablename__ = "supplier_members"
+    __table_args__ = (UniqueConstraint("supplier_id", "user_id", name="uq_supplier_members_supplier_user"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String, default="member", comment="owner/admin/member")
+    status = Column(String, default="pending", comment="pending/active/rejected/disabled")
+    member_name = Column(String, nullable=True)
+    position = Column(String, nullable=True)
+    application_note = Column(Text, nullable=True)
+    application_attachments = Column(JSON, nullable=True)
+    approval_mode = Column(String, default="platform_admin", comment="platform_admin/supplier_admin")
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    supplier = relationship("Supplier", back_populates="members")
+    user = relationship("User", foreign_keys=[user_id], backref="supplier_members")
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
 
 class InquirySupplier(Base):
     """
@@ -417,6 +464,46 @@ class OperationLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("User")
+
+
+def backfill_supplier_memberships():
+    db = SessionLocal()
+    try:
+        suppliers = db.query(Supplier).filter(Supplier.user_id.isnot(None)).all()
+        changed = False
+        for supplier in suppliers:
+            existing_member = db.query(SupplierMember).filter(
+                SupplierMember.supplier_id == supplier.id,
+                SupplierMember.user_id == supplier.user_id
+            ).first()
+            if existing_member:
+                continue
+
+            member_status = "pending"
+            if supplier.status == "approved":
+                member_status = "active"
+            elif supplier.status == "rejected":
+                member_status = "disabled"
+
+            db.add(SupplierMember(
+                supplier_id=supplier.id,
+                user_id=supplier.user_id,
+                role="owner",
+                status=member_status,
+                member_name=supplier.contact_person,
+                position="管理员",
+                application_note="历史供应商账号自动回填",
+                approval_mode="platform_admin",
+                reviewed_at=supplier.reviewed_at,
+                reviewed_by=supplier.reviewer_id,
+                review_comment=supplier.review_comment,
+            ))
+            changed = True
+
+        if changed:
+            db.commit()
+    finally:
+        db.close()
 
 # 依赖注入 Dependency
 def get_db():

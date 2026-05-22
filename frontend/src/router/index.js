@@ -197,6 +197,18 @@ const routes = [
         name: 'MyWarnings',
         component: () => import('../views/supplier/MyWarnings.vue'),
         meta: { requiresRole: ['supplier'] }
+      },
+      {
+        path: 'members',
+        name: 'MemberRequests',
+        component: () => import('../views/supplier/MemberRequests.vue'),
+        meta: { requiresRole: ['supplier'] }
+      },
+      {
+        path: 'company-info',
+        name: 'CompanyInfo',
+        component: () => import('../views/supplier/CompanyInfo.vue'),
+        meta: { requiresRole: ['supplier'] }
       }
     ]
   }

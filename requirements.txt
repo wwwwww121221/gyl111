@@ -18,3 +18,4 @@ pywin32
 apscheduler
 python-dateutil
 httpx
+redis

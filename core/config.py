@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://postgres:1234@localhost:5432/supply_chain_agent"
 
+    # Redis (缓存)
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_CACHE_TTL: int = 86400  # 缓存默认过期时间(秒)，24小时
+
     # LLM (未来扩展)
     LLM_PROVIDER: str = "openai" # openai, deepseek, ollama
     LLM_API_KEY: Optional[str] = None

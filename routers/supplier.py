@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from typing import Any
@@ -18,17 +21,21 @@ from schemas_supplier import (
     SupplierCreatePayload,
     SupplierAccountUpdatePayload,
     SupplierChangePasswordPayload,
+    SupplierProfileUpdatePayload,
 )
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
-from services.supplier_access import get_supplier_context_for_user
+from services.supplier_access import get_supplier_context_for_portal, get_supplier_context_for_user
 import logging
 from routers.inquiry import get_current_user
 from core.security import get_password_hash
+from core.redis_client import cache_get, cache_set, cache_delete, cache_clear_pattern
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+BASE_DIR = Path(__file__).resolve().parents[1]
+SUPPLIER_SURVEY_TEMPLATE_PATH = BASE_DIR.parent / "供应商评价" / "俊郎电气供应商调查表.doc"
 
 
 def _require_admin_or_buyer(current_user: User) -> None:
@@ -38,6 +45,18 @@ def _require_admin_or_buyer(current_user: User) -> None:
 
 def _get_supplier_context(db: Session, current_user: User) -> tuple[Supplier, SupplierMember]:
     return get_supplier_context_for_user(db, current_user)
+
+
+def _get_supplier_portal_context(db: Session, current_user: User) -> tuple[Supplier, SupplierMember]:
+    return get_supplier_context_for_portal(db, current_user)
+
+
+def _invalidate_supplier_cache():
+    """清除供应商相关所有缓存"""
+    try:
+        cache_clear_pattern("supplier:*")
+    except Exception:
+        pass
 
 
 def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplier) -> list[InquiryTaskItem]:
@@ -264,59 +283,273 @@ def get_supplier_analysis(
     }
 
 @router.get("/list")
-def get_supplier_list(db: Session = Depends(get_db)):
+def get_supplier_list(
+    page: int = 1,
+    page_size: int = 20,
+    keyword: str = "",
+    db: Session = Depends(get_db),
+):
     """
-    采购员获取所有供应商列表（用于选择派发询价及供应商管理）
+    采购员获取供应商列表（分页）
     """
-    # 按照历史交易次数降序排列，等级辅助排序
-    suppliers_with_count = db.query(
-        Supplier, 
-        func.count(PurchaseOrderHistory.id).label('transaction_count')
+    CACHE_KEY = f"supplier:list:p{page}:s{page_size}:k{keyword}"
+    cached = cache_get(CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    query = db.query(
+        Supplier,
+        func.count(PurchaseOrderHistory.id).label("transaction_count"),
     ).outerjoin(
         PurchaseOrderHistory, Supplier.code == PurchaseOrderHistory.supplier_code
-    ).group_by(Supplier.id).all()
-    
+    )
+
+    if keyword:
+        kw = f"%{keyword}%"
+        query = query.filter(
+            Supplier.name.ilike(kw) | Supplier.code.ilike(kw) | Supplier.contact_person.ilike(kw)
+        )
+
+    base_query = query.group_by(Supplier.id)
+
+    total = base_query.count()
+
     def sort_key(item):
         supplier, count = item
         grade = "一般"
-        if getattr(supplier, 'grade', None):
+        if getattr(supplier, "grade", None):
             grade = supplier.grade
-        elif getattr(supplier, 'level', None) == 'core':
-            grade = 'A级'
-            
-        # 交易次数降序，然后是等级升序 (A 优先于 B 优先于 Z)
+        elif getattr(supplier, "level", None) == "core":
+            grade = "A级"
         return (-count, grade)
-    
-    sorted_items = sorted(suppliers_with_count, key=sort_key)
-    
+
+    all_items = sorted(base_query.all(), key=sort_key)
+    start = (page - 1) * page_size
+    paged_items = all_items[start : start + page_size]
+
     result = []
-    for s, count in sorted_items:
+    for s, count in paged_items:
         grade = "一般"
-        if getattr(s, 'grade', None):
+        if getattr(s, "grade", None):
             grade = s.grade
-        elif getattr(s, 'level', None) == 'core':
-            grade = 'A级'
-            
+        elif getattr(s, "level", None) == "core":
+            grade = "A级"
         result.append({
             "id": s.id,
             "code": s.code,
             "name": s.name,
             "short_name": s.short_name,
+            "social_credit_code": s.social_credit_code,
             "grade": grade,
             "contact_person": s.contact_person,
             "phone": s.phone,
             "email": s.email,
             "level": s.level,
             "status": s.status,
+            "application_attachments": s.application_attachments or [],
+            "onboarding_note": s.onboarding_note,
+            "review_comment": s.review_comment,
             "rating_score": s.rating_score,
             "reviewer_id": s.reviewer_id,
             "reviewed_at": s.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if s.reviewed_at else None,
             "reviewer_name": s.reviewer.username if s.reviewer else None,
             "transaction_count": count,
             "user_id": s.user_id,
-            "account_username": s.user.username if s.user else None
+            "account_username": s.user.username if s.user else None,
         })
+
+    response = {"total": total, "list": result}
+    cache_set(CACHE_KEY, response)
+    return response
+
+
+@router.get("/pending")
+def get_pending_suppliers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    _require_admin_or_buyer(current_user)
+
+    suppliers = (
+        db.query(Supplier)
+        .filter(Supplier.status == "pending")
+        .order_by(Supplier.id.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": supplier.id,
+            "code": supplier.code,
+            "name": supplier.name,
+            "short_name": supplier.short_name,
+            "social_credit_code": supplier.social_credit_code,
+            "contact_person": supplier.contact_person,
+            "phone": supplier.phone,
+            "email": supplier.email,
+            "level": supplier.level,
+            "status": supplier.status,
+            "application_attachments": supplier.application_attachments or [],
+            "onboarding_note": supplier.onboarding_note,
+            "review_comment": supplier.review_comment,
+            "reviewer_id": supplier.reviewer_id,
+            "reviewed_at": supplier.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if supplier.reviewed_at else None,
+            "reviewer_name": supplier.reviewer.username if supplier.reviewer else None,
+            "user_id": supplier.user_id,
+            "account_username": supplier.user.username if supplier.user else None,
+        }
+        for supplier in suppliers
+    ]
+
+
+@router.get("/{supplier_id}/members")
+def get_supplier_members(
+    supplier_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    _require_admin_or_buyer(current_user)
+
+    CACHE_KEY = f"supplier:members:{supplier_id}"
+    cached = cache_get(CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+
+    members = (
+        db.query(SupplierMember)
+        .filter(SupplierMember.supplier_id == supplier_id)
+        .order_by(
+            SupplierMember.status.asc(),
+            SupplierMember.role.desc(),
+            SupplierMember.created_at.desc(),
+        )
+        .all()
+    )
+
+    result = []
+    for m in members:
+        user = db.query(User).filter(User.id == m.user_id).first()
+        reviewer = db.query(User).filter(User.id == m.reviewed_by).first() if m.reviewed_by else None
+        result.append({
+            "id": m.id,
+            "user_id": m.user_id,
+            "phone": user.phone if user else "",
+            "member_name": m.member_name,
+            "position": m.position,
+            "role": m.role,
+            "status": m.status,
+            "approval_mode": m.approval_mode,
+            "application_note": m.application_note,
+            "application_attachments": m.application_attachments or [],
+            "review_comment": m.review_comment,
+            "reviewed_by_name": reviewer.username if reviewer else None,
+            "reviewed_at": m.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if m.reviewed_at else None,
+            "created_at": m.created_at.strftime("%Y-%m-%d %H:%M:%S") if m.created_at else None,
+        })
+
+    cache_set(CACHE_KEY, result)
     return result
+
+
+@router.get("/{supplier_id}/detail")
+def get_supplier_detail(
+    supplier_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    _require_admin_or_buyer(current_user)
+
+    CACHE_KEY = f"supplier:detail:{supplier_id}"
+    cached = cache_get(CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+
+    result = {
+        "id": supplier.id,
+        "application_attachments": supplier.application_attachments or [],
+    }
+
+    cache_set(CACHE_KEY, result)
+    return result
+
+
+@router.get("/my-profile")
+def get_my_supplier_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    supplier, member = _get_supplier_portal_context(db, current_user)
+    return {
+        "id": supplier.id,
+        "name": supplier.name,
+        "code": supplier.code,
+        "short_name": supplier.short_name,
+        "contact_person": supplier.contact_person,
+        "phone": supplier.phone,
+        "email": supplier.email,
+        "social_credit_code": supplier.social_credit_code,
+        "grade": supplier.grade,
+        "status": supplier.status,
+        "application_attachments": supplier.application_attachments or [],
+        "onboarding_note": supplier.onboarding_note,
+        "review_comment": supplier.review_comment,
+        "role": member.role,
+        "member_status": member.status,
+    }
+
+
+@router.put("/my-profile")
+def update_my_supplier_profile(
+    payload: SupplierProfileUpdatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    supplier, member = _get_supplier_portal_context(db, current_user)
+    if member.role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="仅管理员可修改公司信息")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    if "social_credit_code" in update_data:
+        social_credit_code = (update_data.get("social_credit_code") or "").strip() or None
+        if social_credit_code:
+            duplicated = (
+                db.query(Supplier)
+                .filter(Supplier.social_credit_code == social_credit_code, Supplier.id != supplier.id)
+                .first()
+            )
+            if duplicated:
+                raise HTTPException(status_code=400, detail="该统一社会信用代码已存在")
+        update_data["social_credit_code"] = social_credit_code
+    for field, value in update_data.items():
+        setattr(supplier, field, value)
+
+    db.commit()
+    db.refresh(supplier)
+    _invalidate_supplier_cache()
+    return {"detail": "公司信息更新成功"}
+
+
+@router.get("/onboarding-template")
+def download_supplier_onboarding_template(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_supplier_portal_context(db, current_user)
+    if not SUPPLIER_SURVEY_TEMPLATE_PATH.exists():
+        raise HTTPException(status_code=404, detail="供应商调查表模板不存在")
+    return FileResponse(
+        path=SUPPLIER_SURVEY_TEMPLATE_PATH,
+        filename=SUPPLIER_SURVEY_TEMPLATE_PATH.name,
+        media_type="application/msword",
+    )
 
 
 @router.post("/manage")
@@ -377,6 +610,7 @@ def create_supplier_with_optional_account(
     db.add(supplier)
     db.commit()
     db.refresh(supplier)
+    _invalidate_supplier_cache()
     return {
         "id": supplier.id,
         "name": supplier.name,
@@ -478,7 +712,7 @@ def change_password(
 
     from core.security import verify_password
 
-    supplier, _ = _get_supplier_context(db, current_user)
+    supplier, _ = _get_supplier_portal_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="未找到供应商信息")
 
@@ -520,13 +754,21 @@ def update_supplier(
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
-        
+
+    review_comment = (
+        supplier_update.review_comment.strip()
+        if isinstance(supplier_update.review_comment, str)
+        else None
+    ) or None
+
     if supplier_update.status:
         supplier.status = supplier_update.status
-        if supplier_update.status in ["approved", "rejected"]:
+        supplier.review_comment = review_comment
+        if supplier_update.status in ["approved", "rejected", "pending"]:
             supplier.reviewer_id = current_user.id
             supplier.reviewed_at = datetime.now()
         if supplier_update.status == "approved":
+            supplier.review_comment = None
             db.query(SupplierMember).filter(
                 SupplierMember.supplier_id == supplier.id,
                 SupplierMember.status == "pending"
@@ -535,6 +777,19 @@ def update_supplier(
                     "status": "active",
                     "reviewed_by": current_user.id,
                     "reviewed_at": datetime.now(),
+                },
+                synchronize_session=False,
+            )
+        elif supplier_update.status == "pending":
+            db.query(SupplierMember).filter(
+                SupplierMember.supplier_id == supplier.id,
+                SupplierMember.status.in_(["pending", "active"])
+            ).update(
+                {
+                    "status": "pending",
+                    "reviewed_by": current_user.id,
+                    "reviewed_at": datetime.now(),
+                    "review_comment": supplier.review_comment,
                 },
                 synchronize_session=False,
             )
@@ -578,6 +833,7 @@ def update_supplier(
         }
     )
     
+    _invalidate_supplier_cache()
     return {"message": "Supplier updated successfully", "id": supplier.id, "status": supplier.status, "grade": supplier.grade}
 
 
@@ -699,6 +955,7 @@ def delete_supplier(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"删除供应商失败: {str(e)}")
         
+    _invalidate_supplier_cache()
     return {"message": "供应商已成功删除"}
 
 @router.get("/my-inquiries")
@@ -712,7 +969,7 @@ def get_my_inquiries(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    supplier, _ = _get_supplier_context(db, current_user)
+    supplier, member = _get_supplier_portal_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier profile not found")
         
@@ -757,7 +1014,7 @@ def get_my_supplier_profile(
     if current_user.role != "supplier":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    supplier, _ = _get_supplier_context(db, current_user)
+    supplier, member = _get_supplier_portal_context(db, current_user)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier profile not found")
 
@@ -768,6 +1025,7 @@ def get_my_supplier_profile(
         "phone": supplier.phone,
         "email": supplier.email,
         "status": supplier.status,
+        "member_status": member.status,
     }
 
 @router.get("/inquiry/{inquiry_supplier_id}")

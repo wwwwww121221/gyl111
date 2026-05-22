@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core import security
 from core.config import settings
+from core.redis_client import cache_clear_pattern
 from models import Supplier, SupplierMember, User, get_db
 from schemas import (
     SupplierJoinRequestCreate,
@@ -33,6 +34,7 @@ from services.sms_service import (
     verify_sms_code,
 )
 from services.supplier_access import (
+    get_supplier_context_for_portal,
     get_supplier_context_for_user,
     get_user_by_phone,
     get_user_memberships,
@@ -46,6 +48,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login
 BASE_DIR = Path(__file__).resolve().parents[1]
 SUPPLIER_UPLOAD_ROOT = BASE_DIR / "static" / "uploads" / "supplier_onboarding"
 SUPPLIER_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _invalidate_supplier_cache() -> None:
+    try:
+        cache_clear_pattern("supplier:*")
+    except Exception:
+        pass
 
 
 def _is_admin_like(user: User | None) -> bool:
@@ -79,7 +88,11 @@ def _bind_openid_if_needed(db: Session, user: User, openid: str | None) -> None:
         db.flush()
 
 
-def _create_token_payload(user: User, supplier: Supplier | None = None) -> dict[str, Any]:
+def _create_token_payload(
+    user: User,
+    supplier: Supplier | None = None,
+    member: SupplierMember | None = None,
+) -> dict[str, Any]:
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
         subject=user.username,
@@ -94,6 +107,8 @@ def _create_token_payload(user: User, supplier: Supplier | None = None) -> dict[
         "department": user.department,
         "supplier_id": supplier.id if supplier else None,
         "supplier_name": supplier.name if supplier else None,
+        "supplier_status": supplier.status if supplier else None,
+        "member_status": member.status if member else None,
     }
 
 
@@ -228,10 +243,11 @@ def login_access_token(
         )
 
     supplier = None
+    member = None
     if user.role == "supplier":
-        supplier, _ = get_supplier_context_for_user(db, user)
+        supplier, member = get_supplier_context_for_portal(db, user)
 
-    payload = _create_token_payload(user, supplier)
+    payload = _create_token_payload(user, supplier, member)
     _log_login(db, user, request=request, supplier=supplier)
     return payload
 
@@ -308,11 +324,11 @@ def supplier_password_login(
             detail="密码错误",
         )
 
-    supplier, _ = resolve_supplier_access(db, user)
+    supplier, member = resolve_supplier_access(db, user, allow_pending_supplier=True)
     _bind_openid_if_needed(db, user, payload.openid)
     db.commit()
 
-    token_payload = _create_token_payload(user, supplier)
+    token_payload = _create_token_payload(user, supplier, member)
     _log_login(db, user, request=request, supplier=supplier)
     return token_payload
 
@@ -334,11 +350,11 @@ def supplier_sms_login(
     _ensure_supplier_user_role(user)
     verify_sms_code(phone, "login", payload.sms_code)
 
-    supplier, _ = resolve_supplier_access(db, user)
+    supplier, member = resolve_supplier_access(db, user, allow_pending_supplier=True)
     _bind_openid_if_needed(db, user, payload.openid)
     db.commit()
 
-    token_payload = _create_token_payload(user, supplier)
+    token_payload = _create_token_payload(user, supplier, member)
     _log_login(db, user, request=request, supplier=supplier)
     return token_payload
 
@@ -359,9 +375,9 @@ def supplier_wechat_login(
         }
 
     _ensure_supplier_user_role(user)
-    supplier, _ = resolve_supplier_access(db, user)
+    supplier, member = resolve_supplier_access(db, user, allow_pending_supplier=True)
 
-    token_payload = _create_token_payload(user, supplier)
+    token_payload = _create_token_payload(user, supplier, member)
     _log_login(db, user, request=request, supplier=supplier)
     return {
         "bound": True,
@@ -419,14 +435,26 @@ async def upload_supplier_attachment(
 
     ext = Path(file.filename).suffix.lower()
     allowed_extensions = {
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg", ".zip", ".rar", ".7z"
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".zip",
+        ".rar",
+        ".7z",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".xz",
     }
     if ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail="附件格式不支持")
 
     content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="附件大小不能超过20MB")
 
     month_bucket = datetime.now().strftime("%Y%m")
     target_dir = SUPPLIER_UPLOAD_ROOT / month_bucket
@@ -502,6 +530,7 @@ def supplier_onboarding(
     )
     db.add(member)
     db.commit()
+    _invalidate_supplier_cache()
 
     return {
         "message": "入驻申请已提交，请等待平台审核",

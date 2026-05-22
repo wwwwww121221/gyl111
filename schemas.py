@@ -12,6 +12,8 @@ class Token(BaseModel):
     department: Optional[str] = None
     supplier_id: Optional[int] = None
     supplier_name: Optional[str] = None
+    supplier_status: Optional[str] = None
+    member_status: Optional[str] = None
 
 class TokenData(BaseModel):
     username: Optional[str] = None

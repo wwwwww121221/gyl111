@@ -1,42 +1,40 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+const clearAuthStorage = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('role')
+  localStorage.removeItem('department')
+  localStorage.removeItem('username')
+  localStorage.removeItem('supplier_id')
+  localStorage.removeItem('supplier_name')
+  localStorage.removeItem('supplier_status')
+  localStorage.removeItem('member_status')
+}
+
 const api = axios.create({
   baseURL: '/api',
-  timeout: 60000 // 将超时时间从 10s 延长到 60s，以适应大模型生成时间
+  timeout: 60000,
 })
 
-// Request interceptor
 api.interceptors.request.use(
-  config => {
+  (config) => {
     const token = localStorage.getItem('token')
     if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`
+      config.headers.Authorization = `Bearer ${token}`
     }
     return config
   },
-  error => {
-    return Promise.reject(error)
-  }
+  (error) => Promise.reject(error),
 )
 
-// Response interceptor
 api.interceptors.response.use(
-  response => {
-    return response
-  },
-  error => {
+  (response) => response,
+  (error) => {
     if (error.response) {
       if (error.response.status === 401) {
-        // Clear token and redirect to login
-        localStorage.removeItem('token')
-        localStorage.removeItem('role')
-        localStorage.removeItem('department')
-        localStorage.removeItem('username')
-        localStorage.removeItem('supplier_id')
-        localStorage.removeItem('supplier_name')
+        clearAuthStorage()
         ElMessage.error('登录已过期，请重新登录')
-        // Use window.location to avoid circular dependency with router
         window.location.href = '/login'
       } else {
         ElMessage.error(error.response.data.error || error.response.data.detail || '请求失败')
@@ -45,7 +43,7 @@ api.interceptors.response.use(
       ElMessage.error('网络错误或服务不可用')
     }
     return Promise.reject(error)
-  }
+  },
 )
 
 export default api

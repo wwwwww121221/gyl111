@@ -65,6 +65,12 @@ def sync_suppliers(page_size: int = 500):
 
         logger.info(f"Successfully synced {synced_count} suppliers from ERP.")
         
+        try:
+            from core.redis_client import cache_delete
+            cache_delete("supplier:list:full")
+        except Exception:
+            pass
+        
     except Exception as e:
         logger.error(f"Error syncing suppliers: {str(e)}")
         db.rollback()

@@ -1,7 +1,7 @@
 <template>
   <div class="layout-container">
     <el-container class="main-container">
-      <el-aside v-if="!isMobile" width="200px" class="aside">
+      <el-aside v-if="!isMobile" width="220px" class="aside">
         <div class="logo">
           <h2>供应商服务平台</h2>
         </div>
@@ -13,13 +13,9 @@
           active-text-color="#409EFF"
           router
         >
-          <el-menu-item index="/supplier/inquiries">
-            <el-icon><Document /></el-icon>
-            <span>我的询价单</span>
-          </el-menu-item>
-          <el-menu-item index="/supplier/warnings">
-            <el-icon><Warning /></el-icon>
-            <span>发货预警</span>
+          <el-menu-item v-for="item in visibleMenus" :key="item.path" :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
           </el-menu-item>
         </el-menu>
       </el-aside>
@@ -42,7 +38,7 @@
               <span class="el-dropdown-link user-info">
                 <el-avatar size="small" icon="UserFilled" style="margin-right: 8px;" />
                 {{ displayName }}
-                <el-icon class="el-icon--right"><arrow-down /></el-icon>
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </span>
               <template #dropdown>
                 <el-dropdown-menu>
@@ -82,13 +78,9 @@
         router
         @select="mobileMenuVisible = false"
       >
-        <el-menu-item index="/supplier/inquiries">
-          <el-icon><Document /></el-icon>
-          <span>我的询价单</span>
-        </el-menu-item>
-        <el-menu-item index="/supplier/warnings">
-          <el-icon><Warning /></el-icon>
-          <span>发货预警</span>
+        <el-menu-item v-for="item in visibleMenus" :key="item.path" :index="item.path">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
         </el-menu-item>
       </el-menu>
     </el-drawer>
@@ -96,9 +88,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { Document, Warning, ArrowDown, Menu } from '@element-plus/icons-vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowDown, Document, Menu, OfficeBuilding, UserFilled, Warning } from '@element-plus/icons-vue'
 import { jwtDecode } from 'jwt-decode'
 import api from '../api/index'
 
@@ -106,13 +98,28 @@ const router = useRouter()
 const route = useRoute()
 const isMobile = ref(window.innerWidth <= 768)
 const mobileMenuVisible = ref(false)
+const supplierStatus = ref(localStorage.getItem('supplier_status') || '')
+
+const allMenus = [
+  { path: '/supplier/inquiries', label: '我的询价单', icon: Document },
+  { path: '/supplier/warnings', label: '发货预警', icon: Warning },
+  { path: '/supplier/members', label: '成员管理', icon: UserFilled },
+  { path: '/supplier/company-info', label: '公司信息', icon: OfficeBuilding },
+]
+
+const visibleMenus = computed(() => {
+  if (supplierStatus.value === 'approved') return allMenus
+  return allMenus.filter((item) => item.path === '/supplier/company-info')
+})
 
 const activeMenu = computed(() => route.path)
 
 const pageTitle = computed(() => {
   const map = {
     '/supplier/inquiries': '我的询价单',
-    '/supplier/warnings': '发货预警'
+    '/supplier/warnings': '发货预警',
+    '/supplier/members': '成员管理',
+    '/supplier/company-info': '公司信息',
   }
   return map[route.path] || '供应商服务平台'
 })
@@ -124,8 +131,8 @@ try {
     const decoded = jwtDecode(token)
     displayName.value = decoded.sub || 'Supplier'
   }
-} catch (e) {
-  console.error('Failed to parse token')
+} catch (error) {
+  console.error('Failed to parse token', error)
 }
 
 const fetchSupplierDisplayName = async () => {
@@ -135,8 +142,10 @@ const fetchSupplierDisplayName = async () => {
     if (companyName) {
       displayName.value = companyName
     }
-  } catch (e) {
-    console.error('Failed to fetch supplier profile')
+    supplierStatus.value = res?.data?.status || supplierStatus.value
+    localStorage.setItem('supplier_status', supplierStatus.value || '')
+  } catch (error) {
+    console.error('Failed to fetch supplier profile', error)
   }
 }
 
@@ -145,6 +154,17 @@ const handleResize = () => {
   if (!isMobile.value) {
     mobileMenuVisible.value = false
   }
+}
+
+const clearSupplierAuth = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('role')
+  localStorage.removeItem('department')
+  localStorage.removeItem('username')
+  localStorage.removeItem('supplier_id')
+  localStorage.removeItem('supplier_name')
+  localStorage.removeItem('supplier_status')
+  localStorage.removeItem('member_status')
 }
 
 onMounted(() => {
@@ -158,8 +178,7 @@ onUnmounted(() => {
 
 const handleCommand = (command) => {
   if (command === 'logout') {
-    localStorage.removeItem('token')
-    localStorage.removeItem('role')
+    clearSupplierAuth()
     router.push('/login')
   }
 }

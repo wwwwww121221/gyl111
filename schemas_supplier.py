@@ -42,6 +42,15 @@ class SupplierAccountUpdatePayload(BaseModel):
     password: Optional[str] = None
 
 
+class SupplierProfileUpdatePayload(BaseModel):
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    short_name: Optional[str] = None
+    onboarding_note: Optional[str] = None
+    application_attachments: Optional[list] = None
+
+
 class SupplierContractInfoSubmit(BaseModel):
     address: str = Field(..., min_length=1)
     legal_representative: str = Field(..., min_length=1)

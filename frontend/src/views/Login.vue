@@ -1,18 +1,45 @@
 <template>
   <div class="login-page">
     <section class="hero-panel">
+      <div class="hero-bg-shapes">
+        <div class="shape shape-1"></div>
+        <div class="shape shape-2"></div>
+        <div class="shape shape-3"></div>
+        <div class="shape shape-4"></div>
+        <div class="shape shape-5"></div>
+      </div>
       <div class="hero-inner">
         <div class="brand-row">
           <div class="brand-mark">SCM</div>
           <div class="brand-name">JULAN</div>
         </div>
-        <h1>供应商协同平台</h1>
+        <h1>供应商<br/>协同平台</h1>
         <p>统一的供应商登录入口，支持密码登录、短信验证码登录，以及手机号验证码找回密码。</p>
+        <div class="hero-features">
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <span>安全加密</span>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </div>
+            <span>快速响应</span>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
+            <span>协同高效</span>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="auth-panel">
-      <div class="auth-card">
+      <div class="auth-card" :class="{ 'card-enter': cardEntered }">
         <div class="auth-header">
           <h2>{{ isInternalMode ? '内部账号登录' : '供应商登录' }}</h2>
           <p>{{ isInternalMode ? '请输入内部账号信息进入系统。' : '请选择密码登录或验证码登录。' }}</p>
@@ -26,129 +53,172 @@
           class="wechat-alert"
         />
 
-        <div v-if="!isInternalMode" class="mode-links">
+        <div v-if="!isInternalMode" class="mode-tabs">
+          <div class="mode-tabs-indicator" :class="{ 'indicator-right': activeTab === 'supplier-sms' }"></div>
           <button
             type="button"
-            class="mode-link"
+            class="mode-tab"
             :class="{ active: activeTab === 'supplier-password' }"
             @click="activeTab = 'supplier-password'"
           >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tab-icon"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             密码登录
           </button>
-          <span class="mode-divider">|</span>
           <button
             type="button"
-            class="mode-link"
+            class="mode-tab"
             :class="{ active: activeTab === 'supplier-sms' }"
             @click="activeTab = 'supplier-sms'"
           >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="tab-icon"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
             验证码登录
           </button>
         </div>
 
-        <el-form
-          v-show="activeTab === 'supplier-password'"
-          ref="supplierPasswordRef"
-          :model="supplierPasswordForm"
-          :rules="supplierPasswordRules"
-          label-position="top"
-        >
-          <el-form-item label="手机号" prop="phone">
-            <el-input
-              v-model="supplierPasswordForm.phone"
-              maxlength="11"
-              placeholder="请输入手机号"
-              autocomplete="tel"
-            />
-          </el-form-item>
+        <transition name="form-fade" mode="out-in">
+          <el-form
+            v-if="activeTab === 'supplier-password'"
+            key="supplier-password"
+            ref="supplierPasswordRef"
+            :model="supplierPasswordForm"
+            :rules="supplierPasswordRules"
+            label-position="top"
+            class="login-form"
+          >
+            <el-form-item label="手机号" prop="phone">
+              <el-input
+                v-model="supplierPasswordForm.phone"
+                maxlength="11"
+                placeholder="请输入手机号"
+                autocomplete="tel"
+                size="large"
+              >
+                <template #prefix>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                </template>
+              </el-input>
+            </el-form-item>
 
-          <el-form-item label="密码" prop="password">
-            <el-input
-              v-model="supplierPasswordForm.password"
-              type="password"
-              show-password
-              placeholder="请输入密码"
-              autocomplete="current-password"
-              @keyup.enter="handleSupplierPasswordLogin"
-            />
-          </el-form-item>
+            <el-form-item label="密码" prop="password">
+              <el-input
+                v-model="supplierPasswordForm.password"
+                type="password"
+                show-password
+                placeholder="请输入密码"
+                autocomplete="current-password"
+                size="large"
+                @keyup.enter="handleSupplierPasswordLogin"
+              >
+                <template #prefix>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </template>
+              </el-input>
+            </el-form-item>
 
-          <div class="helper-row">
-            <el-button link type="primary" @click="openResetDialog">忘记密码？</el-button>
-          </div>
+            <div class="helper-row">
+              <el-button link type="primary" @click="openResetDialog">忘记密码？</el-button>
+            </div>
 
-          <el-button type="primary" class="submit-btn" :loading="loading" @click="handleSupplierPasswordLogin">
-            登录供应商端
-          </el-button>
-        </el-form>
+            <el-button type="primary" class="submit-btn" :loading="loading" @click="handleSupplierPasswordLogin">
+              登录供应商端
+            </el-button>
+          </el-form>
 
-        <el-form
-          v-show="activeTab === 'supplier-sms'"
-          ref="supplierSmsRef"
-          :model="supplierSmsForm"
-          :rules="supplierSmsRules"
-          label-position="top"
-        >
-          <el-form-item label="手机号" prop="phone">
-            <el-input
-              v-model="supplierSmsForm.phone"
-              maxlength="11"
-              placeholder="请输入手机号"
-              autocomplete="tel"
-            >
-              <template #append>
-                <el-button :disabled="smsCountdown > 0 || smsSending" @click="sendLoginSmsCode">
+          <el-form
+            v-else-if="activeTab === 'supplier-sms'"
+            key="supplier-sms"
+            ref="supplierSmsRef"
+            :model="supplierSmsForm"
+            :rules="supplierSmsRules"
+            label-position="top"
+            class="login-form"
+          >
+            <el-form-item label="手机号" prop="phone">
+              <el-input
+                v-model="supplierSmsForm.phone"
+                maxlength="11"
+                placeholder="请输入手机号"
+                autocomplete="tel"
+                size="large"
+              >
+                <template #prefix>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                </template>
+              </el-input>
+            </el-form-item>
+
+            <el-form-item label="验证码" prop="sms_code">
+              <div class="sms-input-row">
+                <el-input
+                  v-model="supplierSmsForm.sms_code"
+                  maxlength="6"
+                  placeholder="请输入验证码"
+                  autocomplete="off"
+                  size="large"
+                  @keyup.enter="handleSupplierSmsLogin"
+                >
+                  <template #prefix>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                  </template>
+                </el-input>
+                <el-button
+                  class="sms-btn"
+                  :disabled="smsCountdown > 0 || smsSending"
+                  @click="sendLoginSmsCode"
+                >
                   {{ smsCountdown > 0 ? `${smsCountdown}s` : '获取验证码' }}
                 </el-button>
-              </template>
-            </el-input>
-          </el-form-item>
+              </div>
+            </el-form-item>
 
-          <el-form-item label="验证码" prop="sms_code">
-            <el-input
-              v-model="supplierSmsForm.sms_code"
-              maxlength="6"
-              placeholder="请输入验证码"
-              autocomplete="off"
-              @keyup.enter="handleSupplierSmsLogin"
-            />
-          </el-form-item>
+            <el-button type="primary" class="submit-btn" :loading="loading" @click="handleSupplierSmsLogin">
+              登录供应商端
+            </el-button>
+          </el-form>
 
-          <el-button type="primary" class="submit-btn" :loading="loading" @click="handleSupplierSmsLogin">
-            登录供应商端
-          </el-button>
-        </el-form>
+          <el-form
+            v-else
+            key="internal"
+            ref="internalRef"
+            :model="internalForm"
+            :rules="internalRules"
+            label-position="top"
+            class="login-form"
+          >
+            <el-form-item label="登录账号" prop="username">
+              <el-input
+                v-model="internalForm.username"
+                placeholder="请输入登录账号"
+                autocomplete="username"
+                size="large"
+              >
+                <template #prefix>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                </template>
+              </el-input>
+            </el-form-item>
 
-        <el-form
-          v-show="activeTab === 'internal'"
-          ref="internalRef"
-          :model="internalForm"
-          :rules="internalRules"
-          label-position="top"
-        >
-          <el-form-item label="登录账号" prop="username">
-            <el-input
-              v-model="internalForm.username"
-              placeholder="请输入登录账号"
-              autocomplete="username"
-            />
-          </el-form-item>
+            <el-form-item label="密码" prop="password">
+              <el-input
+                v-model="internalForm.password"
+                type="password"
+                show-password
+                placeholder="请输入密码"
+                autocomplete="current-password"
+                size="large"
+                @keyup.enter="handleInternalLogin"
+              >
+                <template #prefix>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </template>
+              </el-input>
+            </el-form-item>
 
-          <el-form-item label="密码" prop="password">
-            <el-input
-              v-model="internalForm.password"
-              type="password"
-              show-password
-              placeholder="请输入密码"
-              autocomplete="current-password"
-              @keyup.enter="handleInternalLogin"
-            />
-          </el-form-item>
-
-          <el-button type="primary" class="submit-btn" :loading="loading" @click="handleInternalLogin">
-            登录后台
-          </el-button>
-        </el-form>
+            <el-button type="primary" class="submit-btn" :loading="loading" @click="handleInternalLogin">
+              登录后台
+            </el-button>
+          </el-form>
+        </transition>
 
         <div class="footer-actions">
           <el-button link type="primary" @click="router.push('/register')">
@@ -232,6 +302,7 @@ const resetCountdown = ref(0)
 const resetDialogVisible = ref(false)
 const resetSubmitting = ref(false)
 const wechatHint = ref('')
+const cardEntered = ref(false)
 
 let smsTimer = null
 let resetTimer = null
@@ -496,6 +567,9 @@ const tryWechatDirectLogin = async () => {
 
 onMounted(() => {
   tryWechatDirectLogin()
+  requestAnimationFrame(() => {
+    cardEntered.value = true
+  })
 })
 
 onBeforeUnmount(() => {
@@ -508,19 +582,86 @@ onBeforeUnmount(() => {
 .login-page {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(420px, 0.85fr);
-  background:
-    linear-gradient(90deg, #2f5cff 0%, #2f5cff 58%, #f5f7fb 58%, #f5f7fb 100%);
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 1.15fr);
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 40%, #1a56db 100%);
+  overflow: hidden;
 }
 
 .hero-panel {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 48px;
+  overflow: hidden;
+}
+
+.hero-bg-shapes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.shape {
+  position: absolute;
+  border-radius: 50%;
+  opacity: 0.08;
+  background: #ffffff;
+}
+
+.shape-1 {
+  width: 600px;
+  height: 600px;
+  top: -200px;
+  left: -100px;
+  animation: float-slow 20s ease-in-out infinite;
+}
+
+.shape-2 {
+  width: 400px;
+  height: 400px;
+  bottom: -120px;
+  right: -80px;
+  animation: float-slow 15s ease-in-out infinite reverse;
+}
+
+.shape-3 {
+  width: 200px;
+  height: 200px;
+  top: 40%;
+  right: 15%;
+  opacity: 0.05;
+  animation: float-slow 12s ease-in-out infinite;
+}
+
+.shape-4 {
+  width: 120px;
+  height: 120px;
+  top: 20%;
+  left: 60%;
+  opacity: 0.06;
+  animation: float-slow 18s ease-in-out infinite reverse;
+}
+
+.shape-5 {
+  width: 80px;
+  height: 80px;
+  bottom: 25%;
+  left: 20%;
+  opacity: 0.04;
+  animation: float-slow 10s ease-in-out infinite;
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -20px) scale(1.05); }
+  66% { transform: translate(-20px, 15px) scale(0.95); }
 }
 
 .hero-inner {
+  position: relative;
+  z-index: 1;
   width: min(560px, 100%);
   color: #ffffff;
 }
@@ -528,72 +669,121 @@ onBeforeUnmount(() => {
 .brand-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 40px;
+  gap: 16px;
+  margin-bottom: 48px;
 }
 
 .brand-mark {
-  width: 58px;
-  height: 58px;
+  width: 62px;
+  height: 62px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 18px;
+  border-radius: 20px;
   background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   font-size: 18px;
   font-weight: 800;
   letter-spacing: 1px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
 }
 
 .brand-name {
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 700;
-  letter-spacing: 6px;
+  letter-spacing: 8px;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
 }
 
 .hero-inner h1 {
-  margin: 0 0 18px;
-  font-size: clamp(42px, 5vw, 72px);
-  line-height: 1.08;
+  margin: 0 0 20px;
+  font-size: clamp(44px, 5vw, 72px);
+  line-height: 1.1;
   font-weight: 800;
+  letter-spacing: -1px;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
 }
 
 .hero-inner p {
-  margin: 0;
+  margin: 0 0 40px;
   max-width: 440px;
-  font-size: 19px;
+  font-size: 18px;
   line-height: 1.8;
-  color: rgba(255, 255, 255, 0.92);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.hero-features {
+  display: flex;
+  gap: 32px;
+}
+
+.feature-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+  font-weight: 500;
+}
+
+.feature-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.feature-icon svg {
+  width: 18px;
+  height: 18px;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .auth-panel {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48px 28px;
+  padding: 48px 32px;
+  background: #f8fafc;
 }
 
 .auth-card {
-  width: min(520px, 100%);
+  width: min(480px, 100%);
   background: #ffffff;
-  border-radius: 24px;
-  padding: 40px;
+  border-radius: 28px;
+  padding: 44px 40px;
   border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 20px 48px rgba(46, 78, 170, 0.12);
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.05),
+    0 20px 50px -12px rgba(30, 58, 138, 0.15);
+  opacity: 0;
+  transform: translateY(24px);
+  transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.auth-card.card-enter {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .auth-header h2 {
   margin: 0;
-  color: #16213a;
-  font-size: 28px;
+  color: #0f172a;
+  font-size: 26px;
   font-weight: 800;
+  letter-spacing: -0.5px;
 }
 
 .auth-header p {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   color: #64748b;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.6;
 }
 
@@ -601,66 +791,196 @@ onBeforeUnmount(() => {
   margin-top: 18px;
 }
 
-.mode-links {
-  margin: 22px 0 28px;
+.mode-tabs {
+  position: relative;
+  margin: 24px 0 28px;
+  display: flex;
+  background: #f1f5f9;
+  border-radius: 14px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.mode-tabs-indicator {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  height: calc(100% - 8px);
+  background: #ffffff;
+  border-radius: 11px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 0;
+}
+
+.mode-tabs-indicator.indicator-right {
+  transform: translateX(calc(100% + 4px));
+}
+
+.mode-tab {
+  position: relative;
+  z-index: 1;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #94a3b8;
-}
-
-.mode-link {
+  gap: 6px;
   border: none;
   background: transparent;
   color: #64748b;
-  font-size: 15px;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  padding: 0;
+  padding: 10px 0;
+  border-radius: 11px;
+  transition: color 0.25s ease;
 }
 
-.mode-link.active {
-  color: #2f5cff;
-  font-weight: 700;
+.mode-tab.active {
+  color: #1a56db;
 }
 
-.mode-divider {
-  margin: 0 10px;
+.tab-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.login-form {
+  min-height: 0;
+}
+
+.login-form :deep(.el-form-item__label) {
+  font-weight: 600;
+  color: #334155;
+  font-size: 14px;
+  padding-bottom: 4px;
+}
+
+.login-form :deep(.el-input__wrapper) {
+  border-radius: 12px;
+  padding: 4px 12px;
+  box-shadow: 0 0 0 1px #e2e8f0 inset;
+  transition: all 0.25s ease;
+}
+
+.login-form :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #cbd5e1 inset;
+}
+
+.login-form :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 2px #1a56db inset;
+}
+
+.login-form :deep(.el-input__inner) {
+  font-size: 15px;
+}
+
+.input-icon {
+  width: 18px;
+  height: 18px;
+  color: #94a3b8;
+  margin-right: 2px;
+}
+
+.sms-input-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.sms-input-row .el-input {
+  flex: 1;
+}
+
+.sms-btn {
+  flex-shrink: 0;
+  height: 40px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #e2e8f0;
+  color: #1a56db;
+  background: #f8fafc;
+  transition: all 0.2s ease;
+}
+
+.sms-btn:hover:not(:disabled) {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.sms-btn:disabled {
+  color: #94a3b8;
+  background: #f8fafc;
 }
 
 .helper-row {
   display: flex;
   justify-content: flex-end;
-  margin-top: -10px;
-  margin-bottom: 14px;
+  margin-top: -8px;
+  margin-bottom: 16px;
 }
 
 .submit-btn {
   width: 100%;
-  height: 54px;
+  height: 52px;
   margin-top: 8px;
   border-radius: 14px;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
-  box-shadow: 0 12px 24px rgba(47, 92, 255, 0.18);
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #1a56db 0%, #2563eb 100%);
+  border: none;
+  box-shadow: 0 8px 24px rgba(26, 86, 219, 0.3);
+  transition: all 0.3s ease;
+}
+
+.submit-btn:hover {
+  background: linear-gradient(135deg, #1d4ed8 0%, #1a56db 100%);
+  box-shadow: 0 12px 32px rgba(26, 86, 219, 0.4);
+  transform: translateY(-1px);
+}
+
+.submit-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 4px 16px rgba(26, 86, 219, 0.3);
 }
 
 .footer-actions {
-  margin-top: 20px;
+  margin-top: 24px;
   display: flex;
   justify-content: center;
-  gap: 14px;
+  gap: 16px;
   flex-wrap: wrap;
+  padding-top: 20px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.form-fade-enter-active,
+.form-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.form-fade-enter-from {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+.form-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-12px);
 }
 
 @media (max-width: 980px) {
   .login-page {
     grid-template-columns: 1fr;
-    background: linear-gradient(180deg, #2f5cff 0%, #2f5cff 34%, #f5f7fb 34%, #f5f7fb 100%);
+    background: linear-gradient(180deg, #0f172a 0%, #1e3a5f 50%, #1a56db 100%);
   }
 
   .hero-panel {
     justify-content: flex-start;
-    padding: 40px 24px 16px;
+    padding: 40px 24px 20px;
   }
 
   .brand-row {
@@ -668,12 +988,31 @@ onBeforeUnmount(() => {
   }
 
   .hero-inner h1 {
-    font-size: 38px;
+    font-size: 36px;
   }
 
   .hero-inner p {
     max-width: none;
-    font-size: 16px;
+    font-size: 15px;
+    margin-bottom: 20px;
+  }
+
+  .hero-features {
+    gap: 20px;
+  }
+
+  .feature-item {
+    font-size: 13px;
+  }
+
+  .feature-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .feature-icon svg {
+    width: 16px;
+    height: 16px;
   }
 
   .auth-panel {
@@ -681,8 +1020,8 @@ onBeforeUnmount(() => {
   }
 
   .auth-card {
-    padding: 28px 22px 24px;
-    border-radius: 20px;
+    padding: 28px 24px 24px;
+    border-radius: 22px;
   }
 }
 </style>

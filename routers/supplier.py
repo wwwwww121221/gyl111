@@ -625,12 +625,6 @@ def update_my_supplier_profile(
         if not (update_data.get("change_description") or "").strip() and "application_attachments" in normalized_update:
             raise HTTPException(status_code=400, detail="资料变更时请填写变更说明，注明本次修改了哪些文件")
 
-        existing_attachments = supplier.application_attachments or []
-        new_attachments = normalized_update.get("application_attachments") or []
-        merged_attachments = existing_attachments + [a for a in new_attachments if a not in existing_attachments]
-        if new_attachments:
-            normalized_update["application_attachments"] = merged_attachments
-
         change_desc = (update_data.get("change_description") or "").strip()
         if change_desc:
             normalized_update["change_description"] = change_desc

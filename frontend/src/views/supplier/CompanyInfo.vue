@@ -99,13 +99,27 @@
         </el-form-item>
 
         <el-form-item label="当前附件">
+          <el-alert
+            v-if="isChangeMode && form.application_attachments?.length"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="attachment-change-alert"
+          >
+            <template #title>
+              <span class="alert-bold">本次提交将覆盖之前的全部附件</span>
+            </template>
+            <template #default>
+              未变更的附件请保留，仅删除需要替换的文件并上传新版本。删除后该附件将从记录中移除。
+            </template>
+          </el-alert>
           <div v-if="form.application_attachments?.length" class="attachment-list">
             <div v-for="(file, index) in form.application_attachments" :key="`${file.file_path || file.url || file.name}_${index}`" class="attachment-item">
               <el-icon><Document /></el-icon>
               <span class="attachment-name">{{ file.name || file.filename || `附件${index + 1}` }}</span>
+              <el-tag v-if="isChangeMode && isExistingAttachment(file)" size="small" type="info" effect="plain">已有</el-tag>
               <el-button size="small" text type="primary" @click="openAttachment(file)">查看</el-button>
-              <el-button v-if="canEditProfile && !isExistingAttachment(file)" size="small" text type="danger" @click="removeAttachment(index)">删除</el-button>
-              <el-tag v-else-if="isChangeMode && isExistingAttachment(file)" size="small" type="info" effect="plain">已有</el-tag>
+              <el-button v-if="canEditProfile" size="small" text type="danger" @click="removeAttachment(index, file)">删除</el-button>
             </div>
           </div>
           <span v-else class="no-attachments">暂无上传的调查表或资质附件</span>
@@ -158,7 +172,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { Document } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api, { resolveAssetUrl } from '../../api/index'
 
 const formRef = ref(null)
@@ -242,7 +256,18 @@ const fetchProfile = async () => {
   }
 }
 
-const removeAttachment = (index) => {
+const removeAttachment = async (index, file) => {
+  if (isChangeMode.value && file && isExistingAttachment(file)) {
+    try {
+      await ElMessageBox.confirm(
+        `即将删除已有附件"${file.name || file.filename || `附件${index + 1}`}"，提交后该附件将从记录中移除。确定删除吗？`,
+        '删除已有附件',
+        { confirmButtonText: '确定删除', cancelButtonText: '保留', type: 'warning' }
+      )
+    } catch {
+      return
+    }
+  }
   form.value.application_attachments.splice(index, 1)
 }
 
@@ -324,17 +349,13 @@ const handleSubmit = async () => {
 
   submitting.value = true
   try {
-    const newAttachments = isChangeMode.value
-      ? form.value.application_attachments.filter(f => !isExistingAttachment(f))
-      : form.value.application_attachments
-
     await api.put('/supplier/my-profile', {
       short_name: form.value.short_name || null,
       contact_person: form.value.contact_person || null,
       phone: form.value.phone || null,
       email: form.value.email || null,
       social_credit_code: form.value.social_credit_code || null,
-      application_attachments: newAttachments.length > 0 ? newAttachments : undefined,
+      application_attachments: form.value.application_attachments,
       onboarding_note: form.value.onboarding_note || null,
       change_description: form.value.change_description || null,
     })
@@ -474,5 +495,13 @@ onMounted(fetchProfile)
   margin-top: 4px;
   color: #e6a23c;
   font-size: 12px;
+}
+
+.attachment-change-alert {
+  margin-bottom: 12px;
+}
+
+.alert-bold {
+  font-weight: 600;
 }
 </style>

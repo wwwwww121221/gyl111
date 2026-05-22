@@ -14,6 +14,13 @@ const clearAuth = () => {
   localStorage.removeItem('username')
   localStorage.removeItem('supplier_id')
   localStorage.removeItem('supplier_name')
+  localStorage.removeItem('supplier_status')
+  localStorage.removeItem('member_status')
+}
+
+const getSupplierHomePath = () => {
+  const supplierStatus = localStorage.getItem('supplier_status')
+  return supplierStatus === 'approved' ? '/supplier/inquiries' : '/supplier/company-info'
 }
 
 const isTokenValid = (token) => {
@@ -38,7 +45,7 @@ const routes = [
         return '/login'
       }
       if (role === 'supplier') {
-        return '/supplier/inquiries'
+        return getSupplierHomePath()
       }
       return '/dashboard'
     }
@@ -245,14 +252,19 @@ router.beforeEach((to, from) => {
       return '/login'
     }
     if (role === 'supplier') {
-      if (to.path !== '/supplier/inquiries') {
-        return '/supplier/inquiries'
+      const supplierHomePath = getSupplierHomePath()
+      if (to.path !== supplierHomePath) {
+        return supplierHomePath
       }
     } else {
       if (to.path !== '/dashboard') {
         return '/dashboard'
       }
     }
+  }
+
+  if (role === 'supplier' && localStorage.getItem('supplier_status') !== 'approved' && to.path !== '/supplier/company-info') {
+    return '/supplier/company-info'
   }
 
   return true

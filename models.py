@@ -102,6 +102,10 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE suppliers ADD COLUMN onboarding_note TEXT")
         if "review_comment" not in supplier_columns:
             alter_statements.append("ALTER TABLE suppliers ADD COLUMN review_comment TEXT")
+        if "profile_audit_status" not in supplier_columns:
+            alter_statements.append("ALTER TABLE suppliers ADD COLUMN profile_audit_status VARCHAR DEFAULT 'draft'")
+        if "pending_profile_update" not in supplier_columns:
+            alter_statements.append("ALTER TABLE suppliers ADD COLUMN pending_profile_update JSON")
 
     if "compare_drafts" not in table_names:
         alter_statements.extend([
@@ -272,6 +276,8 @@ class Supplier(Base):
     application_attachments = Column(JSON, nullable=True)
     onboarding_note = Column(Text, nullable=True)
     review_comment = Column(Text, nullable=True)
+    profile_audit_status = Column(String, nullable=True, default="draft", comment="draft/submitted/returned/approved/change_pending/change_returned/rejected")
+    pending_profile_update = Column(JSON, nullable=True)
     rating_score = Column(Float, default=0.0)
     reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="审核人ID")
     reviewed_at = Column(DateTime, nullable=True, comment="审核时间")

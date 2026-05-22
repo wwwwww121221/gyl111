@@ -144,6 +144,9 @@ const fetchSupplierDisplayName = async () => {
     }
     supplierStatus.value = res?.data?.status || supplierStatus.value
     localStorage.setItem('supplier_status', supplierStatus.value || '')
+    if (supplierStatus.value !== 'approved' && route.path !== '/supplier/company-info') {
+      router.replace('/supplier/company-info')
+    }
   } catch (error) {
     console.error('Failed to fetch supplier profile', error)
   }

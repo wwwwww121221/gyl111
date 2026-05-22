@@ -33,6 +33,15 @@
       />
 
       <el-alert
+        v-if="profile.profile_audit_status === 'submitted' || profile.profile_audit_status === 'change_pending'"
+        type="info"
+        :closable="false"
+        show-icon
+        class="page-alert"
+        title="资料已提交，等待采购员审核，审核完成前暂不允许再次修改。"
+      />
+
+      <el-alert
         v-if="profile.role && !isEditor"
         type="info"
         :closable="false"
@@ -46,7 +55,7 @@
         :model="form"
         :rules="rules"
         label-width="120px"
-        :disabled="!isEditor || loading"
+        :disabled="!canEditProfile || loading"
         class="info-form"
       >
         <div class="form-section-title">基础信息</div>
@@ -95,13 +104,14 @@
               <el-icon><Document /></el-icon>
               <span class="attachment-name">{{ file.name || file.filename || `附件${index + 1}` }}</span>
               <el-button size="small" text type="primary" @click="openAttachment(file)">查看</el-button>
-              <el-button v-if="isEditor" size="small" text type="danger" @click="removeAttachment(index)">删除</el-button>
+              <el-button v-if="canEditProfile && !isExistingAttachment(file)" size="small" text type="danger" @click="removeAttachment(index)">删除</el-button>
+              <el-tag v-else-if="isChangeMode && isExistingAttachment(file)" size="small" type="info" effect="plain">已有</el-tag>
             </div>
           </div>
           <span v-else class="no-attachments">暂无上传的调查表或资质附件</span>
         </el-form-item>
 
-        <el-form-item v-if="isEditor" label="上传附件">
+        <el-form-item v-if="canEditProfile" label="上传附件">
           <el-upload
             :http-request="uploadAttachment"
             :show-file-list="false"
@@ -113,7 +123,7 @@
           <div class="upload-tip">支持一次选择多个附件，也支持 `zip/rar/7z/tar/gz/bz2/xz` 压缩文件。</div>
         </el-form-item>
 
-        <el-form-item label="补充说明">
+        <el-form-item v-if="!isChangeMode" label="补充说明">
           <el-input
             v-model="form.onboarding_note"
             type="textarea"
@@ -124,8 +134,20 @@
           />
         </el-form-item>
 
+        <el-form-item v-if="isChangeMode" label="变更说明" prop="change_description">
+          <el-input
+            v-model="form.change_description"
+            type="textarea"
+            :rows="3"
+            placeholder="请说明本次修改了哪些文件或信息，例如：更新了营业执照（已过期）、新增了ISO认证证书"
+            maxlength="300"
+            show-word-limit
+          />
+          <div class="form-tip">必填项，采购方需要了解您本次具体变更了哪些内容</div>
+        </el-form-item>
+
         <el-form-item v-if="isEditor">
-          <el-button type="primary" @click="handleSubmit" :loading="submitting">提交完善资料</el-button>
+          <el-button type="primary" @click="handleSubmit" :loading="submitting" :disabled="!canEditProfile">{{ submitButtonText }}</el-button>
           <el-button @click="fetchProfile">重置</el-button>
         </el-form-item>
       </el-form>
@@ -137,7 +159,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Document } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import api from '../../api/index'
+import api, { resolveAssetUrl } from '../../api/index'
 
 const formRef = ref(null)
 const loading = ref(false)
@@ -173,13 +195,24 @@ const form = ref({
 })
 
 const isEditor = computed(() => ['owner', 'admin'].includes(profile.value.role))
+const canEditProfile = computed(() => isEditor.value && !!profile.value.can_edit)
+const isChangeMode = computed(() => profile.value.status === 'approved')
+const submitButtonText = computed(() => (profile.value.status === 'approved' ? '提交资料变更' : '提交完善资料'))
 const roleText = computed(() => ({ owner: '创建者', admin: '管理员', member: '成员' }[profile.value.role] || profile.value.role || ''))
 const statusText = computed(() => ({ pending: '审核中', approved: '已入库', rejected: '已拒绝' }[profile.value.status] || (profile.value.status || '未知')))
 const statusTagType = computed(() => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[profile.value.status] || 'info'))
 
+const existingAttachmentPaths = ref(new Set())
+
 const rules = {
   phone: [{ pattern: /^[\d\-+\s]{6,20}$/, message: '请输入有效的联系电话', trigger: 'blur' }],
   email: [{ type: 'email', message: '请输入有效的邮箱地址', trigger: 'blur' }],
+  change_description: [{ required: true, message: '请填写变更说明', trigger: 'blur' }],
+}
+
+const isExistingAttachment = (file) => {
+  const key = file.file_path || file.url || file.name || ''
+  return existingAttachmentPaths.value.has(key)
 }
 
 const fetchProfile = async () => {
@@ -189,14 +222,17 @@ const fetchProfile = async () => {
     profile.value = { ...res.data }
     localStorage.setItem('supplier_status', res.data.status || '')
     localStorage.setItem('member_status', res.data.member_status || '')
+    const attachments = Array.isArray(res.data.application_attachments) ? [...res.data.application_attachments] : []
+    existingAttachmentPaths.value = new Set(attachments.map(f => f.file_path || f.url || f.name || ''))
     form.value = {
       short_name: res.data.short_name || '',
       contact_person: res.data.contact_person || '',
       phone: res.data.phone || '',
       email: res.data.email || '',
       social_credit_code: res.data.social_credit_code || '',
-      application_attachments: Array.isArray(res.data.application_attachments) ? [...res.data.application_attachments] : [],
+      application_attachments: attachments,
       onboarding_note: res.data.onboarding_note || '',
+      change_description: res.data.change_description || '',
     }
   } catch (error) {
     console.error(error)
@@ -211,12 +247,27 @@ const removeAttachment = (index) => {
 }
 
 const openAttachment = (file) => {
-  const target = file.file_path || file.url || file.path
-  if (!target) {
+  const downloadTarget = resolveAssetUrl(file.file_path || file.url || file.path)
+  const previewTarget = resolveAssetUrl(file.preview_file_path || downloadTarget)
+  if (!downloadTarget) {
     ElMessage.warning('附件地址不存在')
     return
   }
-  window.open(target, '_blank')
+  const name = file.name || file.filename || ''
+  const ext = name.includes('.') ? name.split('.').pop()?.toLowerCase() : ''
+  if (ext === 'pdf' || ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'].includes(ext) || (previewTarget && previewTarget !== downloadTarget)) {
+    window.open(previewTarget, '_blank')
+    return
+  }
+
+  const link = document.createElement('a')
+  link.href = downloadTarget
+  link.download = name || '闄勪欢'
+  link.target = '_blank'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  ElMessage.info('璇ユ枃浠舵殏涓嶆敮鎸佸湪绾块瑙堬紝宸蹭负鎮ㄤ笅杞藉悗鏌ョ湅')
 }
 
 const uploadAttachment = async (options) => {
@@ -230,6 +281,7 @@ const uploadAttachment = async (options) => {
     form.value.application_attachments.push({
       name: res.data.name,
       file_path: res.data.file_path,
+      preview_file_path: res.data.preview_file_path,
       size: res.data.size,
       uploaded_at: res.data.uploaded_at,
     })
@@ -272,14 +324,19 @@ const handleSubmit = async () => {
 
   submitting.value = true
   try {
+    const newAttachments = isChangeMode.value
+      ? form.value.application_attachments.filter(f => !isExistingAttachment(f))
+      : form.value.application_attachments
+
     await api.put('/supplier/my-profile', {
       short_name: form.value.short_name || null,
       contact_person: form.value.contact_person || null,
       phone: form.value.phone || null,
       email: form.value.email || null,
       social_credit_code: form.value.social_credit_code || null,
-      application_attachments: form.value.application_attachments,
+      application_attachments: newAttachments.length > 0 ? newAttachments : undefined,
       onboarding_note: form.value.onboarding_note || null,
+      change_description: form.value.change_description || null,
     })
     ElMessage.success('资料已提交，请等待采购审核')
     await fetchProfile()
@@ -410,6 +467,12 @@ onMounted(fetchProfile)
 .upload-tip {
   margin-top: 8px;
   color: #909399;
+  font-size: 12px;
+}
+
+.form-tip {
+  margin-top: 4px;
+  color: #e6a23c;
   font-size: 12px;
 }
 </style>

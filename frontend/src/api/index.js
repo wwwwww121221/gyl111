@@ -17,6 +17,26 @@ const api = axios.create({
   timeout: 60000,
 })
 
+const getAssetOrigin = () => {
+  if (typeof window === 'undefined') return ''
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+  return window.location.origin
+}
+
+export const resolveAssetUrl = (path) => {
+  const normalized = String(path || '').trim()
+  if (!normalized) return ''
+  if (/^https?:\/\//i.test(normalized) || normalized.startsWith('blob:') || normalized.startsWith('data:')) {
+    return normalized
+  }
+  if (normalized.startsWith('/static/')) {
+    return `${getAssetOrigin()}${normalized}`
+  }
+  return normalized
+}
+
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token')

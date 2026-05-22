@@ -33,6 +33,7 @@ from services.sms_service import (
     validate_phone_or_raise,
     verify_sms_code,
 )
+from services.attachment_preview import generate_attachment_preview_file
 from services.supplier_access import (
     get_supplier_context_for_portal,
     get_supplier_context_for_user,
@@ -465,11 +466,13 @@ async def upload_supplier_attachment(
     saved_path = target_dir / saved_name
     saved_path.write_bytes(content)
     relative_path = f"/static/uploads/supplier_onboarding/{month_bucket}/{saved_name}"
+    preview_file_path = generate_attachment_preview_file(saved_path, base_dir=BASE_DIR)
 
     return {
         "message": "附件上传成功",
         "name": safe_name,
         "file_path": relative_path,
+        "preview_file_path": preview_file_path,
         "size": len(content),
         "uploaded_at": datetime.now().isoformat(),
     }

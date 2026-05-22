@@ -286,6 +286,7 @@ const uploadJoinAttachment = async (options) => {
     joinFiles.value.push({
       name: res.data.name,
       file_path: res.data.file_path,
+      preview_file_path: res.data.preview_file_path,
       size: res.data.size,
       uploaded_at: res.data.uploaded_at,
       uid: options.file.uid,

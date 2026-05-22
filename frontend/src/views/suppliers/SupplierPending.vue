@@ -12,9 +12,36 @@
         <el-table-column type="expand" width="52">
           <template #default="{ row }">
             <div class="expand-panel">
-              <div class="detail-section">
+              <div class="detail-grid">
+                <div class="detail-section">
+                  <div class="detail-title">统一社会信用代码</div>
+                  <div class="detail-text">{{ row.social_credit_code || '-' }}</div>
+                </div>
+
+                <div class="detail-section">
+                  <div class="detail-title">邮箱</div>
+                  <div class="detail-text">{{ row.email || '-' }}</div>
+                </div>
+
+                <div class="detail-section">
+                  <div class="detail-title">当前状态</div>
+                  <div class="detail-text"><el-tag :type="getAuditStatusTagType(row)" effect="light" size="small">{{ getAuditStatusText(row) }}</el-tag></div>
+                </div>
+              </div>
+
+              <div class="detail-section" v-if="row.onboarding_note">
                 <div class="detail-title">补充说明</div>
-                <div class="detail-text">{{ row.onboarding_note || '暂无补充说明' }}</div>
+                <div class="detail-text">{{ row.onboarding_note }}</div>
+              </div>
+
+              <div class="detail-section change-desc-section" v-if="row.change_description">
+                <div class="detail-title">📋 变更说明</div>
+                <div class="detail-text change-desc-text">{{ row.change_description }}</div>
+              </div>
+
+              <div class="detail-section" v-if="row.review_comment">
+                <div class="detail-title">审核意见</div>
+                <div class="detail-text">{{ row.review_comment }}</div>
               </div>
 
               <div class="detail-section">
@@ -39,55 +66,46 @@
         </el-table-column>
 
         <el-table-column type="index" label="序号" width="72" />
-        <el-table-column prop="name" label="供应商名称" min-width="220" />
-        <el-table-column prop="social_credit_code" label="统一社会信用代码" min-width="180" />
-        <el-table-column prop="contact_person" label="联系人" width="140" />
+        <el-table-column prop="name" label="供应商名称" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="contact_person" label="联系人" width="120" />
         <el-table-column prop="phone" label="手机号" width="140" />
-        <el-table-column prop="email" label="邮箱" min-width="180" show-overflow-tooltip />
-        <el-table-column label="附件" width="120">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-button
-              v-if="row.application_attachments?.length"
-              link
-              type="primary"
-              @click="openAttachmentList(row)"
-            >
-              {{ row.application_attachments.length }} 个
-            </el-button>
-            <span v-else>0 个</span>
+            <el-tag :type="getAuditStatusTagType(row)" effect="light">{{ getAuditStatusText(row) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="review_comment" label="审核意见" min-width="220" show-overflow-tooltip />
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="附件" width="80">
           <template #default="{ row }">
-            <el-button size="small" type="success" @click="approveSupplier(row)">审核通过</el-button>
-            <el-button size="small" type="warning" @click="returnSupplier(row)">退回补充</el-button>
-            <el-button size="small" type="danger" @click="rejectSupplier(row)">拒绝</el-button>
+            {{ row.application_attachments?.length || 0 }} 个
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="260" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" type="success" :disabled="!canApprove(row)" @click="approveSupplier(row)">审核通过</el-button>
+            <el-button size="small" type="warning" :disabled="!canReturn(row)" @click="returnSupplier(row)">退回补充</el-button>
+            <el-button size="small" type="danger" :disabled="!canReject(row)" @click="rejectSupplier(row)">拒绝</el-button>
           </template>
         </el-table-column>
       </el-table>
     </div>
 
-    <el-dialog v-model="attachmentDialogVisible" title="附件列表" width="720px">
-      <div v-if="currentSupplier" class="dialog-header">
-        <div class="dialog-name">{{ currentSupplier.name }}</div>
-        <div class="dialog-note">{{ currentSupplier.onboarding_note || '暂无补充说明' }}</div>
+    <el-dialog
+      v-model="previewVisible"
+      :title="previewFileName"
+      width="80%"
+      top="4vh"
+      destroy-on-close
+    >
+      <div v-if="previewType === 'image'" class="preview-image-wrap">
+        <img :src="previewUrl" :alt="previewFileName" />
       </div>
-
-      <div v-if="currentSupplier?.application_attachments?.length" class="dialog-attachment-list">
-        <div
-          v-for="(file, index) in currentSupplier.application_attachments"
-          :key="`${file.file_path || file.url || file.name}_${index}`"
-          class="dialog-attachment-item"
-        >
-          <span class="attachment-name">{{ file.name || file.filename || `附件${index + 1}` }}</span>
-          <div class="attachment-actions">
-            <el-button size="small" text type="primary" @click="openAttachment(file)">查看</el-button>
-            <el-button size="small" text type="primary" @click="downloadAttachment(file)">下载</el-button>
-          </div>
-        </div>
-      </div>
-      <el-empty v-else description="暂无附件" />
+      <iframe
+        v-else-if="previewType === 'pdf'"
+        :src="previewUrl"
+        class="preview-iframe"
+        frameborder="0"
+      />
+      <el-empty v-else description="该文件不支持在线预览，请下载后查看" />
     </el-dialog>
   </div>
 </template>
@@ -95,12 +113,53 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import api from '../../api'
+import api, { resolveAssetUrl } from '../../api'
 
 const loadingSuppliers = ref(false)
 const pendingSuppliers = ref([])
-const attachmentDialogVisible = ref(false)
-const currentSupplier = ref(null)
+const previewVisible = ref(false)
+const previewUrl = ref('')
+const previewFileName = ref('')
+const previewType = ref('')
+
+const getAuditStatusRaw = (row) => String(row?.profile_audit_status || '').toLowerCase()
+
+const getAuditStatusText = (row) => {
+  const auditStatus = getAuditStatusRaw(row)
+  const statusMap = {
+    submitted: '待审核',
+    returned: '退回补充',
+    change_pending: '资料变更待审',
+    change_returned: '变更已退回',
+    approved: '已通过',
+    rejected: '已拒绝',
+    draft: '待提交',
+  }
+  return statusMap[auditStatus] || (row?.status === 'pending' ? '待审核' : '待处理')
+}
+
+const getAuditStatusTagType = (row) => {
+  const auditStatus = getAuditStatusRaw(row)
+  if (auditStatus === 'returned' || auditStatus === 'change_returned') return 'warning'
+  if (auditStatus === 'approved') return 'success'
+  if (auditStatus === 'rejected') return 'danger'
+  return ''
+}
+
+const canApprove = (row) => {
+  const s = getAuditStatusRaw(row)
+  return ['submitted', 'returned', 'change_returned', 'change_pending'].includes(s)
+}
+
+const canReturn = (row) => {
+  const s = getAuditStatusRaw(row)
+  return ['submitted', 'returned', 'change_pending', 'change_returned'].includes(s)
+}
+
+const canReject = (row) => {
+  const s = getAuditStatusRaw(row)
+  return ['submitted', 'returned', 'change_pending', 'change_returned'].includes(s)
+}
 
 const fetchPendingSuppliers = async () => {
   loadingSuppliers.value = true
@@ -114,20 +173,42 @@ const fetchPendingSuppliers = async () => {
   }
 }
 
-const openAttachmentList = (row) => {
-  currentSupplier.value = row
-  attachmentDialogVisible.value = true
+const getAttachmentUrl = (file) => resolveAssetUrl(file?.file_path || file?.url || file?.path || '')
+const getAttachmentPreviewUrl = (file) => resolveAssetUrl(file?.preview_file_path || getAttachmentUrl(file))
+
+const getFileExt = (file) => {
+  const name = file?.name || file?.filename || ''
+  const dotIndex = name.lastIndexOf('.')
+  return dotIndex >= 0 ? name.slice(dotIndex + 1).toLowerCase() : ''
 }
 
-const getAttachmentUrl = (file) => file?.file_path || file?.url || file?.path || ''
-
 const openAttachment = (file) => {
-  const target = getAttachmentUrl(file)
-  if (!target) {
+  const downloadTarget = getAttachmentUrl(file)
+  if (!downloadTarget) {
     ElMessage.warning('附件地址不存在')
     return
   }
-  window.open(target, '_blank')
+
+  const ext = getFileExt(file)
+  const previewTarget = getAttachmentPreviewUrl(file)
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'].includes(ext)) {
+    previewType.value = 'image'
+    previewFileName.value = file?.name || file?.filename || '附件'
+    previewUrl.value = previewTarget
+    previewVisible.value = true
+    return
+  }
+
+  if (ext === 'pdf' || (previewTarget && previewTarget !== downloadTarget)) {
+    previewType.value = 'pdf'
+    previewFileName.value = file?.name || file?.filename || '附件'
+    previewUrl.value = previewTarget
+    previewVisible.value = true
+    return
+  }
+
+  downloadAttachment(file)
+  ElMessage.info('该文件暂不支持在线预览，已为您下载后查看')
 }
 
 const downloadAttachment = (file) => {
@@ -147,7 +228,7 @@ const downloadAttachment = (file) => {
 
 const approveSupplier = async (row) => {
   try {
-    await ElMessageBox.confirm(`确认审核通过供应商“${row.name}”吗？`, '审核确认', { type: 'warning' })
+    await ElMessageBox.confirm(`确认审核通过供应商"${row.name}"吗？`, '审核确认', { type: 'warning' })
     await api.put(`/supplier/${row.id}`, { status: 'approved', level: row.level || 'general' })
     ElMessage.success('供应商已审核通过并入库')
     fetchPendingSuppliers()
@@ -225,8 +306,14 @@ onMounted(() => {
 }
 
 .expand-panel {
-  padding: 8px 12px;
+  padding: 16px 20px;
   background: #fafbfd;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px 24px;
 }
 
 .detail-section + .detail-section {
@@ -234,32 +321,32 @@ onMounted(() => {
 }
 
 .detail-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  color: #303133;
-  margin-bottom: 8px;
+  color: #909399;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .detail-text {
-  color: #606266;
+  color: #303133;
   line-height: 1.7;
   white-space: pre-wrap;
+  word-break: break-all;
 }
 
-.attachment-list,
-.dialog-attachment-list {
+.attachment-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.attachment-item,
-.dialog-attachment-item {
+.attachment-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   background: #fff;
   border: 1px solid #ebeef5;
   border-radius: 8px;
@@ -271,26 +358,50 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .attachment-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 4px;
   flex-shrink: 0;
+  margin-left: 16px;
 }
 
-.dialog-header {
-  margin-bottom: 16px;
-}
-
-.dialog-name {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.dialog-note {
-  margin-top: 8px;
+.attach-count-text {
+  font-size: 13px;
   color: #606266;
-  line-height: 1.7;
-  white-space: pre-wrap;
+}
+
+.preview-image-wrap {
+  width: 100%;
+  text-align: center;
+  max-height: 75vh;
+  overflow: auto;
+}
+
+.preview-image-wrap img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+}
+
+.preview-iframe {
+  width: 100%;
+  height: 70vh;
+  border: none;
+}
+
+.change-desc-section {
+  background: #fdf6ec;
+  border: 1px solid #faecd8;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.change-desc-text {
+  color: #e6a23c;
+  font-weight: 500;
 }
 </style>

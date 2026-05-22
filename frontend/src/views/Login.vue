@@ -390,7 +390,11 @@ const persistLogin = (payload, fallbackUsername = '') => {
   localStorage.setItem('username', payload.username || fallbackUsername)
   localStorage.setItem('supplier_id', payload.supplier_id ? String(payload.supplier_id) : '')
   localStorage.setItem('supplier_name', payload.supplier_name || '')
+  localStorage.setItem('supplier_status', payload.supplier_status || '')
+  localStorage.setItem('member_status', payload.member_status || '')
 }
+
+const getSupplierHomePath = (payload) => (payload?.supplier_status === 'approved' ? '/supplier/inquiries' : '/supplier/company-info')
 
 const startCountdown = (target) => {
   target.value = 60
@@ -460,7 +464,7 @@ const handleSupplierPasswordLogin = async () => {
     })
     persistLogin(data, supplierPasswordForm.phone)
     ElMessage.success('登录成功')
-    router.push('/supplier/inquiries')
+    router.push(getSupplierHomePath(data))
   } finally {
     loading.value = false
   }
@@ -479,7 +483,7 @@ const handleSupplierSmsLogin = async () => {
     })
     persistLogin(data, supplierSmsForm.phone)
     ElMessage.success('登录成功')
-    router.push('/supplier/inquiries')
+    router.push(getSupplierHomePath(data))
   } finally {
     loading.value = false
   }
@@ -503,7 +507,7 @@ const handleInternalLogin = async () => {
 
     persistLogin(data, internalForm.username)
     ElMessage.success('登录成功')
-    router.push(data.role === 'supplier' ? '/supplier/inquiries' : '/dashboard')
+    router.push(data.role === 'supplier' ? getSupplierHomePath(data) : '/dashboard')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '登录失败')
   } finally {
@@ -553,7 +557,7 @@ const tryWechatDirectLogin = async () => {
     if (data?.bound && data?.access_token) {
       persistLogin(data)
       ElMessage.success('微信登录成功')
-      router.push('/supplier/inquiries')
+      router.push(getSupplierHomePath(data))
       return
     }
 

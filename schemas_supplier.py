@@ -22,6 +22,7 @@ class SupplierUpdate(BaseModel):
     status: Optional[str] = None
     level: Optional[str] = None
     grade: Optional[str] = None
+    review_comment: Optional[str] = None
 
 
 class SupplierCreatePayload(BaseModel):
@@ -47,8 +48,13 @@ class SupplierProfileUpdatePayload(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     short_name: Optional[str] = None
+    social_credit_code: Optional[str] = None
     onboarding_note: Optional[str] = None
     application_attachments: Optional[list] = None
+    change_description: Optional[str] = Field(
+        default=None,
+        description="资料变更时请说明本次修改了哪些文件或信息",
+    )
 
 
 class SupplierContractInfoSubmit(BaseModel):

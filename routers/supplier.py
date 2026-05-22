@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, extract
+from sqlalchemy import func, extract, or_
 from typing import Any
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
@@ -23,6 +23,7 @@ from schemas_supplier import (
     SupplierChangePasswordPayload,
     SupplierProfileUpdatePayload,
 )
+from services.attachment_preview import enrich_attachment_list
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
 from services.supplier_access import get_supplier_context_for_portal, get_supplier_context_for_user
@@ -57,6 +58,59 @@ def _invalidate_supplier_cache():
         cache_clear_pattern("supplier:*")
     except Exception:
         pass
+
+
+def _normalize_supplier_profile_audit_status(supplier: Supplier) -> str:
+    status = str(supplier.profile_audit_status or "").strip().lower()
+    if status:
+        return status
+    if supplier.status == "pending":
+        if str(supplier.review_comment or "").strip():
+            return "returned"
+        has_completed_profile = bool(
+            str(supplier.social_credit_code or "").strip()
+            or str(supplier.short_name or "").strip()
+            or str(supplier.email or "").strip()
+            or str(supplier.onboarding_note or "").strip()
+            or (supplier.application_attachments or [])
+        )
+        return "submitted" if has_completed_profile else "draft"
+    if supplier.status == "approved":
+        return "approved"
+    if supplier.status == "rejected":
+        return "rejected"
+    return "draft"
+
+
+def _get_supplier_profile_view(supplier: Supplier) -> dict[str, Any]:
+    pending_update = supplier.pending_profile_update if isinstance(supplier.pending_profile_update, dict) else {}
+    audit_status = _normalize_supplier_profile_audit_status(supplier)
+    use_pending_update = audit_status in {"change_pending", "change_returned"} and pending_update
+
+    return {
+        "short_name": pending_update.get("short_name") if use_pending_update else supplier.short_name,
+        "contact_person": pending_update.get("contact_person") if use_pending_update else supplier.contact_person,
+        "phone": pending_update.get("phone") if use_pending_update else supplier.phone,
+        "email": pending_update.get("email") if use_pending_update else supplier.email,
+        "social_credit_code": pending_update.get("social_credit_code") if use_pending_update else supplier.social_credit_code,
+        "application_attachments": enrich_attachment_list(
+            pending_update.get("application_attachments") if use_pending_update else supplier.application_attachments,
+            generate_missing_preview=True,
+        ),
+        "onboarding_note": pending_update.get("onboarding_note") if use_pending_update else supplier.onboarding_note,
+        "change_description": pending_update.get("change_description") if use_pending_update else None,
+        "profile_audit_status": audit_status,
+        "has_pending_profile_update": bool(pending_update),
+    }
+
+
+def _can_edit_supplier_profile(supplier: Supplier) -> bool:
+    audit_status = _normalize_supplier_profile_audit_status(supplier)
+    if supplier.status == "pending":
+        return audit_status in {"draft", "returned"}
+    if supplier.status == "approved":
+        return audit_status in {"approved", "change_returned"}
+    return False
 
 
 def _get_allowed_task_items_for_supplier(task: InquiryTask, link: InquirySupplier) -> list[InquiryTaskItem]:
@@ -346,7 +400,10 @@ def get_supplier_list(
             "email": s.email,
             "level": s.level,
             "status": s.status,
-            "application_attachments": s.application_attachments or [],
+            "application_attachments": enrich_attachment_list(
+                s.application_attachments,
+                generate_missing_preview=True,
+            ),
             "onboarding_note": s.onboarding_note,
             "review_comment": s.review_comment,
             "rating_score": s.rating_score,
@@ -372,31 +429,31 @@ def get_pending_suppliers(
 
     suppliers = (
         db.query(Supplier)
-        .filter(Supplier.status == "pending")
+        .filter(
+            or_(
+                Supplier.status == "pending",
+                Supplier.profile_audit_status == "change_pending",
+            )
+        )
         .order_by(Supplier.id.desc())
         .all()
     )
 
     return [
         {
+            **_get_supplier_profile_view(supplier),
             "id": supplier.id,
             "code": supplier.code,
             "name": supplier.name,
-            "short_name": supplier.short_name,
-            "social_credit_code": supplier.social_credit_code,
-            "contact_person": supplier.contact_person,
-            "phone": supplier.phone,
-            "email": supplier.email,
             "level": supplier.level,
             "status": supplier.status,
-            "application_attachments": supplier.application_attachments or [],
-            "onboarding_note": supplier.onboarding_note,
             "review_comment": supplier.review_comment,
             "reviewer_id": supplier.reviewer_id,
             "reviewed_at": supplier.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if supplier.reviewed_at else None,
             "reviewer_name": supplier.reviewer.username if supplier.reviewer else None,
             "user_id": supplier.user_id,
             "account_username": supplier.user.username if supplier.user else None,
+            "submission_type": "profile_change" if _normalize_supplier_profile_audit_status(supplier) == "change_pending" else "onboarding",
         }
         for supplier in suppliers
     ]
@@ -444,7 +501,10 @@ def get_supplier_members(
             "status": m.status,
             "approval_mode": m.approval_mode,
             "application_note": m.application_note,
-            "application_attachments": m.application_attachments or [],
+            "application_attachments": enrich_attachment_list(
+                m.application_attachments,
+                generate_missing_preview=True,
+            ),
             "review_comment": m.review_comment,
             "reviewed_by_name": reviewer.username if reviewer else None,
             "reviewed_at": m.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if m.reviewed_at else None,
@@ -474,7 +534,10 @@ def get_supplier_detail(
 
     result = {
         "id": supplier.id,
-        "application_attachments": supplier.application_attachments or [],
+        "application_attachments": enrich_attachment_list(
+            supplier.application_attachments,
+            generate_missing_preview=True,
+        ),
     }
 
     cache_set(CACHE_KEY, result)
@@ -487,20 +550,25 @@ def get_my_supplier_profile(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     supplier, member = _get_supplier_portal_context(db, current_user)
+    profile_view = _get_supplier_profile_view(supplier)
     return {
         "id": supplier.id,
         "name": supplier.name,
         "code": supplier.code,
-        "short_name": supplier.short_name,
-        "contact_person": supplier.contact_person,
-        "phone": supplier.phone,
-        "email": supplier.email,
-        "social_credit_code": supplier.social_credit_code,
+        "short_name": profile_view["short_name"],
+        "contact_person": profile_view["contact_person"],
+        "phone": profile_view["phone"],
+        "email": profile_view["email"],
+        "social_credit_code": profile_view["social_credit_code"],
         "grade": supplier.grade,
         "status": supplier.status,
-        "application_attachments": supplier.application_attachments or [],
-        "onboarding_note": supplier.onboarding_note,
+        "application_attachments": profile_view["application_attachments"],
+        "onboarding_note": profile_view["onboarding_note"],
+        "change_description": profile_view.get("change_description"),
         "review_comment": supplier.review_comment,
+        "profile_audit_status": profile_view["profile_audit_status"],
+        "can_edit": _can_edit_supplier_profile(supplier),
+        "has_pending_profile_update": profile_view["has_pending_profile_update"],
         "role": member.role,
         "member_status": member.status,
     }
@@ -514,7 +582,9 @@ def update_my_supplier_profile(
 ) -> Any:
     supplier, member = _get_supplier_portal_context(db, current_user)
     if member.role not in ("admin", "owner"):
-        raise HTTPException(status_code=403, detail="仅管理员可修改公司信息")
+        raise HTTPException(status_code=403, detail="Only supplier admins can edit company information")
+    if not _can_edit_supplier_profile(supplier):
+        raise HTTPException(status_code=400, detail="Profile is under review and cannot be edited yet")
 
     update_data = payload.model_dump(exclude_unset=True)
     if "social_credit_code" in update_data:
@@ -526,15 +596,59 @@ def update_my_supplier_profile(
                 .first()
             )
             if duplicated:
-                raise HTTPException(status_code=400, detail="该统一社会信用代码已存在")
+                raise HTTPException(status_code=400, detail="Social credit code already exists")
         update_data["social_credit_code"] = social_credit_code
-    for field, value in update_data.items():
-        setattr(supplier, field, value)
+
+    if "application_attachments" in update_data:
+        update_data["application_attachments"] = enrich_attachment_list(
+            update_data.get("application_attachments"),
+            generate_missing_preview=True,
+        )
+
+    reviewable_fields = {
+        "short_name",
+        "contact_person",
+        "phone",
+        "email",
+        "social_credit_code",
+        "application_attachments",
+        "onboarding_note",
+    }
+    normalized_update = {field: update_data.get(field) for field in reviewable_fields if field in update_data}
+
+    if supplier.status == "pending":
+        for field, value in normalized_update.items():
+            setattr(supplier, field, value)
+        supplier.profile_audit_status = "submitted"
+        supplier.review_comment = None
+    elif supplier.status == "approved":
+        if not (update_data.get("change_description") or "").strip() and "application_attachments" in normalized_update:
+            raise HTTPException(status_code=400, detail="资料变更时请填写变更说明，注明本次修改了哪些文件")
+
+        existing_attachments = supplier.application_attachments or []
+        new_attachments = normalized_update.get("application_attachments") or []
+        merged_attachments = existing_attachments + [a for a in new_attachments if a not in existing_attachments]
+        if new_attachments:
+            normalized_update["application_attachments"] = merged_attachments
+
+        change_desc = (update_data.get("change_description") or "").strip()
+        if change_desc:
+            normalized_update["change_description"] = change_desc
+
+        supplier.pending_profile_update = normalized_update
+        supplier.profile_audit_status = "change_pending"
+        supplier.review_comment = None
+    else:
+        raise HTTPException(status_code=400, detail="Current supplier status does not allow profile submission")
 
     db.commit()
     db.refresh(supplier)
     _invalidate_supplier_cache()
-    return {"detail": "公司信息更新成功"}
+    return {
+        "detail": "Profile submitted and waiting for buyer review",
+        "profile_audit_status": _normalize_supplier_profile_audit_status(supplier),
+        "status": supplier.status,
+    }
 
 
 @router.get("/onboarding-template")
@@ -740,101 +854,138 @@ def change_password(
 
 @router.put("/{supplier_id}")
 def update_supplier(
-    supplier_id: int, 
-    supplier_update: SupplierUpdate, 
+    supplier_id: int,
+    supplier_update: SupplierUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     request: Request = None
 ):
     """
-    采购员审核/定级供应商
+    Buyer review for supplier onboarding or approved-profile changes
     """
     _require_admin_or_buyer(current_user)
-        
+
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
 
-    review_comment = (
-        supplier_update.review_comment.strip()
-        if isinstance(supplier_update.review_comment, str)
-        else None
-    ) or None
+    review_status = (supplier_update.status or "").strip().lower()
+    review_comment = (supplier_update.review_comment or "").strip() or None
+    audit_status = _normalize_supplier_profile_audit_status(supplier)
+    is_profile_change_review = supplier.status == "approved" and audit_status == "change_pending"
 
-    if supplier_update.status:
-        supplier.status = supplier_update.status
+    if review_status:
         supplier.review_comment = review_comment
-        if supplier_update.status in ["approved", "rejected", "pending"]:
-            supplier.reviewer_id = current_user.id
-            supplier.reviewed_at = datetime.now()
-        if supplier_update.status == "approved":
-            supplier.review_comment = None
-            db.query(SupplierMember).filter(
-                SupplierMember.supplier_id == supplier.id,
-                SupplierMember.status == "pending"
-            ).update(
-                {
-                    "status": "active",
-                    "reviewed_by": current_user.id,
-                    "reviewed_at": datetime.now(),
-                },
-                synchronize_session=False,
-            )
-        elif supplier_update.status == "pending":
-            db.query(SupplierMember).filter(
-                SupplierMember.supplier_id == supplier.id,
-                SupplierMember.status.in_(["pending", "active"])
-            ).update(
-                {
-                    "status": "pending",
-                    "reviewed_by": current_user.id,
-                    "reviewed_at": datetime.now(),
-                    "review_comment": supplier.review_comment,
-                },
-                synchronize_session=False,
-            )
-        elif supplier_update.status == "rejected":
-            db.query(SupplierMember).filter(
-                SupplierMember.supplier_id == supplier.id,
-                SupplierMember.status.in_(["pending", "active"])
-            ).update(
-                {
-                    "status": "disabled",
-                    "reviewed_by": current_user.id,
-                    "reviewed_at": datetime.now(),
-                    "review_comment": supplier.review_comment or "企业审核未通过",
-                },
-                synchronize_session=False,
-            )
+        supplier.reviewer_id = current_user.id
+        supplier.reviewed_at = datetime.now()
+
+        if is_profile_change_review:
+            if review_status == "approved":
+                pending_update = supplier.pending_profile_update if isinstance(supplier.pending_profile_update, dict) else {}
+                for field in [
+                    "short_name",
+                    "contact_person",
+                    "phone",
+                    "email",
+                    "social_credit_code",
+                    "application_attachments",
+                    "onboarding_note",
+                ]:
+                    if field in pending_update:
+                        setattr(supplier, field, pending_update.get(field))
+                supplier.pending_profile_update = None
+                supplier.profile_audit_status = "approved"
+                supplier.review_comment = None
+            elif review_status == "pending":
+                supplier.profile_audit_status = "change_returned"
+            elif review_status == "rejected":
+                supplier.profile_audit_status = "change_returned"
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported review status")
+        else:
+            supplier.status = review_status
+            if review_status == "approved":
+                supplier.profile_audit_status = "approved"
+                supplier.pending_profile_update = None
+                supplier.review_comment = None
+                db.query(SupplierMember).filter(
+                    SupplierMember.supplier_id == supplier.id,
+                    SupplierMember.status == "pending"
+                ).update(
+                    {
+                        "status": "active",
+                        "reviewed_by": current_user.id,
+                        "reviewed_at": datetime.now(),
+                    },
+                    synchronize_session=False,
+                )
+            elif review_status == "pending":
+                supplier.profile_audit_status = "returned"
+                db.query(SupplierMember).filter(
+                    SupplierMember.supplier_id == supplier.id,
+                    SupplierMember.status.in_(["pending", "active"])
+                ).update(
+                    {
+                        "status": "pending",
+                        "reviewed_by": current_user.id,
+                        "reviewed_at": datetime.now(),
+                        "review_comment": supplier.review_comment,
+                    },
+                    synchronize_session=False,
+                )
+            elif review_status == "rejected":
+                supplier.profile_audit_status = "rejected"
+                db.query(SupplierMember).filter(
+                    SupplierMember.supplier_id == supplier.id,
+                    SupplierMember.status.in_(["pending", "active"])
+                ).update(
+                    {
+                        "status": "disabled",
+                        "reviewed_by": current_user.id,
+                        "reviewed_at": datetime.now(),
+                        "review_comment": supplier.review_comment or "Supplier review was rejected",
+                    },
+                    synchronize_session=False,
+                )
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported review status")
+
     if supplier_update.level:
         supplier.level = supplier_update.level
 
     if supplier_update.grade:
         supplier.grade = supplier_update.grade
-        
+
     db.commit()
     db.refresh(supplier)
-    
+
     from routers.system import log_operation
     log_operation(
         db,
         current_user.id,
         "UPDATE_SUPPLIER",
-        f"更新供应商 {supplier.name} 状态为 {supplier.status}, 评级为 {supplier.grade}",
+        f"Updated supplier review for {supplier.name}: {supplier.status}",
         request=request,
-        module="供应商管理",
-        target_type="供应商",
+        module="Supplier Management",
+        target_type="Supplier",
         target_name=supplier.name,
         result="success",
         extra_data={
             "status": supplier.status,
             "grade": supplier.grade,
-            "level": supplier.level
+            "level": supplier.level,
+            "profile_audit_status": _normalize_supplier_profile_audit_status(supplier),
         }
     )
-    
+
     _invalidate_supplier_cache()
-    return {"message": "Supplier updated successfully", "id": supplier.id, "status": supplier.status, "grade": supplier.grade}
+    return {
+        "message": "Supplier updated successfully",
+        "id": supplier.id,
+        "status": supplier.status,
+        "grade": supplier.grade,
+        "profile_audit_status": _normalize_supplier_profile_audit_status(supplier),
+    }
 
 
 @router.put("/{supplier_id}/account")

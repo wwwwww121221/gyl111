@@ -11,7 +11,7 @@ node_modules/
 dist/
 build/
 
-# 本地环境变量和机密（非常重要！不要把你的数据库密码或 API Key 传到网上）
+# 本地环境变量和机密
 .env
 .env.local
 
@@ -25,14 +25,8 @@ build/
 appendonly.aof
 dump.rdb
 
-# 忽略临时 Word 文档 ZIP
-.tmp_doc_rule.zip
-.tmp_doc_score.zip
-
-# 忽略所有以 .tmp_doc_ 开头的文件
+# 临时 Office 解压文件、临时 ZIP
 .tmp_doc_*
-
-# 忽略 Office 解压出来的文件（如果还有残留）
 customXml/
 _rels/
 docProps/
@@ -40,14 +34,7 @@ word/
 [Content_Types].xml
 *.rels
 
-
-# 后端生成的所有静态文件
-# --------------------------
-# 合同PDF
-static/contracts/*.pdf
-
-# 询价附件（docx等）
-static/inquiry_attachments/*
-
-# 上传的所有文件
-static/uploads/*
+# ==========================
+#忽略整个 static 目录
+## ==========================
+/static/

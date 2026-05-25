@@ -109,7 +109,7 @@ def _can_edit_supplier_profile(supplier: Supplier) -> bool:
     if supplier.status == "pending":
         return audit_status in {"draft", "returned"}
     if supplier.status == "approved":
-        return audit_status in {"approved", "change_returned"}
+        return audit_status in {"approved", "draft", "change_returned"}
     return False
 
 
@@ -581,8 +581,8 @@ def update_my_supplier_profile(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     supplier, member = _get_supplier_portal_context(db, current_user)
-    if member.role not in ("admin", "owner"):
-        raise HTTPException(status_code=403, detail="Only supplier admins can edit company information")
+    if member.role != "admin":
+        raise HTTPException(status_code=403, detail="只有供应商管理员才能编辑公司资质信息")
     if not _can_edit_supplier_profile(supplier):
         raise HTTPException(status_code=400, detail="Profile is under review and cannot be edited yet")
 

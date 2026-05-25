@@ -49,7 +49,7 @@
                   <div v-for="(m, idx) in membersMap[row.id]" :key="m.id" class="member-card">
                     <div class="member-card-header">
                       <span class="member-name">{{ m.member_name || '-' }}</span>
-                      <el-tag size="small" :type="m.role === 'admin' || m.role === 'owner' ? 'danger' : 'info'" effect="plain">
+                      <el-tag size="small" :type="m.role === 'admin' ? 'danger' : 'info'" effect="plain">
                         {{ roleLabel(m.role) }}
                       </el-tag>
                       <el-tag size="small" :type="statusType(m.status)" effect="plain">
@@ -489,7 +489,7 @@ const downloadFileDirectly = (f) => {
   setTimeout(() => { document.body.removeChild(a) }, 100)
 }
 
-const roleLabel = (role) => ({ admin: '管理员', member: '成员', owner: '创建者' }[role] || role || '-')
+const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || role || '-')
 const statusText = (status) => ({ active: '已激活', pending: '待审核', rejected: '已拒绝', disabled: '已停用' }[status] || status || '-')
 const statusType = (status) => ({ active: 'success', pending: 'warning', rejected: 'danger', disabled: 'info' }[status] || 'info')
 

@@ -8,7 +8,7 @@
         </div>
         <div class="header-tags">
           <el-tag :type="statusTagType">{{ statusText }}</el-tag>
-          <el-tag v-if="profile.role" :type="profile.role === 'owner' ? 'danger' : 'warning'" size="small">
+          <el-tag v-if="profile.role" :type="profile.role === 'admin' ? 'danger' : 'warning'" size="small">
             {{ roleText }}
           </el-tag>
         </div>
@@ -208,11 +208,11 @@ const form = ref({
   onboarding_note: '',
 })
 
-const isEditor = computed(() => ['owner', 'admin'].includes(profile.value.role))
+const isEditor = computed(() => profile.value.role === 'admin')
 const canEditProfile = computed(() => isEditor.value && !!profile.value.can_edit)
 const isChangeMode = computed(() => profile.value.status === 'approved')
 const submitButtonText = computed(() => (profile.value.status === 'approved' ? '提交资料变更' : '提交完善资料'))
-const roleText = computed(() => ({ owner: '创建者', admin: '管理员', member: '成员' }[profile.value.role] || profile.value.role || ''))
+const roleText = computed(() => ({ admin: '管理员', member: '成员' }[profile.value.role] || profile.value.role || ''))
 const statusText = computed(() => ({ pending: '审核中', approved: '已入库', rejected: '已拒绝' }[profile.value.status] || (profile.value.status || '未知')))
 const statusTagType = computed(() => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[profile.value.status] || 'info'))
 

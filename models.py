@@ -77,7 +77,9 @@ def ensure_runtime_schema_columns():
     if "users" in table_names:
         user_columns = {col["name"] for col in inspector.get_columns("users")}
         if "department" not in user_columns:
-            alter_statements.append("ALTER TABLE users ADD COLUMN department VARCHAR DEFAULT '采购部'")
+            alter_statements.append("ALTER TABLE users ADD COLUMN department VARCHAR")
+        else:
+            alter_statements.append("ALTER TABLE users ALTER COLUMN department DROP DEFAULT")
         if "phone" not in user_columns:
             alter_statements.append("ALTER TABLE users ADD COLUMN phone VARCHAR")
         if "openid" not in user_columns:
@@ -106,6 +108,15 @@ def ensure_runtime_schema_columns():
             alter_statements.append("ALTER TABLE suppliers ADD COLUMN profile_audit_status VARCHAR DEFAULT 'draft'")
         if "pending_profile_update" not in supplier_columns:
             alter_statements.append("ALTER TABLE suppliers ADD COLUMN pending_profile_update JSON")
+
+    if "assessment_tasks" in table_names:
+        assessment_task_columns = {col["name"] for col in inspector.get_columns("assessment_tasks")}
+        if "scorers" not in assessment_task_columns:
+            alter_statements.append("ALTER TABLE assessment_tasks ADD COLUMN scorers JSON")
+        if "created_by" not in assessment_task_columns:
+            alter_statements.append("ALTER TABLE assessment_tasks ADD COLUMN created_by INTEGER")
+        if "completed_at" not in assessment_task_columns:
+            alter_statements.append("ALTER TABLE assessment_tasks ADD COLUMN completed_at TIMESTAMP")
 
     if "compare_drafts" not in table_names:
         alter_statements.extend([
@@ -173,7 +184,7 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     role = Column(String, default=UserRole.BUYER)
-    department = Column(String, nullable=True, default="采购部")
+    department = Column(String, nullable=True)
     phone = Column(String, unique=True, index=True, nullable=True)
     openid = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
@@ -294,7 +305,7 @@ class SupplierMember(Base):
     id = Column(Integer, primary_key=True, index=True)
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    role = Column(String, default="member", comment="owner/admin/member")
+    role = Column(String, default="member", comment="admin/member")
     status = Column(String, default="pending", comment="pending/active/rejected/disabled")
     member_name = Column(String, nullable=True)
     position = Column(String, nullable=True)
@@ -494,7 +505,7 @@ def backfill_supplier_memberships():
             db.add(SupplierMember(
                 supplier_id=supplier.id,
                 user_id=supplier.user_id,
-                role="owner",
+                role="admin",
                 status=member_status,
                 member_name=supplier.contact_person,
                 position="管理员",
@@ -538,3 +549,89 @@ class PurchaseOrderHistory(Base):
     tax_net_price = Column(Float, comment="含税净价(实付价)")
     date = Column(DateTime, index=True, comment="订单日期")
     created_at = Column(DateTime, default=datetime.now)
+
+
+class AssessmentTask(Base):
+    """
+    供应商考核任务
+    """
+    __tablename__ = "assessment_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, comment="考核名称")
+    assessment_type = Column(String, nullable=False, comment="考核类型: annual/quarterly/special")
+    status = Column(String, default="scoring", comment="scoring/summary/completed")
+    scoring_start = Column(DateTime, nullable=False, comment="打分开始时间")
+    scoring_end = Column(DateTime, nullable=False, comment="打分截止时间")
+    description = Column(Text, nullable=True, comment="考核说明")
+    scorers = Column(JSON, nullable=True, comment='各部门指定打分人 {"品质部": [1,2], "采购部": [3]}')
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    completed_at = Column(DateTime, nullable=True)
+
+    creator = relationship("User", foreign_keys=[created_by])
+    supplier_scores = relationship("AssessmentSupplierScore", back_populates="task")
+
+
+class AssessmentItem(Base):
+    """
+    考核评分项（大维度-小维度），系统内置，不随考核任务变化
+    """
+    __tablename__ = "assessment_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dimension = Column(String, nullable=False, comment="大维度名称")
+    dimension_weight = Column(Float, nullable=False, comment="大维度权重(如0.3表示30%)")
+    indicator = Column(String, nullable=False, comment="小维度/核心考核指标")
+    max_score = Column(Float, nullable=False, comment="该项满分")
+    scoring_department = Column(String, nullable=False, comment="负责打分的部门")
+    sort_order = Column(Integer, default=0, comment="排序序号")
+
+
+class AssessmentSupplierScore(Base):
+    """
+    考核任务-供应商-评分项 的打分记录
+    """
+    __tablename__ = "assessment_supplier_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("assessment_tasks.id"), nullable=False, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
+    item_id = Column(Integer, ForeignKey("assessment_items.id"), nullable=False, index=True)
+    score = Column(Float, nullable=True, comment="打分(可为空表示未打)")
+    remark = Column(Text, nullable=True, comment="打分备注")
+    scored_by = Column(Integer, ForeignKey("users.id"), nullable=True, comment="打分人")
+    scored_at = Column(DateTime, nullable=True, comment="打分时间")
+
+    task = relationship("AssessmentTask", back_populates="supplier_scores")
+    supplier = relationship("Supplier")
+    item = relationship("AssessmentItem")
+    scorer = relationship("User", foreign_keys=[scored_by])
+
+
+DEFAULT_ASSESSMENT_ITEMS = [
+    {"dimension": "质量表现", "dimension_weight": 0.30, "indicator": "来料/成品电气验收合格率（绝缘、耐压、温升等关键性能达标率）", "max_score": 12, "scoring_department": "品质部", "sort_order": 1},
+    {"dimension": "质量表现", "dimension_weight": 0.30, "indicator": "质量异常率（电气性能故障批次率、客户电气安全投诉率）", "max_score": 10, "scoring_department": "品质部", "sort_order": 2},
+    {"dimension": "质量表现", "dimension_weight": 0.30, "indicator": "电气问题整改及时性与效果（故障整改、性能优化）", "max_score": 8, "scoring_department": "品质部", "sort_order": 3},
+    {"dimension": "交付表现", "dimension_weight": 0.30, "indicator": "交期准时率（按项目订单约定交付时间，适配项目工期）", "max_score": 12, "scoring_department": "仓储部", "sort_order": 4},
+    {"dimension": "交付表现", "dimension_weight": 0.30, "indicator": "应急交付能力（电气紧急订单、项目加急订单响应速度、完成率）", "max_score": 10, "scoring_department": "仓储部", "sort_order": 5},
+    {"dimension": "交付表现", "dimension_weight": 0.30, "indicator": "交付差错率（电气产品型号、规格、参数错发/漏发率）", "max_score": 8, "scoring_department": "仓储部", "sort_order": 6},
+    {"dimension": "技术服务与配合", "dimension_weight": 0.20, "indicator": "售后技术响应（电气故障咨询、现场维修、技术指导时效）", "max_score": 8, "scoring_department": "技术部", "sort_order": 7},
+    {"dimension": "技术服务与配合", "dimension_weight": 0.20, "indicator": "配合度（电气技术参数调整、项目现场支持、检测报告提供）", "max_score": 7, "scoring_department": "技术部", "sort_order": 8},
+    {"dimension": "技术服务与配合", "dimension_weight": 0.20, "indicator": "技术资料完整性（电气图纸、检测报告、3C认证复印件等及时提供）", "max_score": 5, "scoring_department": "品质部", "sort_order": 9},
+    {"dimension": "成本与合作稳定性", "dimension_weight": 0.20, "indicator": "价格履约率（无随意涨价、电气原材料涨价时提前告知并提供依据）", "max_score": 8, "scoring_department": "采购部", "sort_order": 10},
+    {"dimension": "成本与合作稳定性", "dimension_weight": 0.20, "indicator": "合作稳定性（合作年限、电气项目订单完成率、无重大履约纠纷）", "max_score": 7, "scoring_department": "采购部", "sort_order": 11},
+    {"dimension": "成本与合作稳定性", "dimension_weight": 0.20, "indicator": "增值服务（免费检测、技术培训、质保期延长等）", "max_score": 5, "scoring_department": "采购部", "sort_order": 12},
+]
+
+
+def seed_assessment_items():
+    db = SessionLocal()
+    try:
+        existing_count = db.query(AssessmentItem).count()
+        if existing_count == 0:
+            for item_data in DEFAULT_ASSESSMENT_ITEMS:
+                db.add(AssessmentItem(**item_data))
+            db.commit()
+    finally:
+        db.close()

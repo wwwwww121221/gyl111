@@ -25,7 +25,7 @@ def get_user_memberships(db: Session, user_id: int) -> list[SupplierMember]:
 
 
 def _membership_priority(member: SupplierMember) -> int:
-    role_priority = {"owner": 0, "admin": 1, "member": 2}
+    role_priority = {"admin": 0, "member": 1}
     return role_priority.get((member.role or "").lower(), 9)
 
 
@@ -62,7 +62,7 @@ def _backfill_memberships_for_user(db: Session, user: User) -> list[SupplierMemb
             SupplierMember(
                 supplier_id=supplier.id,
                 user_id=user.id,
-                role="owner" if supplier.status in {"approved", "rejected"} else "admin",
+                role="admin",
                 status=member_status,
                 member_name=supplier.contact_person,
                 position="管理员",

@@ -62,6 +62,18 @@
             <el-table-column prop="reviewed_at" label="处理时间" width="170">
                 <template #default="{ row }">{{ formatTime(row.reviewed_at) }}</template>
             </el-table-column>
+            <el-table-column label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  v-if="isAdmin && row.status === 'active' && row.role === 'member'"
+                  size="small"
+                  type="warning"
+                  @click="handleTransferAdmin(row)"
+                >
+                  移交管理员
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-tab-pane>
       </el-tabs>
@@ -97,7 +109,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../api'
 
@@ -108,6 +120,9 @@ const pendingList = ref([])
 const memberList = ref([])
 const pendingCount = ref(0)
 const isReviewer = ref(true)
+const currentRole = ref('')
+
+const isAdmin = computed(() => currentRole.value === 'admin')
 
 const reviewDialogVisible = ref(false)
 const reviewing = ref(false)
@@ -190,12 +205,41 @@ const submitReview = async () => {
   }
 }
 
+const handleTransferAdmin = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认将管理员身份移交给 "${row.member_name || row.phone}" 吗？移交后您将变为普通成员。`,
+      '管理员移交确认',
+      { type: 'warning', confirmButtonText: '确认移交', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.post('/auth/supplier/transfer-admin', { target_member_id: row.id })
+    ElMessage.success('管理员身份移交成功')
+    currentRole.value = 'member'
+    fetchAllMembers()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '移交失败')
+  }
+}
+
+const fetchCurrentRole = async () => {
+  try {
+    const res = await api.get('/supplier/my-profile')
+    currentRole.value = res.data.role || ''
+  } catch (e) {
+    // ignore
+  }
+}
+
 const formatTime = (val) => {
   if (!val) return '-'
   return new Date(val).toLocaleString('zh-CN')
 }
 
-const roleLabel = (role) => ({ admin: '管理员', member: '成员', owner: '创建者' }[role] || role)
+const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || role)
 const statusType = (status) => ({
   active: 'success',
   pending: 'warning',
@@ -211,6 +255,7 @@ const statusLabel = (status) => ({
 }[status] || status)
 
 onMounted(() => {
+  fetchCurrentRole()
   fetchPendingRequests()
 })
 </script>

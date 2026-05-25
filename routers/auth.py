@@ -161,7 +161,7 @@ def _require_supplier_member_reviewer(
         raise HTTPException(status_code=403, detail="Not authorized")
     if member.approval_mode != "supplier_admin":
         raise HTTPException(status_code=403, detail="该申请需由平台管理员审核")
-    if reviewer_member.role not in ["owner", "admin"]:
+    if reviewer_member.role not in ["admin"]:
         raise HTTPException(status_code=403, detail="仅企业管理员可审核成员申请")
 
 
@@ -595,7 +595,7 @@ def supplier_join_request(
         role="member",
     )
     member.status = "pending"
-    member.role = existing_member.role if existing_member and existing_member.role in {"owner", "admin"} else "member"
+    member.role = existing_member.role if existing_member and existing_member.role in {"admin"} else "member"
     member.member_name = (payload.member_name or "").strip()
     member.position = (payload.position or "").strip() or None
     member.application_note = (payload.application_note or "").strip() or None
@@ -626,7 +626,7 @@ def get_supplier_member_requests(
         query = db.query(SupplierMember)
     elif current_user.role == "supplier":
         supplier, reviewer_member = get_supplier_context_for_user(db, current_user)
-        if reviewer_member.role not in ["owner", "admin"]:
+        if reviewer_member.role not in ["admin"]:
             raise HTTPException(status_code=403, detail="仅企业管理员可查看成员申请")
         query = db.query(SupplierMember).filter(
             SupplierMember.supplier_id == supplier.id,
@@ -714,6 +714,41 @@ def review_supplier_member_request(
     }
 
 
+@router.post("/supplier/transfer-admin")
+def transfer_supplier_admin(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    target_member_id = payload.get("target_member_id")
+    if not target_member_id:
+        raise HTTPException(status_code=400, detail="请指定目标成员")
+
+    supplier, current_member = get_supplier_context_for_user(db, current_user)
+    if current_member.role != "admin":
+        raise HTTPException(status_code=403, detail="仅当前管理员可移交管理员身份")
+
+    target_member = db.query(SupplierMember).filter(
+        SupplierMember.id == target_member_id,
+        SupplierMember.supplier_id == supplier.id,
+    ).first()
+    if not target_member:
+        raise HTTPException(status_code=404, detail="目标成员不存在")
+    if target_member.status != "active":
+        raise HTTPException(status_code=400, detail="目标成员未激活，无法移交")
+    if target_member.role == "admin":
+        raise HTTPException(status_code=400, detail="目标成员已是管理员")
+
+    current_member.role = "member"
+    target_member.role = "admin"
+    db.commit()
+
+    return {
+        "message": "管理员身份移交成功",
+        "new_admin_member_id": target_member.id,
+    }
+
+
 @router.post("/register", response_model=UserSchema)
 def register_user(
     *,
@@ -758,10 +793,10 @@ def register_user(
             SupplierMember(
                 supplier_id=supplier.id,
                 user_id=user.id,
-                role="owner",
+                role="admin",
                 status="pending",
                 member_name=user_in.contact_person,
-                position="owner",
+                position="管理员",
                 application_note="历史注册接口创建",
                 approval_mode="platform_admin",
             )

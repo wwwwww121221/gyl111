@@ -1,7 +1,6 @@
 <template>
   <div class="layout-container">
     <el-container>
-      <!-- 现代化侧边栏 -->
       <el-aside width="240px" class="modern-sidebar">
         <div class="sidebar-header">
           <div class="logo">
@@ -12,7 +11,7 @@
             </div>
           </div>
         </div>
-        
+
         <el-menu
           :default-active="activeMenu"
           class="modern-menu"
@@ -21,7 +20,6 @@
           active-text-color="var(--primary-color)"
           router
         >
-          <!-- 询价管理 -->
           <el-sub-menu index="/inquiries" class="sub-menu">
             <template #title>
               <el-icon class="menu-icon"><List /></el-icon>
@@ -34,7 +32,6 @@
             <el-menu-item index="/inquiries/templates" class="submenu-item">模板设置</el-menu-item>
           </el-sub-menu>
 
-          <!-- 预警管理 -->
           <el-sub-menu index="/dashboard" class="sub-menu">
             <template #title>
               <el-icon class="menu-icon"><DataBoard /></el-icon>
@@ -43,8 +40,7 @@
             <el-menu-item index="/dashboard/supplier" class="submenu-item">供应商预警</el-menu-item>
             <el-menu-item index="/dashboard/warehouse" class="submenu-item">仓库预警</el-menu-item>
           </el-sub-menu>
-          
-          <!-- 统计分析 -->
+
           <el-sub-menu index="/analysis" class="sub-menu">
             <template #title>
               <el-icon class="menu-icon"><PieChart /></el-icon>
@@ -52,10 +48,9 @@
             </template>
             <el-menu-item index="/analysis/supplier" class="submenu-item">供应商分析</el-menu-item>
             <el-menu-item index="/analysis/material" class="submenu-item">物料分析</el-menu-item>
-            <el-menu-item index="/analysis/buyer" class="submenu-item" v-if="isAdminLike">采购员分析</el-menu-item>
+            <el-menu-item v-if="isAdminLike" index="/analysis/buyer" class="submenu-item">采购员分析</el-menu-item>
           </el-sub-menu>
 
-          <!-- 供应商管理 -->
           <el-sub-menu index="/suppliers" class="sub-menu">
             <template #title>
               <el-icon class="menu-icon"><User /></el-icon>
@@ -63,8 +58,11 @@
             </template>
             <el-menu-item index="/suppliers/pending" class="submenu-item">待审核供应商</el-menu-item>
             <el-menu-item index="/suppliers/manage" class="submenu-item">供应商名册</el-menu-item>
+            <el-menu-item v-if="canManageAssessment" index="/suppliers/assessment" class="submenu-item">考核管理</el-menu-item>
+            <el-menu-item index="/suppliers/assessment-scoring" class="submenu-item">部门打分</el-menu-item>
+            <el-menu-item index="/suppliers/assessment-summary" class="submenu-item">考核汇总</el-menu-item>
           </el-sub-menu>
-          <!-- 系统管理 (仅管理员) -->
+
           <el-sub-menu index="/system" class="sub-menu" v-if="isAdminLike">
             <template #title>
               <el-icon class="menu-icon"><Setting /></el-icon>
@@ -74,9 +72,8 @@
             <el-menu-item index="/system/logs" class="submenu-item">操作日志</el-menu-item>
           </el-sub-menu>
         </el-menu>
-        
-
       </el-aside>
+
       <el-container>
         <el-header>
           <div class="header-left">
@@ -86,10 +83,14 @@
               <el-breadcrumb-item>{{ currentRouteName }}</el-breadcrumb-item>
             </el-breadcrumb>
           </div>
+
           <div class="header-right">
             <el-dropdown trigger="click">
               <span class="el-dropdown-link">
-                {{ roleLabel }} <span v-if="userDepartment">-{{ userDepartment }}</span> <span v-if="userName">({{ userName }})</span> <el-icon class="el-icon--right"><arrow-down /></el-icon>
+                {{ roleLabel }}
+                <span v-if="userDepartment">-{{ userDepartment }}</span>
+                <span v-if="userName">({{ userName }})</span>
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </span>
               <template #dropdown>
                 <el-dropdown-menu>
@@ -100,6 +101,7 @@
             </el-dropdown>
           </div>
         </el-header>
+
         <el-main>
           <div class="main-content-wrapper">
             <router-view />
@@ -111,9 +113,9 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { DataBoard, User, Expand, ArrowDown, List, PieChart, Setting } from '@element-plus/icons-vue'
+import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowDown, DataBoard, Expand, List, PieChart, Setting, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
@@ -124,16 +126,16 @@ const userRole = computed(() => localStorage.getItem('role') || '')
 const userName = computed(() => localStorage.getItem('username') || '')
 const userDepartment = computed(() => localStorage.getItem('department') || '')
 const isAdminLike = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
+const canManageAssessment = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
+
 const roleLabel = computed(() => {
   if (userRole.value === 'admin') return '超级管理员'
-  if (userRole.value === 'buyer_manager') return '部门经理'
+  if (userRole.value === 'buyer_manager') return '采购部经理'
   if (userRole.value === 'buyer') return '采购员'
   return userRole.value || '未知角色'
 })
 
-const activeMenu = computed(() => {
-  return route.path
-})
+const activeMenu = computed(() => route.path)
 
 const currentRouteName = computed(() => {
   const map = {
@@ -141,16 +143,19 @@ const currentRouteName = computed(() => {
     '/dashboard/warehouse': '仓库预警',
     '/inquiries/requests': '采购申请列表',
     '/inquiries/compare': '智能比价工作台',
-    '/inquiries/tasks': '询价单',
+    '/inquiries/tasks': '询价任务',
     '/inquiries/contracts': '合同管理',
     '/inquiries/templates': '模板设置',
     '/suppliers/pending': '待审核供应商',
     '/suppliers/manage': '供应商名册',
+    '/suppliers/assessment': '考核管理',
+    '/suppliers/assessment-scoring': '部门打分',
+    '/suppliers/assessment-summary': '考核汇总',
     '/analysis/supplier': '供应商分析',
     '/analysis/material': '物料分析',
     '/analysis/buyer': '采购员效能分析',
     '/system/users': '账号管理',
-    '/system/logs': '系统操作日志'
+    '/system/logs': '系统操作日志',
   }
   return map[route.path] || '未知页面'
 })
@@ -179,7 +184,6 @@ const handleLogout = () => {
   height: 100%;
 }
 
-/* ===== 现代化侧边栏样式 ===== */
 .modern-sidebar {
   background: var(--bg-primary);
   border-right: 1px solid var(--border-color);
@@ -229,7 +233,6 @@ const handleLogout = () => {
   font-weight: 500;
 }
 
-/* 现代化菜单样式 */
 .modern-menu {
   border-right: none !important;
   background: transparent !important;
@@ -250,7 +253,6 @@ const handleLogout = () => {
   border-radius: var(--radius-lg) !important;
 }
 
-/* 菜单项基础样式 */
 .menu-item {
   height: 48px !important;
   line-height: 48px !important;
@@ -291,7 +293,6 @@ const handleLogout = () => {
   font-weight: 500;
 }
 
-/* 子菜单容器样式 */
 :deep(.el-sub-menu) {
   margin-bottom: 0;
 }
@@ -301,7 +302,6 @@ const handleLogout = () => {
   padding: 0 !important;
 }
 
-/* 子菜单项样式 */
 .submenu-item {
   height: 40px !important;
   line-height: 40px !important;
@@ -322,7 +322,6 @@ const handleLogout = () => {
   color: white !important;
 }
 
-/* 侧边栏底部用户信息 */
 .sidebar-footer {
   padding: var(--space-4);
   border-top: 1px solid var(--border-color);
@@ -371,7 +370,6 @@ const handleLogout = () => {
   color: var(--text-tertiary);
 }
 
-/* ===== 头部样式 ===== */
 .el-header {
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border-color);
@@ -424,7 +422,7 @@ const handleLogout = () => {
   height: calc(100vh - 60px);
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* 锁定最外层高度，防止页面本身被撑开 */
+  overflow: hidden;
 }
 
 .main-content-wrapper {
@@ -432,11 +430,10 @@ const handleLogout = () => {
   width: 100%;
   display: flex;
   flex-direction: column;
-  min-height: 0; /* 允许 flex child 收缩，防止子元素溢出撑大 wrapper */
-  overflow-y: auto; /* 对于没有做 100% 内部限制的页面，允许其在这里滚动 */
+  min-height: 0;
+  overflow-y: auto;
 }
 
-/* 面包屑样式优化 */
 :deep(.el-breadcrumb__inner) {
   color: var(--text-secondary) !important;
   font-weight: 500;

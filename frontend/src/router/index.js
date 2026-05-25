@@ -134,6 +134,24 @@ const routes = [
         name: 'SupplierPending',
         component: () => import('../views/suppliers/SupplierPending.vue'),
         meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
+      },
+      {
+        path: 'assessment',
+        name: 'AssessmentManagement',
+        component: () => import('../views/assessment/AssessmentManagement.vue'),
+        meta: { requiresRole: ['admin', 'buyer_manager'] }
+      },
+      {
+        path: 'assessment-scoring',
+        name: 'AssessmentScoring',
+        component: () => import('../views/assessment/AssessmentScoring.vue'),
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
+      },
+      {
+        path: 'assessment-summary',
+        name: 'AssessmentSummary',
+        component: () => import('../views/assessment/AssessmentSummary.vue'),
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
       }
     ]
   },

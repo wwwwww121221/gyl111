@@ -142,7 +142,8 @@ const filters = reactive(createEmptyFilters())
 const appliedFilters = ref(createEmptyFilters())
 
 const roleOptions = [
-  { label: '管理员', value: 'admin' },
+  { label: '系统管理员', value: 'admin' },
+  { label: '采购经理', value: 'buyer_manager' },
   { label: '采购员', value: 'buyer' },
   { label: '供应商', value: 'supplier' }
 ]
@@ -282,7 +283,8 @@ const getActionTagType = (action) => {
 const getRoleLabel = (role) => {
   const normalizedRole = String(role || '').toLowerCase()
   const map = {
-    admin: '管理员',
+    admin: '系统管理员',
+    buyer_manager: '采购经理',
     buyer: '采购员',
     supplier: '供应商'
   }
@@ -293,6 +295,7 @@ const getRoleTagType = (role) => {
   const normalizedRole = String(role || '').toLowerCase()
   const map = {
     admin: 'danger',
+    buyer_manager: 'warning',
     buyer: 'primary',
     supplier: 'success'
   }

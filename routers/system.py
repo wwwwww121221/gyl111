@@ -230,7 +230,10 @@ def get_buyer_analysis(
         raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以查看采购员分析")
         
     # 获取所有的 buyer/admin/buyer_manager (管理角色也可能发单)
-    buyers = db.query(User).filter(User.role.in_(["buyer", "admin", "buyer_manager"])).all()
+    buyers = db.query(User).filter(
+        User.role.in_(["buyer", "admin", "buyer_manager"]),
+        (User.department == "采购部") | (User.role.in_(["admin", "buyer_manager"]))
+    ).all()
     
     result = []
     for buyer in buyers:

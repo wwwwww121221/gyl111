@@ -125,7 +125,7 @@
             </div>
           </template>
           <div class="table-inner">
-            <el-table :data="filteredTableData" style="width: 100%" height="100%" stripe size="small">
+            <el-table :data="filteredTableData" style="width: 100%" height="100%" stripe size="small" border>
               <el-table-column prop="date" label="订单日期" width="120" sortable />
               <el-table-column prop="bill_no" label="采购单号" width="160" show-overflow-tooltip />
               <el-table-column prop="supplier_name" label="供应商名称" min-width="180" show-overflow-tooltip />

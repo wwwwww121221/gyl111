@@ -13,7 +13,7 @@
         <el-button type="primary" @click="handleSearch">搜索</el-button>
       </div>
 
-      <el-table :data="contracts" v-loading="loading" style="width: 100%">
+      <el-table :data="contracts" v-loading="loading" style="width: 100%" border>
         <el-table-column prop="contract_no" label="合同编号" width="130" header-align="center" align="center" />
         <el-table-column prop="inquiry_name" label="项目/询价单" min-width="180" header-align="center" align="center" />
         <el-table-column prop="supplier_name" label="供应商" min-width="160" header-align="center" align="center" />

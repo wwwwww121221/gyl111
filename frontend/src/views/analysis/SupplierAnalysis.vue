@@ -110,7 +110,7 @@
             </div>
           </template>
           <div class="table-inner">
-            <el-table :data="filteredTableData" style="width: 100%" height="100%" stripe size="small" row-key="bill_no" :expand-row-keys="expandedRowKeys" @expand-change="handleExpand">
+            <el-table :data="filteredTableData" style="width: 100%" height="100%" stripe size="small" row-key="bill_no" :expand-row-keys="expandedRowKeys" @expand-change="handleExpand" border>
               <el-table-column type="expand">
                 <template #default="props">
                   <div style="padding: 10px 20px;">

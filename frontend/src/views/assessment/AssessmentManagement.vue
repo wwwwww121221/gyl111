@@ -15,49 +15,50 @@
         <el-button v-if="canCreate" type="primary" @click="openCreateDialog">创建考核任务</el-button>
       </div>
 
-      <el-table :data="tasks" style="width: 100%" v-loading="loading">
-        <el-table-column type="index" label="序号" width="70" />
-        <el-table-column prop="name" label="考核名称" min-width="180" />
-        <el-table-column prop="assessment_type" label="考核类型" width="120">
+      <el-table :data="tasks" style="width: 100%" v-loading="loading" class="center-table" border>
+        <el-table-column type="index" label="序号" width="55" align="center" />
+        <el-table-column prop="name" label="考核名称" width="120" show-overflow-tooltip align="center" />
+        <el-table-column prop="assessment_type" label="类型" width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="typeTagMap[row.assessment_type]">{{ typeLabelMap[row.assessment_type] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="status" label="状态" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="statusTagMap[row.status]">{{ statusLabelMap[row.status] }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="supplier_count" label="供应商数" width="100" />
-        <el-table-column label="打分进度" width="160">
+        <el-table-column prop="supplier_count" label="供应商数" width="90" align="center" />
+        <el-table-column label="进度" width="110" align="center">
           <template #default="{ row }">
-            <el-progress :percentage="row.progress" :stroke-width="10" :format="() => `${row.progress}%`" />
+            <el-progress :percentage="row.progress" :stroke-width="8" :format="() => `${row.progress}%`" />
           </template>
         </el-table-column>
-        <el-table-column label="指定打分人" min-width="200">
+        <el-table-column label="打分人员" min-width="280" align="center">
           <template #default="{ row }">
-            <div v-if="row.scorers && Object.keys(row.scorers).length" class="scorers-cell">
-              <div v-for="(names, dept) in row.scorers" :key="dept" class="scorer-dept-row">
-                <span class="dept-name">{{ dept }}：</span><span class="scorer-names">{{ names.join('、') }}</span>
-              </div>
+            <div v-if="row.scorers && Object.keys(row.scorers).length" class="scorers-tags">
+              <el-tag v-for="(names, dept) in row.scorers" :key="dept" size="small" type="info" effect="plain">
+                {{ dept }}: {{ names.join('/') }}
+              </el-tag>
             </div>
-            <span v-else class="no-scorers">未指定（部门内所有人可打分）</span>
+            <span v-else class="text-muted">部门全员</span>
           </template>
         </el-table-column>
-        <el-table-column prop="scoring_start" label="打分开始" width="160" />
-        <el-table-column prop="scoring_end" label="打分截止" width="160" />
-        <el-table-column prop="created_by" label="创建人" width="100" />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column prop="scoring_start" label="开始时间" width="155" align="center" />
+        <el-table-column prop="scoring_end" label="截止时间" width="155" align="center" />
+        <el-table-column label="操作" width="150" align="center">
           <template #default="{ row }">
-            <el-button size="small" type="primary" @click="viewDetail(row)">查看详情</el-button>
-            <el-button
-              v-if="canCreate && row.status === 'scoring' && row.progress >= 100"
-              size="small"
-              type="success"
-              @click="completeTask(row)"
-            >
-              完成考核
-            </el-button>
+            <div class="action-btns">
+              <el-button size="small" type="primary" @click="viewDetail(row)">查看详情</el-button>
+              <el-button
+                v-if="canCreate && row.status === 'scoring' && row.progress >= 100"
+                size="small"
+                type="success"
+                @click="completeTask(row)"
+              >
+                完成
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -185,10 +186,37 @@
           </div>
         </div>
 
-        <el-table :data="detailData.suppliers || []" style="width: 100%; margin-top: 16px" border>
-          <el-table-column type="index" label="排名" width="60" />
-          <el-table-column prop="supplier_name" label="供应商" min-width="160" />
-          <el-table-column prop="supplier_code" label="编码" width="100" />
+        <el-table :data="detailData.suppliers || []" style="width: 100%; margin-top: 16px" border row-key="supplier_id">
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="expand-content">
+                <div v-for="dim in row.dimensions" :key="dim.dimension" class="dimension-block">
+                  <div class="dimension-header">
+                    <span class="dim-name">{{ dim.dimension }}</span>
+                    <span class="dim-weight">权重 {{ (dim.weight * 100).toFixed(0) }}%</span>
+                    <span class="dim-score">得分 {{ dim.earned }}/{{ dim.max }} -> 加权 {{ dim.weighted_score }}</span>
+                  </div>
+                  <el-table :data="dim.items" size="small" border style="margin-top: 8px">
+                    <el-table-column prop="indicator" label="考核指标" min-width="280" />
+                    <el-table-column prop="max_score" label="满分" width="70" align="center" />
+                    <el-table-column prop="score" label="得分" width="70" align="center">
+                      <template #default="{ row }">
+                        <span :style="{ color: row.score !== null && row.score !== undefined ? 'var(--primary-color)' : 'var(--text-muted)' }">
+                          {{ row.score !== null && row.score !== undefined ? row.score : '未打分' }}
+                        </span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="remark" label="备注" min-width="120" />
+                    <el-table-column prop="scored_by" label="打分人" width="90" />
+                    <el-table-column prop="scored_at" label="打分时间" width="160" />
+                  </el-table>
+                </div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column type="index" label="排名" width="60" align="center" />
+          <el-table-column prop="supplier_name" label="供应商" min-width="160" align="center" />
+          <el-table-column prop="supplier_code" label="编码" width="100" align="center" />
           <el-table-column label="质量表现(30%)" width="120" align="center">
             <template #default="{ row }">
               {{ getDimensionScore(row, '质量表现') }}
@@ -221,40 +249,7 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="明细" width="80" align="center">
-            <template #default="{ row }">
-              <el-button size="small" text type="primary" @click="expandSupplier(row)">展开</el-button>
-            </template>
-          </el-table-column>
         </el-table>
-
-        <div v-if="expandedSupplier" class="supplier-detail-panel">
-          <div class="panel-header">
-            <span>{{ expandedSupplier.supplier_name }} - 各维度评分明细</span>
-            <el-button size="small" text @click="expandedSupplier = null">收起</el-button>
-          </div>
-          <div v-for="dim in expandedSupplier.dimensions" :key="dim.dimension" class="dimension-block">
-            <div class="dimension-header">
-              <span class="dim-name">{{ dim.dimension }}</span>
-              <span class="dim-weight">权重 {{ (dim.weight * 100).toFixed(0) }}%</span>
-              <span class="dim-score">得分 {{ dim.earned }}/{{ dim.max }} -> 加权 {{ dim.weighted_score }}</span>
-            </div>
-            <el-table :data="dim.items" size="small" border style="margin-top: 8px">
-              <el-table-column prop="indicator" label="考核指标" min-width="280" />
-              <el-table-column prop="max_score" label="满分" width="70" align="center" />
-              <el-table-column prop="score" label="得分" width="70" align="center">
-                <template #default="{ row }">
-                  <span :style="{ color: row.score !== null && row.score !== undefined ? 'var(--primary-color)' : 'var(--text-muted)' }">
-                    {{ row.score !== null && row.score !== undefined ? row.score : '未打分' }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="remark" label="备注" min-width="120" />
-              <el-table-column prop="scored_by" label="打分人" width="90" />
-              <el-table-column prop="scored_at" label="打分时间" width="160" />
-            </el-table>
-          </div>
-        </div>
       </div>
     </el-dialog>
   </div>
@@ -280,7 +275,6 @@ const selectedScorers = reactive({})
 const detailDialogVisible = ref(false)
 const detailLoading = ref(false)
 const detailData = ref({})
-const expandedSupplier = ref(null)
 
 const userRole = computed(() => localStorage.getItem('role') || '')
 const canCreate = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
@@ -429,7 +423,6 @@ const submitCreate = async () => {
 const viewDetail = async (row) => {
   detailDialogVisible.value = true
   detailLoading.value = true
-  expandedSupplier.value = null
   try {
     const res = await api.get(`/assessment/tasks/${row.id}`)
     detailData.value = res.data || {}
@@ -444,14 +437,6 @@ const getDimensionScore = (row, dimName) => {
   const dim = (row.dimensions || []).find((item) => item.dimension === dimName)
   if (!dim) return '-'
   return `${dim.earned}/${dim.max}`
-}
-
-const expandSupplier = (row) => {
-  if (expandedSupplier.value && expandedSupplier.value.supplier_id === row.supplier_id) {
-    expandedSupplier.value = null
-  } else {
-    expandedSupplier.value = row
-  }
 }
 
 const completeTask = async (row) => {
@@ -532,21 +517,8 @@ onMounted(() => {
   font-size: 15px;
 }
 
-.supplier-detail-panel {
-  margin-top: 16px;
-  background: var(--bg-secondary);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-}
-
-.panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--text-primary);
-  margin-bottom: var(--space-3);
+.expand-content {
+  padding: 16px 24px;
 }
 
 .dimension-block {
@@ -651,11 +623,24 @@ onMounted(() => {
   color: var(--text-muted);
 }
 
+.scorers-tags {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
 .detail-scorers-list {
   font-size: 13px;
 }
 
 .detail-scorer-dept {
   margin-bottom: 4px;
+}
+
+.action-btns {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
 }
 </style>

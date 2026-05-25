@@ -34,6 +34,12 @@ const isTokenValid = (token) => {
   }
 }
 
+const isScoringOnlyUser = () => {
+  const role = localStorage.getItem('role') || ''
+  if (['admin', 'buyer_manager'].includes(role)) return false
+  return role === 'scorer'
+}
+
 const routes = [
   {
     path: '/',
@@ -46,6 +52,9 @@ const routes = [
       }
       if (role === 'supplier') {
         return getSupplierHomePath()
+      }
+      if (isScoringOnlyUser()) {
+        return '/suppliers/assessment-scoring'
       }
       return '/dashboard'
     }
@@ -145,7 +154,7 @@ const routes = [
         path: 'assessment-scoring',
         name: 'AssessmentScoring',
         component: () => import('../views/assessment/AssessmentScoring.vue'),
-        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'], allowScoringUser: true }
       },
       {
         path: 'assessment-summary',
@@ -264,6 +273,12 @@ router.beforeEach((to, from) => {
 
   // Check role authorization
   if (to.meta.requiresRole && !to.meta.requiresRole.includes(role)) {
+    if (to.meta.allowScoringUser && isScoringOnlyUser()) {
+      return true
+    }
+    if (isScoringOnlyUser()) {
+      return '/suppliers/assessment-scoring'
+    }
     // Role not authorized
     if (!role) {
       localStorage.removeItem('token')
@@ -279,6 +294,10 @@ router.beforeEach((to, from) => {
         return '/dashboard'
       }
     }
+  }
+
+  if (isScoringOnlyUser() && to.path !== '/suppliers/assessment-scoring') {
+    return '/suppliers/assessment-scoring'
   }
 
   if (role === 'supplier' && localStorage.getItem('supplier_status') !== 'approved' && to.path !== '/supplier/company-info') {

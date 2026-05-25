@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, Query
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from core.config import settings
@@ -15,6 +15,7 @@ from backend.sync_suppliers import sync_suppliers
 from backend.sync_po_history import sync_po_history
 import logging
 from datetime import datetime, timedelta
+import hashlib
 
 # 初始化调度器
 scheduler = AsyncIOScheduler()
@@ -108,6 +109,21 @@ app.include_router(assessment.router, prefix=f"{settings.API_V1_STR}/assessment"
 @app.get("/")
 def root():
     return {"message": "Welcome to Supply Chain Agent API"}
+
+@app.get("/wechat/verify")
+async def wechat_verify(
+    signature: str = Query(...),
+    timestamp: str = Query(...),
+    nonce: str = Query(...),
+    echostr: str = Query(...)
+):
+    tmp_arr = [settings.WECHAT_TOKEN, timestamp, nonce]
+    tmp_arr.sort()
+    tmp_str = "".join(tmp_arr)
+    tmp_str_hash = hashlib.sha1(tmp_str.encode("utf-8")).hexdigest()
+    if tmp_str_hash == signature:
+        return PlainTextResponse(content=echostr)
+    return PlainTextResponse(content="", status_code=403)
 
 if __name__ == "__main__":
     import uvicorn

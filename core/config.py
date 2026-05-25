@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: Optional[str] = None
     ADMIN_PASSWORD: Optional[str] = None
 
+    # WeChat (微信公众号)
+    WECHAT_TOKEN: str = "supply_chain_agent_wechat_token"
+
     class Config:
         env_file = ".env"
         extra = "allow" # 允许额外的环境变量

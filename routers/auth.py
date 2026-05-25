@@ -832,7 +832,7 @@ def get_users(
     if not _is_admin_like(current_user):
         raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以访问账号列表")
 
-    users = db.query(User).filter(User.role.in_(["admin", "buyer", "buyer_manager"])).all()
+    users = db.query(User).filter(User.role.in_(["admin", "buyer", "scorer", "buyer_manager"])).all()
     return [{"id": u.id, "username": u.username, "role": u.role, "department": u.department} for u in users]
 
 

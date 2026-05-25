@@ -314,6 +314,14 @@ body {
   border-right-color: #e8edf5;
 }
 
+.el-table .el-table__cell {
+  text-align: center;
+}
+
+.el-table th.el-table__cell .cell {
+  text-align: center;
+}
+
 /* 布局工具类 */
 .flex {
   display: flex;

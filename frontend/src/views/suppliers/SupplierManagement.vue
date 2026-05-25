@@ -22,6 +22,7 @@
         v-loading="loading"
         row-key="id"
         @expand-change="handleExpandChange"
+        border
       >
         <el-table-column type="expand">
           <template #default="{ row }">

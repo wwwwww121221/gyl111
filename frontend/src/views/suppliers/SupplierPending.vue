@@ -8,6 +8,7 @@
         style="width: 100%"
         empty-text="暂无待审核供应商"
         row-key="id"
+        border
       >
         <el-table-column type="expand" width="52">
           <template #default="{ row }">

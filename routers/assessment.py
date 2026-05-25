@@ -82,7 +82,7 @@ def get_users_by_department(
             db.query(User)
             .filter(
                 User.department == dept,
-                User.role.in_(["admin", "buyer", "buyer_manager"])
+                User.role.in_(["admin", "buyer", "scorer", "buyer_manager"])
             )
             .order_by(User.username)
             .all()

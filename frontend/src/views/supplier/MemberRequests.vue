@@ -13,7 +13,7 @@
             <el-result icon="warning" title="无权限" sub-title="仅企业管理员可查看和审核成员加入申请" />
           </div>
           <template v-else>
-            <el-table :data="pendingList" v-loading="loadingPending" style="width: 100%" empty-text="暂无待审核的加入申请">
+            <el-table :data="pendingList" v-loading="loadingPending" style="width: 100%" empty-text="暂无待审核的加入申请" border>
               <el-table-column type="index" label="序号" width="64" />
               <el-table-column prop="member_name" label="申请人姓名" min-width="120" />
               <el-table-column prop="phone" label="手机号" width="140" />
@@ -39,7 +39,7 @@
         </el-tab-pane>
 
         <el-tab-pane label="全部成员" name="all">
-          <el-table :data="memberList" v-loading="loadingAll" style="width: 100%" empty-text="暂无成员记录">
+          <el-table :data="memberList" v-loading="loadingAll" style="width: 100%" empty-text="暂无成员记录" border>
             <el-table-column type="index" label="序号" width="64" />
             <el-table-column prop="member_name" label="姓名" min-width="110" />
             <el-table-column prop="phone" label="手机号" width="140" />

@@ -5,7 +5,7 @@
     </div>
 
     <div class="content-card">
-      <el-table :data="templates" v-loading="loading" style="width: 100%">
+      <el-table :data="templates" v-loading="loading" style="width: 100%" border>
         <el-table-column prop="name" label="模板名称" min-width="180" />
         <el-table-column prop="file_path" label="模板路径" min-width="260" />
         <el-table-column prop="default_buyer_name" label="默认采购方" min-width="180" />

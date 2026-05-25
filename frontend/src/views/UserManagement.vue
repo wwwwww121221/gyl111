@@ -3,12 +3,12 @@
     <div class="header">
       <h2>系统账号管理</h2>
       <el-button type="primary" @click="dialogVisible = true">
-        新增采购部账号
+        {{ dialogTitle }}
       </el-button>
     </div>
 
     <div class="content-card">
-      <el-table :data="users" style="width: 100%" v-loading="loading" stripe>
+      <el-table :data="users" style="width: 100%" v-loading="loading" stripe border>
         <el-table-column type="index" label="序号" width="80" align="center" />
         <el-table-column prop="username" label="账号/姓名" />
         <el-table-column prop="role" label="角色" width="160">
@@ -38,8 +38,8 @@
     <!-- 新增采购部账号弹窗 -->
     <el-dialog
       v-model="dialogVisible"
-      title="新增采购部账号"
-      width="400px"
+      :title="dialogTitle"
+      width="420px"
       draggable
       overflow
       @close="resetForm"
@@ -51,14 +51,15 @@
         <el-form-item label="初始密码" prop="password">
           <el-input v-model="form.password" type="password" show-password placeholder="请输入至少6位密码" />
         </el-form-item>
-        <el-form-item label="账号角色" prop="role">
-          <el-select v-model="form.role" style="width: 100%">
-            <el-option label="采购员" value="buyer" />
-            <el-option label="采购部经理" value="buyer_manager" />
+        <el-form-item label="所属部门" prop="department">
+          <el-select v-model="form.department" style="width: 100%" placeholder="请选择部门" @change="onDepartmentChange">
+            <el-option v-for="dept in availableDepartments" :key="dept" :label="dept" :value="dept" />
           </el-select>
         </el-form-item>
-        <el-form-item label="所属部门" prop="department">
-          <el-input v-model="form.department" placeholder="默认采购部" />
+        <el-form-item label="账号角色" prop="role">
+          <el-select v-model="form.role" style="width: 100%">
+            <el-option v-for="opt in roleOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -74,7 +75,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api/index'
 
@@ -89,8 +90,41 @@ const form = ref({
   username: '',
   password: '',
   role: 'buyer',
-  department: '采购部'
+  department: ''
 })
+
+const allDepartments = ['采购部', '品质部', '仓储部', '技术部']
+
+const currentUserRole = computed(() => localStorage.getItem('role') || '')
+
+const dialogTitle = computed(() => {
+  if (currentUserRole.value === 'admin') return '新增账号'
+  return '新增采购部账号'
+})
+
+const availableDepartments = computed(() => {
+  if (currentUserRole.value === 'admin') return allDepartments
+  return ['采购部']
+})
+
+const roleOptions = computed(() => {
+  const dept = form.value.department
+  if (currentUserRole.value !== 'admin' || dept === '采购部') {
+    return [
+      { label: '采购员', value: 'buyer' },
+      { label: '采购部经理', value: 'buyer_manager' }
+    ]
+  }
+  return [{ label: '考核专员', value: 'scorer' }]
+})
+
+const onDepartmentChange = (dept) => {
+  if (dept === '采购部') {
+    form.value.role = 'buyer'
+  } else {
+    form.value.role = 'scorer'
+  }
+}
 
 const rules = {
   username: [
@@ -113,18 +147,17 @@ const getRoleLabel = (role) => {
   const map = {
     admin: '超级管理员',
     buyer_manager: '采购部经理',
-    buyer: '采购员'
+    buyer: '采购员',
+    scorer: '考核专员'
   }
   return map[role] || role
 }
 
 const getRoleTagType = (role) => {
-  const map = {
-    admin: 'danger',
-    buyer_manager: 'warning',
-    buyer: 'primary'
-  }
-  return map[role] || 'info'
+  if (role === 'admin') return 'danger'
+  if (role === 'buyer_manager') return 'warning'
+  if (role === 'scorer') return ''
+  return 'primary'
 }
 
 const fetchUsers = async () => {
@@ -144,11 +177,12 @@ const resetForm = () => {
   if (formRef.value) {
     formRef.value.resetFields()
   }
+  const isSuperAdmin = currentUserRole.value === 'admin'
   form.value = {
     username: '',
     password: '',
     role: 'buyer',
-    department: '采购部'
+    department: isSuperAdmin ? '' : '采购部'
   }
 }
 

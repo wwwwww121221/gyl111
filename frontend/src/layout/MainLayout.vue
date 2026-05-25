@@ -20,57 +20,64 @@
           active-text-color="var(--primary-color)"
           router
         >
-          <el-sub-menu index="/inquiries" class="sub-menu">
-            <template #title>
-              <el-icon class="menu-icon"><List /></el-icon>
-              <span class="menu-text">询价管理</span>
-            </template>
-            <el-menu-item index="/inquiries/requests" class="submenu-item">采购申请列表</el-menu-item>
-            <el-menu-item index="/inquiries/compare" class="submenu-item">智能比价工作台</el-menu-item>
-            <el-menu-item index="/inquiries/tasks" class="submenu-item">询价任务</el-menu-item>
-            <el-menu-item index="/inquiries/contracts" class="submenu-item">合同管理</el-menu-item>
-            <el-menu-item index="/inquiries/templates" class="submenu-item">模板设置</el-menu-item>
-          </el-sub-menu>
+          <template v-if="!isScoringOnlyUser">
+            <el-sub-menu index="/inquiries" class="sub-menu">
+              <template #title>
+                <el-icon class="menu-icon"><List /></el-icon>
+                <span class="menu-text">询价管理</span>
+              </template>
+              <el-menu-item index="/inquiries/requests" class="submenu-item">采购申请列表</el-menu-item>
+              <el-menu-item index="/inquiries/compare" class="submenu-item">智能比价工作台</el-menu-item>
+              <el-menu-item index="/inquiries/tasks" class="submenu-item">询价任务</el-menu-item>
+              <el-menu-item index="/inquiries/contracts" class="submenu-item">合同管理</el-menu-item>
+              <el-menu-item index="/inquiries/templates" class="submenu-item">模板设置</el-menu-item>
+            </el-sub-menu>
 
-          <el-sub-menu index="/dashboard" class="sub-menu">
-            <template #title>
-              <el-icon class="menu-icon"><DataBoard /></el-icon>
-              <span class="menu-text">预警管理</span>
-            </template>
-            <el-menu-item index="/dashboard/supplier" class="submenu-item">供应商预警</el-menu-item>
-            <el-menu-item index="/dashboard/warehouse" class="submenu-item">仓库预警</el-menu-item>
-          </el-sub-menu>
+            <el-sub-menu index="/dashboard" class="sub-menu">
+              <template #title>
+                <el-icon class="menu-icon"><DataBoard /></el-icon>
+                <span class="menu-text">预警管理</span>
+              </template>
+              <el-menu-item index="/dashboard/supplier" class="submenu-item">供应商预警</el-menu-item>
+              <el-menu-item index="/dashboard/warehouse" class="submenu-item">仓库预警</el-menu-item>
+            </el-sub-menu>
 
-          <el-sub-menu index="/analysis" class="sub-menu">
-            <template #title>
-              <el-icon class="menu-icon"><PieChart /></el-icon>
-              <span class="menu-text">统计分析</span>
-            </template>
-            <el-menu-item index="/analysis/supplier" class="submenu-item">供应商分析</el-menu-item>
-            <el-menu-item index="/analysis/material" class="submenu-item">物料分析</el-menu-item>
-            <el-menu-item v-if="isAdminLike" index="/analysis/buyer" class="submenu-item">采购员分析</el-menu-item>
-          </el-sub-menu>
+            <el-sub-menu index="/analysis" class="sub-menu">
+              <template #title>
+                <el-icon class="menu-icon"><PieChart /></el-icon>
+                <span class="menu-text">统计分析</span>
+              </template>
+              <el-menu-item index="/analysis/supplier" class="submenu-item">供应商分析</el-menu-item>
+              <el-menu-item index="/analysis/material" class="submenu-item">物料分析</el-menu-item>
+              <el-menu-item v-if="isAdminLike" index="/analysis/buyer" class="submenu-item">采购员分析</el-menu-item>
+            </el-sub-menu>
 
-          <el-sub-menu index="/suppliers" class="sub-menu">
-            <template #title>
-              <el-icon class="menu-icon"><User /></el-icon>
-              <span class="menu-text">供应商管理</span>
-            </template>
-            <el-menu-item index="/suppliers/pending" class="submenu-item">待审核供应商</el-menu-item>
-            <el-menu-item index="/suppliers/manage" class="submenu-item">供应商名册</el-menu-item>
-            <el-menu-item v-if="canManageAssessment" index="/suppliers/assessment" class="submenu-item">考核管理</el-menu-item>
-            <el-menu-item index="/suppliers/assessment-scoring" class="submenu-item">部门打分</el-menu-item>
-            <el-menu-item index="/suppliers/assessment-summary" class="submenu-item">考核汇总</el-menu-item>
-          </el-sub-menu>
+            <el-sub-menu index="/suppliers" class="sub-menu">
+              <template #title>
+                <el-icon class="menu-icon"><User /></el-icon>
+                <span class="menu-text">供应商管理</span>
+              </template>
+              <el-menu-item index="/suppliers/pending" class="submenu-item">待审核供应商</el-menu-item>
+              <el-menu-item index="/suppliers/manage" class="submenu-item">供应商名册</el-menu-item>
+              <el-menu-item v-if="canManageAssessment" index="/suppliers/assessment" class="submenu-item">考核管理</el-menu-item>
+              <el-menu-item index="/suppliers/assessment-scoring" class="submenu-item">部门打分</el-menu-item>
+              <el-menu-item index="/suppliers/assessment-summary" class="submenu-item">考核汇总</el-menu-item>
+            </el-sub-menu>
 
-          <el-sub-menu index="/system" class="sub-menu" v-if="isAdminLike">
-            <template #title>
-              <el-icon class="menu-icon"><Setting /></el-icon>
-              <span class="menu-text">系统管理</span>
-            </template>
-            <el-menu-item index="/system/users" class="submenu-item">账号管理</el-menu-item>
-            <el-menu-item index="/system/logs" class="submenu-item">操作日志</el-menu-item>
-          </el-sub-menu>
+            <el-sub-menu index="/system" class="sub-menu" v-if="isAdminLike">
+              <template #title>
+                <el-icon class="menu-icon"><Setting /></el-icon>
+                <span class="menu-text">系统管理</span>
+              </template>
+              <el-menu-item index="/system/users" class="submenu-item">账号管理</el-menu-item>
+              <el-menu-item index="/system/logs" class="submenu-item">操作日志</el-menu-item>
+            </el-sub-menu>
+          </template>
+
+          <el-menu-item v-if="isScoringOnlyUser" index="/suppliers/assessment-scoring" class="submenu-item">
+            <el-icon class="menu-icon"><EditPen /></el-icon>
+            <span class="menu-text">部门打分</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
 
@@ -88,7 +95,7 @@
             <el-dropdown trigger="click">
               <span class="el-dropdown-link">
                 {{ roleLabel }}
-                <span v-if="userDepartment">-{{ userDepartment }}</span>
+                <span v-if="userDepartment && userRole !== 'admin'">-{{ userDepartment }}</span>
                 <span v-if="userName">({{ userName }})</span>
                 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </span>
@@ -115,7 +122,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, DataBoard, Expand, List, PieChart, Setting, User } from '@element-plus/icons-vue'
+import { ArrowDown, DataBoard, Expand, List, PieChart, Setting, User, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
@@ -128,10 +135,15 @@ const userDepartment = computed(() => localStorage.getItem('department') || '')
 const isAdminLike = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
 const canManageAssessment = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
 
+const isScoringOnlyUser = computed(() => {
+  return userRole.value === 'scorer' && !isAdminLike.value
+})
+
 const roleLabel = computed(() => {
   if (userRole.value === 'admin') return '超级管理员'
-  if (userRole.value === 'buyer_manager') return '采购部经理'
+  if (userRole.value === 'buyer_manager') return '采购经理'
   if (userRole.value === 'buyer') return '采购员'
+  if (userRole.value === 'scorer') return '考核专员'
   return userRole.value || '未知角色'
 })
 

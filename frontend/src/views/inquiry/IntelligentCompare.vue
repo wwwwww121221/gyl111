@@ -45,7 +45,7 @@
           <div class="section-header">
             <h3 class="section-title">历史价格</h3>
           </div>
-          <el-table :data="activeMaterial.historyStats" style="width: 100%" class="custom-table mb-4" v-loading="historyLoading">
+          <el-table :data="activeMaterial.historyStats" style="width: 100%" class="custom-table mb-4" v-loading="historyLoading" border>
             <el-table-column type="index" label="#" width="50" align="center" />
             <el-table-column prop="supplier_name" label="供应商名称" min-width="180" />
             <el-table-column label="含税单价" width="140" align="center">
@@ -73,7 +73,7 @@
               补充供应商
             </el-button>
           </div>
-          <el-table :data="currentComparison" style="width: 100%" class="custom-table mb-4">
+          <el-table :data="currentComparison" style="width: 100%" class="custom-table mb-4" border>
             <el-table-column type="index" label="#" width="50" align="center" />
             <el-table-column prop="name" label="供应商名称" min-width="240">
               <template #default="scope">
@@ -232,7 +232,7 @@
               <span class="qty-value">{{ activeMaterial?.qty || 0 }}</span>
             </div>
 
-            <el-table :data="currentComparison" class="custom-table allocation-table" style="width: 100%">
+            <el-table :data="currentComparison" class="custom-table allocation-table" style="width: 100%" border>
               <el-table-column prop="name" label="供应商名称" min-width="180" />
               <el-table-column label="业务标签" min-width="220">
                 <template #default="scope">

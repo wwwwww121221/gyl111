@@ -21,6 +21,11 @@ from schemas import (
 from routers.auth import oauth2_scheme, login_access_token # reuse auth but simpler dependency
 from services.negotiation_service import calculate_supplier_scores
 from services.contract_service import _find_soffice_executable, _import_win32_modules
+from services.wechat_service import (
+    notify_contract_confirm,
+    notify_inquiry_result,
+    notify_new_inquiry_invitation,
+)
 
 # 简单的用户获取依赖
 from jose import jwt, JWTError
@@ -400,6 +405,21 @@ def _ensure_task_supplier_links(db: Session, task: InquiryTask) -> None:
 
 def _get_task_activated_status(task: InquiryTask) -> str:
     return TaskStatus.PENDING_FILL if task.type == "manual" else TaskStatus.ACTIVE
+
+
+def _send_task_invitation_notifications(db: Session, task: InquiryTask, supplier_ids: list[int]) -> None:
+    for supplier_id in supplier_ids or []:
+        supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier:
+            continue
+        try:
+            notify_new_inquiry_invitation(db, task, supplier)
+        except Exception:
+            logger.exception(
+                "新询价邀请微信通知发送失败, task_id=%s, supplier_id=%s",
+                task.id,
+                supplier_id,
+            )
 
 
 def _revert_task_request_statuses(task: InquiryTask) -> None:
@@ -1122,6 +1142,8 @@ def create_inquiry_task(
             "has_buyer_comment": bool(buyer_comment)
         }
     )
+    if task_level_supplier_ids and not approval_required:
+        _send_task_invitation_notifications(db, new_task, sorted(task_level_supplier_ids))
     
     return new_task
 
@@ -1168,6 +1190,10 @@ def add_supplier_to_task(
     )
     db.add(new_link)
     db.commit()
+    try:
+        notify_new_inquiry_invitation(db, task, supplier)
+    except Exception:
+        logger.exception("新增供应商后微信通知发送失败, task_id=%s, supplier_id=%s", task.id, supplier.id)
     
     return {
         "message": "Supplier added successfully",
@@ -1749,7 +1775,7 @@ def close_inquiry_task(
                 contract_record = Contract(
                     task_id=task.id,
                     inquiry_supplier_id=link.id,
-                    status="待供应商填写"
+                    status="pending_supplier_fill",
                 )
             contract_record.total_amount = total_amount
             if active_template:
@@ -1761,6 +1787,46 @@ def close_inquiry_task(
             db.add(contract_record)
 
     db.commit()
+    for link in task.suppliers:
+        supplier = getattr(link, "supplier", None)
+        if not supplier:
+            continue
+        try:
+            if link.status == LinkStatus.DEAL:
+                notify_inquiry_result(
+                    db,
+                    task,
+                    supplier,
+                    result_text="中标",
+                    remark="恭喜您中标，请尽快登录系统查看并处理后续合同。",
+                )
+                notify_contract_confirm(
+                    db,
+                    task,
+                    supplier,
+                    contract_no=f"CT-{task.id:06d}-{link.id:04d}",
+                    status_text="待确认",
+                    remark="合同已生成，请登录系统完善并确认合同信息。",
+                )
+            elif not allocation_map:
+                notify_inquiry_result(
+                    db,
+                    task,
+                    supplier,
+                    result_text="流标结束",
+                    remark="本次询价已流标结束，感谢您的参与。",
+                )
+            else:
+                notify_inquiry_result(
+                    db,
+                    task,
+                    supplier,
+                    result_text="未中标",
+                    remark="本次询价已结束，感谢您的参与。",
+                )
+        except Exception:
+            logger.exception("询价结果或合同通知发送失败, task_id=%s, link_id=%s", task.id, link.id)
+
     return {
         "message": "Task closed successfully.",
         "deal_link_ids": sorted(allocation_map.keys()),
@@ -1777,40 +1843,45 @@ def approve_inquiry_task(
     request: Request = None
 ) -> Any:
     if not _is_admin_like(current_user):
-        raise HTTPException(status_code=403, detail="只有采购部经理或超级管理员可以审批")
+        raise HTTPException(status_code=403, detail="Only buyer managers or admins can approve tasks")
 
     task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status not in [TaskStatus.PENDING_APPROVAL, TaskStatus.APPROVAL_REJECTED]:
-        raise HTTPException(status_code=400, detail="当前任务不在待审批状态")
+        raise HTTPException(status_code=400, detail="Task is not pending approval")
 
     _ensure_task_supplier_links(db, task)
     task.status = _get_task_activated_status(task)
     task.approved_by = current_user.id
     task.approved_at = datetime.now()
-    task.approval_comment = (payload.comment or "").strip() or "审批通过"
+    task.approval_comment = (payload.comment or "").strip() or "Approved"
     db.commit()
 
     from routers.system import log_operation
+
     log_operation(
         db,
         current_user.id,
         "APPROVE_INQUIRY",
-        f"审批通过询价单: {task.title}",
+        f"Approved inquiry task: {task.title}",
         request=request,
-        module="询价审批",
-        target_type="询价任务",
+        module="Inquiry Approval",
+        target_type="Inquiry Task",
         target_name=task.title,
         result="success",
         extra_data={
             "task_id": task.id,
             "task_type": task.type,
             "buyer_name": task.buyer.username if task.buyer else None,
-            "comment": task.approval_comment
-        }
+            "comment": task.approval_comment,
+        },
     )
-    return {"message": "审批通过，任务已进入正式询价流程。"}
+    pending_supplier_ids = _get_task_pending_supplier_ids(task)
+    if pending_supplier_ids:
+        _send_task_invitation_notifications(db, task, pending_supplier_ids)
+    return {"message": "Task approved and moved into the inquiry workflow."}
+
 
 
 @router.post("/tasks/{task_id}/reject")

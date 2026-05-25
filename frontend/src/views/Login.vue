@@ -287,7 +287,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
 import api from '../api'
 
 const router = useRouter()
@@ -499,7 +498,7 @@ const handleInternalLogin = async () => {
     formData.append('username', internalForm.username)
     formData.append('password', internalForm.password)
 
-    const { data } = await axios.post('/api/auth/login', formData, {
+    const { data } = await api.post('/auth/login', formData, {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },

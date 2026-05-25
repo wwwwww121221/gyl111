@@ -42,6 +42,7 @@ from services.supplier_access import (
     normalize_phone,
     resolve_supplier_access,
 )
+from services.wechat_service import notify_member_review_result
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
@@ -397,6 +398,17 @@ def supplier_wechat_bind(
     return {"message": "微信绑定成功"}
 
 
+@router.post("/wechat-bind")
+def bind_current_user_wechat(
+    payload: SupplierWechatBindRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    _bind_openid_if_needed(db, current_user, payload.openid)
+    db.commit()
+    return {"message": "微信绑定成功", "openid": current_user.openid}
+
+
 @router.get("/supplier/companies/search")
 def search_supplier_companies(
     keyword: str = Query(..., min_length=1),
@@ -552,13 +564,10 @@ def supplier_join_request(
     verify_sms_code(phone, "join", payload.sms_code)
 
     approval_mode = "supplier_admin"
-    if False and approval_mode not in {"platform_admin", "supplier_admin"}:
-        raise HTTPException(status_code=400, detail="审核方式不支持")
-
     company_name = (payload.company_name or "").strip()
     social_credit_code = (payload.social_credit_code or "").strip()
     if not company_name and not social_credit_code:
-        raise HTTPException(status_code=400, detail="请填写公司名称或统一社会信用代码")
+        raise HTTPException(status_code=400, detail="Please provide a company name or social credit code")
 
     supplier_query = db.query(Supplier).filter(Supplier.status == "approved")
     if social_credit_code:
@@ -567,7 +576,7 @@ def supplier_join_request(
         supplier_query = supplier_query.filter(Supplier.name == company_name)
     supplier = supplier_query.first()
     if not supplier:
-        raise HTTPException(status_code=404, detail="未找到可加入的已审核供应商企业")
+        raise HTTPException(status_code=404, detail="Approved supplier not found")
 
     user = _get_or_create_supplier_user(
         db,
@@ -585,9 +594,9 @@ def supplier_join_request(
         .first()
     )
     if existing_member and existing_member.status == "active":
-        raise HTTPException(status_code=400, detail="您已是该供应商企业成员")
+        raise HTTPException(status_code=400, detail="You are already a member of this supplier")
     if existing_member and existing_member.status == "pending":
-        raise HTTPException(status_code=400, detail="您已提交加入申请，请等待审核")
+        raise HTTPException(status_code=400, detail="Your join request is already pending")
 
     member = existing_member or SupplierMember(
         supplier_id=supplier.id,
@@ -608,12 +617,13 @@ def supplier_join_request(
     db.commit()
 
     return {
-        "message": "加入申请已提交，请等待审核",
+        "message": "Join request submitted successfully",
         "supplier_id": supplier.id,
         "supplier_name": supplier.name,
         "member_status": member.status,
         "approval_mode": member.approval_mode,
     }
+
 
 
 @router.get("/supplier/member-requests")
@@ -677,24 +687,24 @@ def review_supplier_member_request(
 ) -> Any:
     member = db.query(SupplierMember).filter(SupplierMember.id == member_id).first()
     if not member:
-        raise HTTPException(status_code=404, detail="成员申请不存在")
+        raise HTTPException(status_code=404, detail="Member request not found")
 
     _require_supplier_member_reviewer(db, current_user, member)
 
     if member.status != "pending":
-        raise HTTPException(status_code=400, detail="该申请已处理")
+        raise HTTPException(status_code=400, detail="This request has already been processed")
 
     supplier = db.query(Supplier).filter(Supplier.id == member.supplier_id).first()
     if not supplier:
-        raise HTTPException(status_code=404, detail="供应商不存在")
+        raise HTTPException(status_code=404, detail="Supplier not found")
 
     review_status = (payload.status or "").strip().lower()
     if review_status not in {"approved", "rejected"}:
-        raise HTTPException(status_code=400, detail="审核结果不支持")
+        raise HTTPException(status_code=400, detail="Unsupported review status")
 
     if review_status == "approved":
         if supplier.status != "approved":
-            raise HTTPException(status_code=400, detail="企业尚未审核通过，暂不能激活成员")
+            raise HTTPException(status_code=400, detail="Supplier has not been approved yet")
         member.status = "active"
         member.role = (payload.role or member.role or "member").strip()
     else:
@@ -706,13 +716,25 @@ def review_supplier_member_request(
     db.add(member)
     db.commit()
 
+    review_user = db.query(User).filter(User.id == member.user_id).first()
+    if review_user:
+        try:
+            notify_member_review_result(
+                user=review_user,
+                supplier_name=supplier.name,
+                member_name=member.member_name or review_user.username,
+                review_status=review_status,
+                remark=member.review_comment,
+            )
+        except Exception:
+            pass
+
     return {
-        "message": "成员申请处理成功",
+        "message": "Member request reviewed successfully",
         "id": member.id,
         "status": member.status,
         "role": member.role,
     }
-
 
 @router.post("/supplier/transfer-admin")
 def transfer_supplier_admin(

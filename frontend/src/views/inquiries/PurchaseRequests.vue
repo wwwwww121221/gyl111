@@ -435,7 +435,7 @@
 <script setup>
 import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { createInquiryTask, syncErpRequisitions, uploadInquiryAttachment } from '../../api/inquiry'
-import api from '../../api/index'
+import api, { getApiOrigin } from '../../api/index'
 import { ElMessage } from 'element-plus'
 import { Download, Search } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
@@ -1175,7 +1175,7 @@ const formatDate = (dateStr) => {
 const beforeAttachmentUpload = () => false
 
 const getAttachmentBaseUrl = () => {
-  return (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+  return getApiOrigin()
 }
 
 const normalizeAttachmentUrl = (filePath) => {

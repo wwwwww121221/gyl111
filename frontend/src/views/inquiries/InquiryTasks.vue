@@ -780,7 +780,7 @@
 import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getInquiryTasks, addSupplierToTask, getTaskDetails, closeInquiryTask, updateTaskStatus, approveInquiryTask, rejectInquiryTask, resubmitInquiryTask } from '../../api/inquiry'
-import api from '../../api/index'
+import api, { getApiOrigin } from '../../api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, DocumentCopy, Search, Warning } from '@element-plus/icons-vue'
 
@@ -1126,7 +1126,7 @@ const formatDate = (dateStr) => {
 }
 
 const getAttachmentBaseUrl = () => {
-  return (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+  return getApiOrigin()
 }
 
 const normalizeAttachmentUrl = (filePath) => {

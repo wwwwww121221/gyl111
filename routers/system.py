@@ -1,12 +1,29 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Any, List
 from datetime import datetime
 from models import get_db, User, OperationLog, InquiryTask, Contract, WarningMessage, Supplier
 from routers.auth import get_current_user_auth
 from sqlalchemy import func, or_
+from core.config import settings
+from services.wechat_service import (
+    build_wechat_menu_payload,
+    build_wechat_oauth_entry_url,
+    get_wechat_menu,
+    is_wechat_configured,
+    send_wechat_test_notification,
+    sync_wechat_menu,
+)
 
 router = APIRouter()
+
+
+class WechatTestSendPayload(BaseModel):
+    openid: str | None = None
+    subject: str | None = None
+    result_text: str | None = None
+    remark: str | None = None
 
 
 def _is_admin_like(user: User | None) -> bool:
@@ -260,3 +277,109 @@ def get_buyer_analysis(
         })
         
     return result
+
+
+@router.get("/wechat/status")
+def get_wechat_status(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    login_url = None
+    register_url = None
+    if is_wechat_configured() and settings.WECHAT_VERIFY_URL:
+        try:
+            login_url = build_wechat_oauth_entry_url("login")
+            register_url = build_wechat_oauth_entry_url("register")
+        except Exception:
+            login_url = None
+            register_url = None
+
+    return {
+        "configured": is_wechat_configured(),
+        "app_id": settings.WECHAT_APP_ID,
+        "verify_url": settings.WECHAT_VERIFY_URL,
+        "oauth_start_login_url": login_url or "/wechat/oauth/start?target=login",
+        "oauth_start_register_url": register_url or "/wechat/oauth/start?target=register",
+        "menu_preview": build_wechat_menu_payload() if login_url and register_url else None,
+        "current_user_openid": current_user.openid,
+        "current_user_openid_bound": bool(str(current_user.openid or "").strip()),
+    }
+
+
+@router.post("/wechat/test-send")
+def send_wechat_test_message(
+    payload: WechatTestSendPayload,
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    target_openid = str(payload.openid or current_user.openid or "").strip()
+    if not target_openid:
+        raise HTTPException(status_code=400, detail="Current user has no bound openid")
+
+    try:
+        result = send_wechat_test_notification(
+            openid=target_openid,
+            subject=payload.subject or current_user.username or "System Test",
+            result_text=payload.result_text or "Sent",
+            remark=payload.remark or "If you received this message, WeChat template messaging is working.",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "message": "WeChat test message sent successfully",
+        "openid": target_openid,
+        "wechat_result": result,
+    }
+
+
+@router.get("/wechat/menu-preview")
+def get_wechat_menu_preview(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="Only admin users can preview WeChat menu settings")
+
+    try:
+        payload = build_wechat_menu_payload()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "message": "WeChat menu preview generated successfully",
+        "menu": payload,
+    }
+
+
+@router.get("/wechat/menu")
+def read_wechat_menu(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="Only admin users can view WeChat menu settings")
+
+    try:
+        result = get_wechat_menu()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "message": "WeChat menu fetched successfully",
+        "wechat_result": result,
+    }
+
+
+@router.post("/wechat/menu/sync")
+def update_wechat_menu(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="Only admin users can sync WeChat menu settings")
+
+    try:
+        result = sync_wechat_menu()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "message": "WeChat menu synced successfully",
+        **result,
+    }

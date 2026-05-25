@@ -6,6 +6,7 @@ import logging
 from sqlalchemy.orm import Session
 from models import get_db, WarningMessage, Supplier, User, Material
 from routers.inquiry import get_current_user
+from services.wechat_service import notify_warning_message
 
 # 引用现有的 ERP 业务逻辑
 from kingdee_erp_tool.services.inventory import get_inventory_warning_data
@@ -132,6 +133,26 @@ def send_warning_to_supplier(
     )
     db.add(msg)
     db.commit()
+    latest_delivery = None
+    if req.items:
+        delivery_values = [
+            str(item.get("delivery_date") or "").strip()
+            for item in req.items
+            if item.get("delivery_date")
+        ]
+        if delivery_values:
+            latest_delivery = sorted(delivery_values)[0]
+
+    try:
+        notify_warning_message(
+            db,
+            supplier,
+            latest_delivery=latest_delivery,
+            item_count=len(req.items or []),
+            buyer_name=current_user.username,
+        )
+    except Exception:
+        logger.exception("发货预警微信通知发送失败, supplier_id=%s", supplier.id)
     
     from routers.system import log_operation
     log_operation(

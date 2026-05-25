@@ -27,6 +27,7 @@ from services.attachment_preview import enrich_attachment_list
 from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
 from services.supplier_access import get_supplier_context_for_portal, get_supplier_context_for_user
+from services.wechat_service import notify_supplier_onboarding_result
 import logging
 from routers.inquiry import get_current_user
 from core.security import get_password_hash
@@ -973,6 +974,17 @@ def update_supplier(
     )
 
     _invalidate_supplier_cache()
+    if review_status:
+        try:
+            notify_supplier_onboarding_result(
+                db,
+                supplier,
+                review_status=review_status,
+                review_comment=review_comment,
+            )
+        except Exception:
+            logger.exception("供应商审核结果微信通知发送失败, supplier_id=%s", supplier.id)
+
     return {
         "message": "Supplier updated successfully",
         "id": supplier.id,

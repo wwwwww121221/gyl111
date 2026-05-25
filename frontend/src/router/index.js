@@ -6,6 +6,7 @@ import Login from '../views/Login.vue'
 import MainLayout from '../layout/MainLayout.vue'
 import Register from '../views/Register.vue'
 import SupplierLayout from '../layout/SupplierLayout.vue'
+import WechatCallback from '../views/WechatCallback.vue'
 
 const clearAuth = () => {
   localStorage.removeItem('token')
@@ -69,6 +70,12 @@ const routes = [
     path: '/register',
     name: 'Register',
     component: Register,
+    meta: { requiresAuth: false }
+  },
+  {
+    path: '/wechat/callback',
+    name: 'WechatCallback',
+    component: WechatCallback,
     meta: { requiresAuth: false }
   },
   {

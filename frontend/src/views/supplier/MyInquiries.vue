@@ -350,7 +350,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
-import api from '../../api/index'
+import api, { getApiOrigin } from '../../api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, ChatLineRound } from '@element-plus/icons-vue'
 
@@ -528,7 +528,7 @@ const handleViewContract = (row) => {
     ElMessage.warning('合同文件尚未生成，请稍后重试')
     return
   }
-  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  const baseUrl = getApiOrigin()
   const contractUrl = contractPath.startsWith('http') ? contractPath : `${baseUrl}${contractPath}`
   const cacheBypass = contractUrl.includes('?') ? '&_t=' : '?_t='
   window.open(`${contractUrl}${cacheBypass}${Date.now()}`, '_blank')
@@ -620,7 +620,7 @@ const formatDate = (row, column, cellValue) => {
 }
 
 const getAttachmentBaseUrl = () => {
-  return (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+  return getApiOrigin()
 }
 
 const normalizeAttachmentUrl = (filePath) => {

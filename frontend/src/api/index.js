@@ -17,12 +17,18 @@ const api = axios.create({
   timeout: 60000,
 })
 
-const getAssetOrigin = () => {
+export const getApiOrigin = () => {
   if (typeof window === 'undefined') return ''
+  const configuredOrigin = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '')
+  if (configuredOrigin) return configuredOrigin
   if (import.meta.env.DEV) {
     return `${window.location.protocol}//${window.location.hostname}:8000`
   }
-  return window.location.origin
+  return window.location.origin.replace(/\/$/, '')
+}
+
+const getAssetOrigin = () => {
+  return getApiOrigin()
 }
 
 export const resolveAssetUrl = (path) => {

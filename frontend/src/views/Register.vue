@@ -150,7 +150,6 @@
 import { onBeforeUnmount, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
 import api from '../api'
 
 const router = useRouter()
@@ -253,7 +252,7 @@ const showSmsDebugIfNeeded = (data) => {
 const sendSceneCode = async (phone, scene, countdownRef) => {
   smsSending.value = true
   try {
-    const res = await axios.post('/api/auth/supplier/send-sms-code', { phone, scene })
+    const res = await api.post('/auth/supplier/send-sms-code', { phone, scene })
     showSmsDebugIfNeeded(res.data)
     ElMessage.success(res.data.message || '验证码已发送')
     startCountdown(countdownRef)

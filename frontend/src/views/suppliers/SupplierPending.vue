@@ -144,7 +144,7 @@ const getAuditStatusTagType = (row) => {
   if (auditStatus === 'returned' || auditStatus === 'change_returned') return 'warning'
   if (auditStatus === 'approved') return 'success'
   if (auditStatus === 'rejected') return 'danger'
-  return ''
+  return 'info'
 }
 
 const canApprove = (row) => {

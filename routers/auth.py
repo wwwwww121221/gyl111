@@ -563,14 +563,6 @@ def supplier_join_request(
     phone = validate_phone_or_raise(payload.phone)
     verify_sms_code(phone, "join", payload.sms_code)
 
-    approval_mode = "supplier_admin"
-    has_active_member = db.query(SupplierMember).filter(
-        SupplierMember.supplier_id == supplier.id,
-        SupplierMember.status == "active",
-    ).first()
-    if not has_active_member:
-        approval_mode = "platform_admin"
-
     company_name = (payload.company_name or "").strip()
     social_credit_code = (payload.social_credit_code or "").strip()
     if not company_name and not social_credit_code:
@@ -584,6 +576,14 @@ def supplier_join_request(
     supplier = supplier_query.first()
     if not supplier:
         raise HTTPException(status_code=404, detail="Approved supplier not found")
+
+    approval_mode = "supplier_admin"
+    has_active_member = db.query(SupplierMember).filter(
+        SupplierMember.supplier_id == supplier.id,
+        SupplierMember.status == "active",
+    ).first()
+    if not has_active_member:
+        approval_mode = "platform_admin"
 
     user = _get_or_create_supplier_user(
         db,

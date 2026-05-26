@@ -13,7 +13,7 @@
           <div class="brand-mark">SCM</div>
           <div class="brand-name">JULAN</div>
         </div>
-        <h1>供应商<br/>协同平台</h1>
+        <h1>供应商<br />协同平台</h1>
         <p>统一的供应商登录入口，支持密码登录、短信验证码登录，以及手机号验证码找回密码。</p>
         <div class="hero-features">
           <div class="feature-item">
@@ -52,6 +52,13 @@
           :closable="false"
           class="wechat-alert"
         />
+
+        <div v-if="!isInternalMode && !hasOpenid" class="wechat-bind-entry">
+          <span class="wechat-bind-copy">当前页面未带微信身份，首次绑定请先完成微信授权。</span>
+          <el-button type="success" plain @click="startWechatBind('login')">
+            微信授权绑定
+          </el-button>
+        </div>
 
         <div v-if="!isInternalMode" class="mode-tabs">
           <div class="mode-tabs-indicator" :class="{ 'indicator-right': activeTab === 'supplier-sms' }"></div>
@@ -221,7 +228,7 @@
         </transition>
 
         <div class="footer-actions">
-          <el-button link type="primary" @click="router.push('/register')">
+          <el-button link type="primary" @click="pushWithOpenid('/register')">
             创建新供应商入驻 / 申请加入已有供应商
           </el-button>
           <el-button link @click="togglePortal">
@@ -287,7 +294,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import api from '../api'
+import api, { getApiOrigin } from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -334,6 +341,8 @@ const resetForm = reactive({
 })
 
 const isInternalMode = computed(() => activeTab.value === 'internal')
+const getOpenid = () => String(route.query.openid || '').trim()
+const hasOpenid = computed(() => Boolean(getOpenid()))
 
 const phoneValidator = (_, value, callback) => {
   if (!/^1[3-9]\d{9}$/.test(String(value || '').trim())) {
@@ -380,7 +389,15 @@ const resetRules = {
   confirm_password: [{ required: true, validator: confirmPasswordValidator, trigger: 'blur' }],
 }
 
-const getOpenid = () => String(route.query.openid || '').trim()
+const pushWithOpenid = (path) => {
+  const openid = getOpenid()
+  router.push(openid ? { path, query: { openid } } : { path })
+}
+
+const startWechatBind = (target = 'login') => {
+  const normalizedTarget = target === 'register' ? 'register' : 'login'
+  window.location.href = `${getApiOrigin()}/wechat/oauth/start?target=${normalizedTarget}`
+}
 
 const persistLogin = (payload, fallbackUsername = '') => {
   localStorage.setItem('token', payload.access_token || '')
@@ -665,103 +682,94 @@ onBeforeUnmount(() => {
 .hero-inner {
   position: relative;
   z-index: 1;
-  width: min(560px, 100%);
-  color: #ffffff;
+  max-width: 480px;
+  color: #fff;
 }
 
 .brand-row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 48px;
+  gap: 14px;
+  margin-bottom: 28px;
 }
 
 .brand-mark {
-  width: 62px;
-  height: 62px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.25);
   font-size: 18px;
   font-weight: 800;
-  letter-spacing: 1px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  letter-spacing: 0.06em;
 }
 
 .brand-name {
-  font-size: 30px;
+  font-size: 20px;
   font-weight: 700;
-  letter-spacing: 8px;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  letter-spacing: 0.12em;
 }
 
 .hero-inner h1 {
-  margin: 0 0 20px;
-  font-size: clamp(44px, 5vw, 72px);
-  line-height: 1.1;
-  font-weight: 800;
-  letter-spacing: -1px;
-  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  margin: 0;
+  font-size: clamp(42px, 6vw, 68px);
+  line-height: 0.96;
+  letter-spacing: -0.04em;
 }
 
 .hero-inner p {
-  margin: 0 0 40px;
-  max-width: 440px;
-  font-size: 18px;
+  margin: 24px 0 0;
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 16px;
   line-height: 1.8;
-  color: rgba(255, 255, 255, 0.85);
 }
 
 .hero-features {
-  display: flex;
-  gap: 32px;
+  display: grid;
+  gap: 14px;
+  margin-top: 36px;
 }
 
 .feature-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 14px;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 500;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .feature-icon {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .feature-icon svg {
   width: 18px;
   height: 18px;
-  color: rgba(255, 255, 255, 0.9);
 }
 
 .auth-panel {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48px 32px;
-  background: #f8fafc;
+  padding: 28px;
+  background: rgba(248, 250, 252, 0.92);
+  backdrop-filter: blur(10px);
 }
 
 .auth-card {
-  width: min(480px, 100%);
-  background: #ffffff;
-  border-radius: 28px;
-  padding: 44px 40px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  width: min(520px, 100%);
+  padding: 34px 32px 28px;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.98);
   box-shadow:
     0 4px 6px -1px rgba(0, 0, 0, 0.05),
     0 20px 50px -12px rgba(30, 58, 138, 0.15);
@@ -794,6 +802,23 @@ onBeforeUnmount(() => {
   margin-top: 18px;
 }
 
+.wechat-bind-entry {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+}
+
+.wechat-bind-copy {
+  color: #166534;
+  line-height: 1.6;
+}
+
 .mode-tabs {
   position: relative;
   margin: 24px 0 28px;
@@ -807,14 +832,13 @@ onBeforeUnmount(() => {
 .mode-tabs-indicator {
   position: absolute;
   top: 4px;
+  bottom: 4px;
   left: 4px;
-  width: calc(50% - 4px);
-  height: calc(100% - 8px);
+  width: calc(50% - 6px);
+  border-radius: 10px;
   background: #ffffff;
-  border-radius: 11px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-  z-index: 0;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+  transition: transform 0.25s ease;
 }
 
 .mode-tabs-indicator.indicator-right {
@@ -825,23 +849,22 @@ onBeforeUnmount(() => {
   position: relative;
   z-index: 1;
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
   border: none;
   background: transparent;
+  padding: 12px 10px;
+  border-radius: 10px;
   color: #64748b;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   cursor: pointer;
-  padding: 10px 0;
-  border-radius: 11px;
-  transition: color 0.25s ease;
 }
 
 .mode-tab.active {
-  color: #1a56db;
+  color: #0f172a;
 }
 
 .tab-icon {
@@ -850,181 +873,90 @@ onBeforeUnmount(() => {
 }
 
 .login-form {
-  min-height: 0;
+  margin-top: 8px;
 }
 
 .login-form :deep(.el-form-item__label) {
-  font-weight: 600;
   color: #334155;
-  font-size: 14px;
-  padding-bottom: 4px;
-}
-
-.login-form :deep(.el-input__wrapper) {
-  border-radius: 12px;
-  padding: 4px 12px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  transition: all 0.25s ease;
-}
-
-.login-form :deep(.el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px #cbd5e1 inset;
-}
-
-.login-form :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px #1a56db inset;
-}
-
-.login-form :deep(.el-input__inner) {
-  font-size: 15px;
+  font-weight: 700;
 }
 
 .input-icon {
-  width: 18px;
-  height: 18px;
-  color: #94a3b8;
-  margin-right: 2px;
+  width: 17px;
+  height: 17px;
 }
 
 .sms-input-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
-  width: 100%;
-}
-
-.sms-input-row .el-input {
-  flex: 1;
 }
 
 .sms-btn {
-  flex-shrink: 0;
-  height: 40px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 600;
-  border: 1px solid #e2e8f0;
-  color: #1a56db;
-  background: #f8fafc;
-  transition: all 0.2s ease;
-}
-
-.sms-btn:hover:not(:disabled) {
-  background: #eef2ff;
-  border-color: #c7d2fe;
-}
-
-.sms-btn:disabled {
-  color: #94a3b8;
-  background: #f8fafc;
+  min-width: 120px;
 }
 
 .helper-row {
   display: flex;
   justify-content: flex-end;
-  margin-top: -8px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .submit-btn {
   width: 100%;
-  height: 52px;
-  margin-top: 8px;
+  height: 46px;
   border-radius: 14px;
-  font-size: 17px;
   font-weight: 700;
-  letter-spacing: 0.5px;
-  background: linear-gradient(135deg, #1a56db 0%, #2563eb 100%);
-  border: none;
-  box-shadow: 0 8px 24px rgba(26, 86, 219, 0.3);
-  transition: all 0.3s ease;
-}
-
-.submit-btn:hover {
-  background: linear-gradient(135deg, #1d4ed8 0%, #1a56db 100%);
-  box-shadow: 0 12px 32px rgba(26, 86, 219, 0.4);
-  transform: translateY(-1px);
-}
-
-.submit-btn:active {
-  transform: translateY(0);
-  box-shadow: 0 4px 16px rgba(26, 86, 219, 0.3);
 }
 
 .footer-actions {
-  margin-top: 24px;
+  margin-top: 20px;
   display: flex;
-  justify-content: center;
-  gap: 16px;
+  justify-content: space-between;
+  gap: 12px;
   flex-wrap: wrap;
-  padding-top: 20px;
-  border-top: 1px solid #f1f5f9;
 }
 
 .form-fade-enter-active,
 .form-fade-leave-active {
-  transition: all 0.25s ease;
+  transition: opacity 0.22s ease, transform 0.22s ease;
 }
 
-.form-fade-enter-from {
-  opacity: 0;
-  transform: translateX(12px);
-}
-
+.form-fade-enter-from,
 .form-fade-leave-to {
   opacity: 0;
-  transform: translateX(-12px);
+  transform: translateY(8px);
 }
 
 @media (max-width: 980px) {
   .login-page {
     grid-template-columns: 1fr;
-    background: linear-gradient(180deg, #0f172a 0%, #1e3a5f 50%, #1a56db 100%);
   }
 
   .hero-panel {
-    justify-content: flex-start;
-    padding: 40px 24px 20px;
-  }
-
-  .brand-row {
-    margin-bottom: 24px;
-  }
-
-  .hero-inner h1 {
-    font-size: 36px;
-  }
-
-  .hero-inner p {
-    max-width: none;
-    font-size: 15px;
-    margin-bottom: 20px;
-  }
-
-  .hero-features {
-    gap: 20px;
-  }
-
-  .feature-item {
-    font-size: 13px;
-  }
-
-  .feature-icon {
-    width: 32px;
-    height: 32px;
-  }
-
-  .feature-icon svg {
-    width: 16px;
-    height: 16px;
+    min-height: 260px;
+    padding: 36px 24px 12px;
   }
 
   .auth-panel {
-    padding: 12px 18px 28px;
+    padding: 20px 16px 28px;
+  }
+}
+
+@media (max-width: 640px) {
+  .auth-card {
+    padding: 24px 18px 20px;
+    border-radius: 22px;
   }
 
-  .auth-card {
-    padding: 28px 24px 24px;
-    border-radius: 22px;
+  .wechat-bind-entry,
+  .footer-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sms-input-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

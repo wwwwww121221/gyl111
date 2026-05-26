@@ -272,11 +272,12 @@ def build_wechat_frontend_route_url(path: str, query: Optional[dict[str, str]] =
 
 def build_wechat_bind_entry_url(openid: str | None = None, target: str = "login") -> str:
     normalized_target = "register" if str(target or "").strip().lower() == "register" else "login"
-    params = {"target": normalized_target}
+    target_path = "/register" if normalized_target == "register" else "/login"
+    params: dict[str, str] = {}
     normalized_openid = str(openid or "").strip()
     if normalized_openid:
         params["openid"] = normalized_openid
-    return build_wechat_frontend_route_url("/wechat/bind", params)
+    return build_wechat_frontend_route_url(target_path, params)
 
 
 def build_wechat_oauth_entry_url(target: str = "login") -> str:

@@ -6,6 +6,14 @@
         <p>首次合作请先完成基础注册；注册成功后可登录系统继续完善调查表与资质附件。</p>
       </div>
 
+      <div v-if="!hasOpenid()" class="wechat-bind-entry">
+        <span class="wechat-bind-copy">当前页面未带微信身份，首次入驻或加入供应商前请先完成微信授权。</span>
+        <div class="wechat-bind-actions">
+          <el-button type="success" plain @click="startWechatBind('register')">微信授权后入驻</el-button>
+          <el-button plain @click="startWechatBind('login')">微信授权后登录</el-button>
+        </div>
+      </div>
+
       <el-tabs v-model="activeTab" stretch>
         <el-tab-pane label="创建新供应商入驻" name="onboarding">
           <el-alert
@@ -140,7 +148,7 @@
       </el-tabs>
 
       <div class="bottom-link">
-        <el-button link type="primary" @click="router.push('/login')">返回登录</el-button>
+        <el-button link type="primary" @click="pushWithOpenid('/login')">返回登录</el-button>
       </div>
     </div>
   </div>
@@ -150,10 +158,24 @@
 import { onBeforeUnmount, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import api from '../api'
+import api, { getApiOrigin } from '../api'
 
 const router = useRouter()
 const route = useRoute()
+
+const getOpenid = () => String(route.query.openid || '').trim()
+
+const pushWithOpenid = (path) => {
+  const openid = getOpenid()
+  router.push(openid ? { path, query: { openid } } : { path })
+}
+
+const hasOpenid = () => Boolean(getOpenid())
+
+const startWechatBind = (target = 'register') => {
+  const normalizedTarget = target === 'login' ? 'login' : 'register'
+  window.location.href = `${getApiOrigin()}/wechat/oauth/start?target=${normalizedTarget}`
+}
 
 const activeTab = ref('onboarding')
 const onboardingRef = ref(null)
@@ -192,7 +214,7 @@ const joinForm = reactive({
 
 const phoneValidator = (_, value, callback) => {
   if (!/^1[3-9]\d{9}$/.test(String(value || '').trim())) {
-    callback(new Error('请输入有效的11位手机号'))
+    callback(new Error('请输入有效的 11 位手机号'))
     return
   }
   callback()
@@ -335,7 +357,7 @@ const submitOnboarding = async () => {
       openid: route.query.openid || undefined,
     })
     ElMessage.success('基础申请已提交，请登录系统继续完善调查表和资质附件')
-    router.push('/login')
+    pushWithOpenid('/login')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '提交失败')
   } finally {
@@ -363,7 +385,7 @@ const submitJoinRequest = async () => {
       openid: route.query.openid || undefined,
     })
     ElMessage.success('加入申请已提交，请等待供应商管理员审核')
-    router.push('/login')
+    pushWithOpenid('/login')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '提交失败')
   } finally {
@@ -412,6 +434,29 @@ onBeforeUnmount(() => {
   margin-bottom: 20px;
 }
 
+.wechat-bind-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+}
+
+.wechat-bind-copy {
+  color: #166534;
+  line-height: 1.6;
+}
+
+.wechat-bind-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .join-upload-tip {
   margin-top: 8px;
   color: #909399;
@@ -426,5 +471,16 @@ onBeforeUnmount(() => {
 .bottom-link {
   text-align: center;
   margin-top: 18px;
+}
+
+@media (max-width: 720px) {
+  .register-card {
+    padding: 22px 18px 18px;
+  }
+
+  .wechat-bind-entry {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>

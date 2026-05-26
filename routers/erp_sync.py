@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Any
 import logging
+from requests import exceptions as requests_exceptions
 
 from models import get_db, InquiryRequest, InquiryStatus
 from schemas import InquiryRequest as InquiryRequestSchema
@@ -61,9 +62,15 @@ def sync_purchase_requisitions(
         
         return display_items
         
+    except requests_exceptions.RequestException as e:
+        logger.exception("ERP sync request failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"无法连接 ERP 服务，请检查网络、代理或 ERP 地址配置。原始错误: {str(e)}"
+        )
     except Exception as e:
-        logger.error(f"Sync failed: {e}")
-        raise HTTPException(status_code=500, detail=f"ERP Sync failed: {str(e)}")
+        logger.exception("ERP sync failed")
+        raise HTTPException(status_code=500, detail=f"ERP 同步失败: {str(e)}")
 
 @router.get("/po_history")
 def get_po_history(
@@ -82,6 +89,12 @@ def get_po_history(
             months_back=months_back,
             limit=limit
         )
+    except requests_exceptions.RequestException as e:
+        logger.exception("ERP PO history request failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"无法连接 ERP 服务，请检查网络、代理或 ERP 地址配置。原始错误: {str(e)}"
+        )
     except Exception as e:
-        logger.error(f"Get PO history failed: {e}")
+        logger.exception("Get PO history failed")
         raise HTTPException(status_code=500, detail=f"Failed to fetch PO history: {str(e)}")

@@ -245,6 +245,31 @@ def get_wechat_public_base_url() -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def get_wechat_frontend_base_url() -> str:
+    frontend_base = str(
+        settings.WECHAT_OAUTH_FRONTEND_URL
+        or settings.WECHAT_TEMPLATE_DEFAULT_URL
+        or ""
+    ).strip()
+    if not frontend_base:
+        raise RuntimeError("Missing WECHAT_OAUTH_FRONTEND_URL")
+
+    parsed = urlparse(frontend_base)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError("Invalid WECHAT_OAUTH_FRONTEND_URL")
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def build_wechat_bind_entry_url(openid: str | None = None, target: str = "login") -> str:
+    normalized_target = "register" if str(target or "").strip().lower() == "register" else "login"
+    params = {"target": normalized_target}
+    normalized_openid = str(openid or "").strip()
+    if normalized_openid:
+        params["openid"] = normalized_openid
+    return f"{get_wechat_frontend_base_url().rstrip('/')}/wechat/bind?{urlencode(params)}"
+
+
 def build_wechat_oauth_entry_url(target: str = "login") -> str:
     normalized_target = "register" if str(target or "").strip().lower() == "register" else "login"
     redirect_url = str(settings.WECHAT_OAUTH_REDIRECT_URL or "").strip()
@@ -257,8 +282,8 @@ def build_wechat_oauth_entry_url(target: str = "login") -> str:
 
 
 def build_wechat_menu_payload() -> dict[str, object]:
-    login_url = build_wechat_oauth_entry_url("login")
-    register_url = build_wechat_oauth_entry_url("register")
+    login_url = build_wechat_bind_entry_url(target="login")
+    register_url = build_wechat_bind_entry_url(target="register")
     homepage_url = str(settings.WECHAT_TEMPLATE_DEFAULT_URL or "").strip() or login_url
 
     return {
@@ -280,6 +305,23 @@ def build_wechat_menu_payload() -> dict[str, object]:
             },
         ]
     }
+
+
+def build_wechat_subscribe_welcome_message(openid: str | None = None) -> str:
+    base_message = str(settings.WECHAT_SUBSCRIBE_WELCOME_MESSAGE or "").strip()
+    login_url = build_wechat_bind_entry_url(openid=openid, target="login")
+    register_url = build_wechat_bind_entry_url(openid=openid, target="register")
+
+    lines = [base_message] if base_message else ["欢迎关注供应链协同平台。"]
+    lines.extend(
+        [
+            "",
+            "请点击以下链接完成账号绑定：",
+            f"供应商登录绑定：{login_url}",
+            f"供应商入驻绑定：{register_url}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def get_wechat_menu() -> dict:

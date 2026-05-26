@@ -52,7 +52,7 @@ const binding = ref(false)
 const openid = computed(() => String(route.query.openid || '').trim())
 const target = computed(() => (String(route.query.target || '').trim().toLowerCase() === 'register' ? 'register' : 'login'))
 
-const displayOpenid = computed(() => openid.value || '未从微信事件回调中获取到')
+const displayOpenid = computed(() => openid.value || '未从微信回调中获取到 OpenID')
 const leadText = computed(() => {
   if (openid.value) {
     return '你可以直接把当前微信身份绑定到已登录账号，或者先登录/入驻后自动完成绑定。'
@@ -63,7 +63,7 @@ const noteText = computed(() => {
   if (openid.value) {
     return '如果浏览器里已经登录过供应商账号，可以直接点击绑定。否则请先进入登录或入驻页面，系统会带着 OpenID 一起提交。'
   }
-  return '没有 OpenID 时无法直接绑定当前微信。建议先关注公众号并从欢迎消息里的绑定链接再次进入。'
+  return '没有 OpenID 时无法直接绑定当前微信。建议先关注公众号，并从欢迎消息里的绑定链接再次进入。'
 })
 
 const pushWithOpenid = (path) => {
@@ -97,7 +97,9 @@ const bindCurrentAccount = async () => {
     const { data } = await api.post('/auth/wechat-bind', { openid: openid.value })
     ElMessage.success(data?.message || '微信绑定成功')
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '微信绑定失败')
+    if (error?.response?.status !== 401) {
+      ElMessage.error(error.response?.data?.detail || '微信绑定失败')
+    }
   } finally {
     binding.value = false
   }

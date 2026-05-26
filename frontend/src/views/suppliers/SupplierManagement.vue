@@ -1,20 +1,22 @@
 <template>
   <div class="page-container">
     <div class="content-card">
-      <div class="toolbar">
-        <el-input
-          v-model="searchQuery"
-          placeholder="请输入供应商名称进行搜索"
-          clearable
-          class="search-input"
-          @keyup.enter="handleSearch"
-          @clear="handleSearch"
-        />
-        <el-button type="primary" @click="handleSearch">搜索</el-button>
-        <el-button v-if="canManage" type="primary" @click="openAddDialog">
-          新增供应商
-        </el-button>
-      </div>
+      <el-tabs v-model="activeTab" @tab-change="handleTabChange">
+        <el-tab-pane label="供应商列表" name="suppliers">
+          <div class="toolbar">
+            <el-input
+              v-model="searchQuery"
+              placeholder="请输入供应商名称进行搜索"
+              clearable
+              class="search-input"
+              @keyup.enter="handleSearch"
+              @clear="handleSearch"
+            />
+            <el-button type="primary" @click="handleSearch">搜索</el-button>
+            <el-button v-if="canManage" type="primary" @click="openAddDialog">
+              新增供应商
+            </el-button>
+          </div>
 
       <el-table
         :data="filteredSuppliers"
@@ -125,6 +127,44 @@
           @size-change="handleSizeChange"
         />
       </div>
+        </el-tab-pane>
+
+        <el-tab-pane name="member-requests">
+          <template #label>
+            <span>成员申请</span>
+            <el-badge v-if="pendingMemberCount > 0" :value="pendingMemberCount" class="tab-badge" />
+          </template>
+          <el-table :data="memberRequests" v-loading="loadingMemberRequests" style="width: 100%" empty-text="暂无待审核的成员申请" border>
+            <el-table-column type="index" label="序号" width="64" />
+            <el-table-column prop="supplier_name" label="供应商" min-width="140" />
+            <el-table-column prop="member_name" label="申请人" min-width="100" />
+            <el-table-column prop="phone" label="手机号" width="130" />
+            <el-table-column prop="position" label="职位" width="100" />
+            <el-table-column prop="application_note" label="申请说明" min-width="160" show-overflow-tooltip />
+            <el-table-column label="审核模式" width="110" align="center">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.approval_mode === 'platform_admin' ? 'warning' : 'info'">
+                  {{ row.approval_mode === 'platform_admin' ? '平台审核' : '供应商审核' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_at" label="申请时间" width="160">
+              <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="180">
+              <template #default="{ row }">
+                <template v-if="row.status === 'pending'">
+                  <el-button size="small" type="success" @click="reviewMemberRequest(row, 'approved')">通过</el-button>
+                  <el-button size="small" type="danger" @click="reviewMemberRequest(row, 'rejected')">拒绝</el-button>
+                </template>
+                <el-tag v-else :type="row.status === 'active' ? 'success' : 'danger'" size="small">
+                  {{ row.status === 'active' ? '已通过' : '已拒绝' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
     </div>
 
     <el-dialog
@@ -316,6 +356,53 @@ const addRules = {
 
 const resetAllLoading = ref(false)
 
+const activeTab = ref('suppliers')
+const memberRequests = ref([])
+const loadingMemberRequests = ref(false)
+const pendingMemberCount = computed(() => memberRequests.value.filter(r => r.status === 'pending').length)
+
+const fetchMemberRequests = async () => {
+  loadingMemberRequests.value = true
+  try {
+    const res = await api.get('/auth/supplier/member-requests', { params: { status_filter: '' } })
+    memberRequests.value = res.data || []
+  } catch (error) {
+    console.error(error)
+  } finally {
+    loadingMemberRequests.value = false
+  }
+}
+
+const handleTabChange = (tab) => {
+  if (tab === 'member-requests' && !memberRequests.value.length) {
+    fetchMemberRequests()
+  }
+}
+
+const reviewMemberRequest = async (row, action) => {
+  const actionText = action === 'approved' ? '通过' : '拒绝'
+  try {
+    await ElMessageBox.confirm(
+      `确认${actionText} ${row.member_name} 加入 ${row.supplier_name} 的申请吗？`,
+      '审核确认',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.put(`/auth/supplier/member-requests/${row.id}/review`, {
+      status: action,
+      role: action === 'approved' ? (row.approval_mode === 'platform_admin' ? 'admin' : 'member') : undefined,
+      review_comment: undefined,
+    })
+    ElMessage.success(`已${actionText}该申请`)
+    fetchMemberRequests()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '操作失败')
+  }
+}
+
 const fetchSuppliers = async () => {
   loading.value = true
   try {
@@ -392,6 +479,7 @@ const getFileExt = (name) => {
 }
 
 const detectPreviewType = (f) => {
+  if (f.preview_file_path) return 'pdf'
   const ext = getFileExt(f.name || f.filename || '')
   if (IMAGE_EXTS.includes(ext)) return 'image'
   if (PDF_EXTS.includes(ext)) return 'pdf'
@@ -415,8 +503,9 @@ const base64ToBlobUrl = (base64Data, fileName) => {
 }
 
 const openAttachment = async (f) => {
-  const url = f.url || f.path || ''
-  if (!url) {
+  const previewPath = f.preview_file_path || ''
+  const url = f.file_path || f.url || f.path || ''
+  if (!url && !previewPath) {
     ElMessage.warning('暂无可预览的附件地址')
     return
   }
@@ -426,7 +515,7 @@ const openAttachment = async (f) => {
   previewLoading.value = true
   previewVisible.value = true
 
-  let resolvedUrl = url
+  let resolvedUrl = previewPath || url
 
   if (previewType.value === 'office') {
     let srcUrl = url
@@ -436,7 +525,7 @@ const openAttachment = async (f) => {
     }
     previewUrl.value = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(srcUrl)}`
   } else {
-    previewUrl.value = url
+    previewUrl.value = resolvedUrl
   }
 
   if (previewType.value === 'other') {
@@ -474,7 +563,7 @@ const downloadAttachment = () => {
 }
 
 const downloadFileDirectly = (f) => {
-  const url = f.url || f.path || ''
+  const url = f.file_path || f.url || f.path || ''
   if (!url) {
     ElMessage.warning('暂无可下载的附件地址')
     return
@@ -844,5 +933,9 @@ const handleDelete = async (row) => {
   display: flex;
   justify-content: flex-end;
   padding: 16px 0 0;
+}
+
+.tab-badge :deep(.el-badge__content) {
+  transform: translateY(-2px);
 }
 </style>

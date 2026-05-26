@@ -435,7 +435,7 @@
 <script setup>
 import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { createInquiryTask, syncErpRequisitions, uploadInquiryAttachment } from '../../api/inquiry'
-import api, { getApiOrigin } from '../../api/index'
+import api, { getApiOrigin, resolveAssetUrl } from '../../api/index'
 import { ElMessage } from 'element-plus'
 import { Download, Search } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
@@ -696,8 +696,9 @@ const fetchSuppliers = async () => {
     return supplierList.value
   }
   try {
-    const res = await api.get('/supplier/list')
-    const list = res.data || []
+    const res = await api.get('/supplier/list', { params: { page_size: 9999 } })
+    const payload = res.data
+    const list = Array.isArray(payload) ? payload : (Array.isArray(payload?.list) ? payload.list : [])
     // Sort suppliers by transaction_count in descending order
     list.sort((a, b) => (b.transaction_count || 0) - (a.transaction_count || 0))
     supplierList.value = list
@@ -1175,7 +1176,11 @@ const formatDate = (dateStr) => {
 const beforeAttachmentUpload = () => false
 
 const getAttachmentBaseUrl = () => {
-  return getApiOrigin()
+  if (typeof window === 'undefined') return ''
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+  return ''
 }
 
 const normalizeAttachmentUrl = (filePath) => {

@@ -528,7 +528,7 @@ const handleViewContract = (row) => {
     ElMessage.warning('合同文件尚未生成，请稍后重试')
     return
   }
-  const baseUrl = getApiOrigin()
+  const baseUrl = getAttachmentBaseUrl()
   const contractUrl = contractPath.startsWith('http') ? contractPath : `${baseUrl}${contractPath}`
   const cacheBypass = contractUrl.includes('?') ? '&_t=' : '?_t='
   window.open(`${contractUrl}${cacheBypass}${Date.now()}`, '_blank')
@@ -620,7 +620,11 @@ const formatDate = (row, column, cellValue) => {
 }
 
 const getAttachmentBaseUrl = () => {
-  return getApiOrigin()
+  if (typeof window === 'undefined') return ''
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+  return ''
 }
 
 const normalizeAttachmentUrl = (filePath) => {

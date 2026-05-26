@@ -1126,7 +1126,11 @@ const formatDate = (dateStr) => {
 }
 
 const getAttachmentBaseUrl = () => {
-  return getApiOrigin()
+  if (typeof window === 'undefined') return ''
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+  return ''
 }
 
 const normalizeAttachmentUrl = (filePath) => {

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
+﻿from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 from typing import List, Any, Optional
 from pydantic import BaseModel
@@ -10,7 +10,7 @@ import shutil
 import subprocess
 
 from models import (
-    get_db, User, InquiryRequest, InquiryTask, InquiryTaskItem,
+    SessionLocal, get_db, User, InquiryRequest, InquiryTask, InquiryTaskItem,
     Supplier, InquirySupplier, InquiryStatus, TaskStatus, LinkStatus, Quotation, Contract, ContractTemplate,
     ensure_runtime_schema_columns, CompareDraft
 )
@@ -416,10 +416,27 @@ def _send_task_invitation_notifications(db: Session, task: InquiryTask, supplier
             notify_new_inquiry_invitation(db, task, supplier)
         except Exception:
             logger.exception(
-                "新询价邀请微信通知发送失败, task_id=%s, supplier_id=%s",
+                "New inquiry invitation notification failed, task_id=%s, supplier_id=%s",
                 task.id,
                 supplier_id,
             )
+
+
+def _send_task_invitation_notifications_background(task_id: int, supplier_ids: list[int]) -> None:
+    db = SessionLocal()
+    try:
+        task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
+        if not task:
+            return
+        _send_task_invitation_notifications(db, task, supplier_ids)
+    except Exception:
+        logger.exception(
+            "Background invitation notification failed task_id=%s, supplier_ids=%s",
+            task_id,
+            supplier_ids,
+        )
+    finally:
+        db.close()
 
 
 def _revert_task_request_statuses(task: InquiryTask) -> None:
@@ -967,6 +984,7 @@ async def upload_inquiry_attachment(
 @router.post("/tasks", response_model=InquiryTaskSchema)
 def create_inquiry_task(
     task_in: InquiryTaskCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     request: Request = None
@@ -1034,9 +1052,6 @@ def create_inquiry_task(
     
     if not request_ids:
         raise HTTPException(status_code=400, detail="No valid requests provided")
-
-    # 兼容历史数据库：确保任务表和供应商关联表新增字段已补齐
-    ensure_runtime_schema_columns()
 
     # 2. 创建任务
     strategy_config = dict(task_in.strategy_config.dict()) if task_in.strategy_config else {}
@@ -1143,7 +1158,11 @@ def create_inquiry_task(
         }
     )
     if task_level_supplier_ids and not approval_required:
-        _send_task_invitation_notifications(db, new_task, sorted(task_level_supplier_ids))
+        background_tasks.add_task(
+            _send_task_invitation_notifications_background,
+            new_task.id,
+            sorted(task_level_supplier_ids),
+        )
     
     return new_task
 
@@ -1832,11 +1851,10 @@ def close_inquiry_task(
         "deal_link_ids": sorted(allocation_map.keys()),
         "is_split_award": len(allocation_map) > 1
     }
-
-
 @router.post("/tasks/{task_id}/approve")
 def approve_inquiry_task(
     task_id: int,
+    background_tasks: BackgroundTasks,
     payload: TaskApprovalPayload = Body(default=TaskApprovalPayload()),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1879,7 +1897,11 @@ def approve_inquiry_task(
     )
     pending_supplier_ids = _get_task_pending_supplier_ids(task)
     if pending_supplier_ids:
-        _send_task_invitation_notifications(db, task, pending_supplier_ids)
+        background_tasks.add_task(
+            _send_task_invitation_notifications_background,
+            task.id,
+            pending_supplier_ids,
+        )
     return {"message": "Task approved and moved into the inquiry workflow."}
 
 
@@ -2034,3 +2056,6 @@ def manual_reject_link(
     link.latest_ai_feedback = payload.message or "经采购员人工复核，当前报价不满足要求，本轮已终止。"
     db.commit()
     return {"message": "已人工淘汰该供应商。"}
+
+
+

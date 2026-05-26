@@ -12,6 +12,8 @@ const clearAuthStorage = () => {
   localStorage.removeItem('member_status')
 }
 
+const getLoginRoute = () => '/#/login'
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 60000,
@@ -28,7 +30,11 @@ export const getApiOrigin = () => {
 }
 
 const getAssetOrigin = () => {
-  return getApiOrigin()
+  if (typeof window === 'undefined') return ''
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+  return ''
 }
 
 export const resolveAssetUrl = (path) => {
@@ -60,8 +66,8 @@ api.interceptors.response.use(
     if (error.response) {
       if (error.response.status === 401) {
         clearAuthStorage()
-        ElMessage.error('登录已过期，请重新登录')
-        window.location.href = '/login'
+        ElMessage.error('登录已失效，请重新登录')
+        window.location.replace(getLoginRoute())
       } else {
         ElMessage.error(error.response.data.error || error.response.data.detail || '请求失败')
       }

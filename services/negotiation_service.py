@@ -43,41 +43,75 @@ def calculate_supplier_scores(suppliers_data: list[dict]) -> list[dict]:
     if not suppliers_data:
         return []
 
+    item_prices: dict[Any, list[float]] = {}
+    item_deliveries: dict[Any, list[float]] = {}
+    for supplier in suppliers_data:
+        for item in supplier.get("items") or []:
+            iid = item.get("item_id")
+            price = float(item.get("price", 0))
+            dd = float(item.get("delivery_days", 0))
+            if iid is None:
+                continue
+            if price > 0:
+                item_prices.setdefault(iid, []).append(price)
+            if dd > 0:
+                item_deliveries.setdefault(iid, []).append(dd)
+
+    item_min_price = {iid: min(prices) for iid, prices in item_prices.items()}
+    item_min_delivery = {iid: min(dds) for iid, dds in item_deliveries.items()}
+
     enriched: list[dict[str, Any]] = []
     for supplier in suppliers_data:
         items = supplier.get("items") or []
-        total_price = sum(float(item.get("price", 0)) * float(item.get("qty", 0)) for item in items)
+        record = dict(supplier)
+
+        total_price = sum(float(it.get("price", 0)) * float(it.get("qty", 0)) for it in items)
         item_count = len(items)
         avg_delivery_days = (
-            sum(float(item.get("delivery_days", 0)) for item in items) / item_count if item_count > 0 else 0.0
+            sum(float(it.get("delivery_days", 0)) for it in items) / item_count if item_count > 0 else 0.0
         )
-        record = dict(supplier)
         record["total_price"] = total_price
         record["avg_delivery_days"] = avg_delivery_days
-        enriched.append(record)
 
-    valid_total_prices = [item["total_price"] for item in enriched if item["total_price"] > 0]
-    min_total_price = min(valid_total_prices) if valid_total_prices else 0.0
+        per_item_price_scores = []
+        per_item_delivery_scores = []
+        per_item_weights = []
 
-    valid_avg_days = [item["avg_delivery_days"] for item in enriched if item["avg_delivery_days"] > 0]
-    min_avg_delivery_days = min(valid_avg_days) if valid_avg_days else 0.0
+        for it in items:
+            iid = it.get("item_id")
+            price = float(it.get("price", 0))
+            qty = float(it.get("qty", 0))
+            dd = float(it.get("delivery_days", 0))
 
-    for supplier in enriched:
-        total_price = supplier["total_price"]
-        avg_delivery_days = supplier["avg_delivery_days"]
-        if min_total_price > 0 and total_price > 0:
-            price_score = (min_total_price / total_price) * 100
+            if iid is None or price <= 0:
+                continue
+
+            min_p = item_min_price.get(iid, 0)
+            if min_p > 0:
+                per_item_price_scores.append(min_p / price * 100)
+            else:
+                per_item_price_scores.append(0.0)
+
+            min_d = item_min_delivery.get(iid, 0)
+            if min_d > 0 and dd > 0:
+                per_item_delivery_scores.append(min_d / dd * 100)
+            else:
+                per_item_delivery_scores.append(0.0)
+
+            per_item_weights.append(qty if qty > 0 else 1.0)
+
+        if per_item_weights:
+            total_weight = sum(per_item_weights)
+            price_score = sum(s * w for s, w in zip(per_item_price_scores, per_item_weights)) / total_weight
+            delivery_score = sum(s * w for s, w in zip(per_item_delivery_scores, per_item_weights)) / total_weight
         else:
             price_score = 0.0
-
-        if min_avg_delivery_days > 0 and avg_delivery_days > 0:
-            delivery_score = (min_avg_delivery_days / avg_delivery_days) * 100
-        else:
             delivery_score = 0.0
 
         total_score = price_score * 0.7 + delivery_score * 0.3
-        supplier["price_score"] = price_score
-        supplier["delivery_score"] = delivery_score
-        supplier["total_score"] = total_score
+        record["price_score"] = price_score
+        record["delivery_score"] = delivery_score
+        record["total_score"] = total_score
+        enriched.append(record)
 
     return enriched

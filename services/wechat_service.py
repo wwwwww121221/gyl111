@@ -261,13 +261,22 @@ def get_wechat_frontend_base_url() -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def build_wechat_frontend_route_url(path: str, query: Optional[dict[str, str]] = None) -> str:
+    normalized_path = f"/{str(path or '').strip().lstrip('/')}"
+    query_string = urlencode({k: v for k, v in (query or {}).items() if v is not None and str(v).strip() != ""})
+    route_url = f"{get_wechat_frontend_base_url().rstrip('/')}/#{normalized_path}"
+    if query_string:
+        route_url = f"{route_url}?{query_string}"
+    return route_url
+
+
 def build_wechat_bind_entry_url(openid: str | None = None, target: str = "login") -> str:
     normalized_target = "register" if str(target or "").strip().lower() == "register" else "login"
     params = {"target": normalized_target}
     normalized_openid = str(openid or "").strip()
     if normalized_openid:
         params["openid"] = normalized_openid
-    return f"{get_wechat_frontend_base_url().rstrip('/')}/wechat/bind?{urlencode(params)}"
+    return build_wechat_frontend_route_url("/wechat/bind", params)
 
 
 def build_wechat_oauth_entry_url(target: str = "login") -> str:
@@ -284,7 +293,7 @@ def build_wechat_oauth_entry_url(target: str = "login") -> str:
 def build_wechat_menu_payload() -> dict[str, object]:
     login_url = build_wechat_bind_entry_url(target="login")
     register_url = build_wechat_bind_entry_url(target="register")
-    homepage_url = str(settings.WECHAT_TEMPLATE_DEFAULT_URL or "").strip() or login_url
+    homepage_url = build_wechat_frontend_route_url("/login")
 
     return {
         "button": [

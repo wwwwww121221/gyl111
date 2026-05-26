@@ -861,7 +861,8 @@ onMounted(async () => {
 
   try {
     const allSuppRes = await api.get('/supplier/list')
-    otherSuppliers.value = allSuppRes.data || []
+    const payload = allSuppRes.data
+    otherSuppliers.value = Array.isArray(payload) ? payload : (Array.isArray(payload?.list) ? payload.list : [])
   } catch(e) {
     console.error('Failed to load all suppliers', e)
   }

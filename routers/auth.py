@@ -564,6 +564,13 @@ def supplier_join_request(
     verify_sms_code(phone, "join", payload.sms_code)
 
     approval_mode = "supplier_admin"
+    has_active_member = db.query(SupplierMember).filter(
+        SupplierMember.supplier_id == supplier.id,
+        SupplierMember.status == "active",
+    ).first()
+    if not has_active_member:
+        approval_mode = "platform_admin"
+
     company_name = (payload.company_name or "").strip()
     social_credit_code = (payload.social_credit_code or "").strip()
     if not company_name and not social_credit_code:
@@ -706,7 +713,18 @@ def review_supplier_member_request(
         if supplier.status != "approved":
             raise HTTPException(status_code=400, detail="Supplier has not been approved yet")
         member.status = "active"
-        member.role = (payload.role or member.role or "member").strip()
+        if member.approval_mode == "platform_admin":
+            has_other_active = db.query(SupplierMember).filter(
+                SupplierMember.supplier_id == member.supplier_id,
+                SupplierMember.status == "active",
+                SupplierMember.id != member.id,
+            ).first()
+            if not has_other_active:
+                member.role = "admin"
+            else:
+                member.role = (payload.role or member.role or "member").strip()
+        else:
+            member.role = (payload.role or member.role or "member").strip()
     else:
         member.status = "rejected"
 

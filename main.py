@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from xml.etree import ElementTree as ET
 
 from services.wechat_service import (
+    build_wechat_frontend_route_url,
     build_wechat_oauth_authorize_url,
     build_wechat_subscribe_welcome_message,
     build_wechat_text_reply,
@@ -153,11 +154,7 @@ async def wechat_verify(
         frontend_base = str(settings.WECHAT_OAUTH_FRONTEND_URL or "").strip()
         if frontend_base:
             target_path = "/login" if state != "register" else "/register"
-            separator = "&" if "?" in frontend_base else "?"
-            if frontend_base.rstrip("/").endswith(target_path):
-                redirect_url = f"{frontend_base}{separator}{urlencode({'openid': openid})}"
-            else:
-                redirect_url = f"{frontend_base.rstrip('/')}{target_path}?{urlencode({'openid': openid})}"
+            redirect_url = build_wechat_frontend_route_url(target_path, {"openid": openid})
             return RedirectResponse(url=redirect_url)
 
         return JSONResponse(content={"openid": openid, "state": state or "login"})

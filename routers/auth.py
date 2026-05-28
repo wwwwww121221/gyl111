@@ -326,7 +326,12 @@ def supplier_password_login(
             detail="密码错误",
         )
 
-    supplier, member = resolve_supplier_access(db, user, allow_pending_supplier=True)
+    supplier, member = resolve_supplier_access(
+        db,
+        user,
+        allow_pending_supplier=True,
+        allow_pending_member=False,
+    )
     _bind_openid_if_needed(db, user, payload.openid)
     db.commit()
 
@@ -352,7 +357,12 @@ def supplier_sms_login(
     _ensure_supplier_user_role(user)
     verify_sms_code(phone, "login", payload.sms_code)
 
-    supplier, member = resolve_supplier_access(db, user, allow_pending_supplier=True)
+    supplier, member = resolve_supplier_access(
+        db,
+        user,
+        allow_pending_supplier=True,
+        allow_pending_member=False,
+    )
     _bind_openid_if_needed(db, user, payload.openid)
     db.commit()
 
@@ -377,7 +387,12 @@ def supplier_wechat_login(
         }
 
     _ensure_supplier_user_role(user)
-    supplier, member = resolve_supplier_access(db, user, allow_pending_supplier=True)
+    supplier, member = resolve_supplier_access(
+        db,
+        user,
+        allow_pending_supplier=True,
+        allow_pending_member=False,
+    )
 
     token_payload = _create_token_payload(user, supplier, member)
     _log_login(db, user, request=request, supplier=supplier)

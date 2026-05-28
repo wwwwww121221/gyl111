@@ -99,6 +99,7 @@ def resolve_supplier_access(
     db: Session,
     user: User,
     allow_pending_supplier: bool = False,
+    allow_pending_member: bool = False,
 ) -> tuple[Supplier, SupplierMember]:
     memberships, supplier_map = _load_supplier_memberships(db, user)
     if not memberships:
@@ -115,7 +116,11 @@ def resolve_supplier_access(
     if allow_pending_supplier:
         for member in memberships:
             supplier = supplier_map.get(member.supplier_id)
-            if supplier and supplier.status == "pending":
+            if not supplier or supplier.status != "pending":
+                continue
+            if supplier.user_id == user.id:
+                return supplier, member
+            if member.status == "active" or allow_pending_member:
                 return supplier, member
 
     for member in memberships:

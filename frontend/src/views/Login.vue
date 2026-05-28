@@ -589,7 +589,7 @@ const tryWechatDirectLogin = async () => {
   if (!openid) return
 
   try {
-    const { data } = await api.post('/auth/supplier/wechat-login', { openid })
+    const { data } = await api.post('/auth/supplier/wechat-login', { openid }, { silentError: true })
     if (data?.bound && data?.access_token) {
       persistLogin(data)
       ElMessage.success('微信登录成功')

@@ -9,12 +9,14 @@ export default defineConfig(({ mode }) => {
     .map((host) => host.trim())
     .filter(Boolean)
   const proxyTarget = env.VITE_API_PROXY_TARGET || 'http://localhost:8000'
+  const hmr = String(env.VITE_DISABLE_HMR || '').toLowerCase() === 'true' ? false : undefined
 
   return {
     plugins: [vue()],
     server: {
       host: '0.0.0.0',
       allowedHosts,
+      hmr,
       proxy: {
         '/api': {
           target: proxyTarget,

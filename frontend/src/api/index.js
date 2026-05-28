@@ -63,6 +63,10 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (error.config?.silentError) {
+      return Promise.reject(error)
+    }
+
     if (error.response) {
       if (error.response.status === 401) {
         clearAuthStorage()

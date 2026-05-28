@@ -6,6 +6,7 @@ import logging
 from sqlalchemy.orm import Session
 from models import get_db, WarningMessage, Supplier, User, Material
 from routers.inquiry import get_current_user
+from services.supplier_access import get_supplier_context_for_portal
 from services.wechat_service import notify_warning_message
 
 # 引用现有的 ERP 业务逻辑
@@ -189,12 +190,7 @@ def get_my_warning_messages(
     """
     供应商获取自己的预警消息
     """
-    if current_user.role != "supplier":
-        raise HTTPException(status_code=403, detail="Not authorized")
-        
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
-    if not supplier:
-        raise HTTPException(status_code=404, detail="Supplier profile not found")
+    supplier, _member = get_supplier_context_for_portal(db, current_user)
         
     messages = db.query(WarningMessage).filter(WarningMessage.supplier_id == supplier.id).order_by(WarningMessage.created_at.desc()).all()
     return messages
@@ -206,10 +202,7 @@ def mark_message_read(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ) -> Any:
-    if current_user.role != "supplier":
-        raise HTTPException(status_code=403, detail="Not authorized")
-        
-    supplier = db.query(Supplier).filter(Supplier.user_id == current_user.id).first()
+    supplier, _member = get_supplier_context_for_portal(db, current_user)
     msg = db.query(WarningMessage).filter(WarningMessage.id == msg_id, WarningMessage.supplier_id == supplier.id).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")

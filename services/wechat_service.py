@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import hashlib
 from datetime import datetime
 from typing import Iterable, Optional
 from urllib.parse import urlencode, urlparse
@@ -10,7 +11,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from core.config import settings
-from core.redis_client import cache_delete, cache_get, cache_set
+from core.redis_client import cache_clear_pattern, cache_delete, cache_get, cache_set
 from models import InquirySupplier, InquiryTask, LinkStatus, Supplier, SupplierMember, TaskStatus, User
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 WECHAT_ACCESS_TOKEN_CACHE_KEY = "wechat:access_token"
 WECHAT_TEMPLATE_COLOR = "#173177"
 WECHAT_DEADLINE_REMINDER_CACHE_PREFIX = "wechat:deadline-reminder"
+WECHAT_MENU_KEY_LOGIN = "SUPPLIER_LOGIN_BIND"
+WECHAT_MENU_KEY_REGISTER = "SUPPLIER_REGISTER_BIND"
 
 
 def _wrap_template_value(value: object) -> dict[str, str]:
@@ -33,7 +36,12 @@ def is_wechat_configured() -> bool:
 
 def _get_wechat_access_token_cache_key() -> str:
     app_id = str(settings.WECHAT_APP_ID or "").strip()
-    return f"{WECHAT_ACCESS_TOKEN_CACHE_KEY}:{app_id}" if app_id else WECHAT_ACCESS_TOKEN_CACHE_KEY
+    app_secret = str(settings.WECHAT_APP_SECRET or "").strip()
+    if not app_id:
+        return WECHAT_ACCESS_TOKEN_CACHE_KEY
+
+    secret_hash = hashlib.sha1(app_secret.encode("utf-8")).hexdigest()[:12] if app_secret else "no-secret"
+    return f"{WECHAT_ACCESS_TOKEN_CACHE_KEY}:{app_id}:{secret_hash}"
 
 
 def get_wechat_access_token(force_refresh: bool = False) -> str:
@@ -42,6 +50,7 @@ def get_wechat_access_token(force_refresh: bool = False) -> str:
 
     cache_key = _get_wechat_access_token_cache_key()
     if force_refresh:
+        cache_clear_pattern(f"{WECHAT_ACCESS_TOKEN_CACHE_KEY}*")
         cache_delete(WECHAT_ACCESS_TOKEN_CACHE_KEY, cache_key)
 
     if not force_refresh:
@@ -303,21 +312,19 @@ def build_wechat_oauth_entry_url(target: str = "login") -> str:
 def build_wechat_menu_payload() -> dict[str, object]:
     menu_version = str(settings.WECHAT_MENU_URL_VERSION or "").strip()
     menu_query = {"menu_v": menu_version} if menu_version else None
-    login_url = build_wechat_frontend_route_url("/login", menu_query)
-    register_url = build_wechat_frontend_route_url("/register", menu_query)
     homepage_url = build_wechat_frontend_route_url("/login", menu_query)
 
     return {
         "button": [
             {
-                "type": "view",
+                "type": "click",
                 "name": "\u4f9b\u5e94\u5546\u767b\u5f55",
-                "url": login_url,
+                "key": WECHAT_MENU_KEY_LOGIN,
             },
             {
-                "type": "view",
+                "type": "click",
                 "name": "\u4f9b\u5e94\u5546\u5165\u9a7b",
-                "url": register_url,
+                "key": WECHAT_MENU_KEY_REGISTER,
             },
             {
                 "type": "view",
@@ -326,6 +333,32 @@ def build_wechat_menu_payload() -> dict[str, object]:
             },
         ]
     }
+
+
+def build_wechat_menu_click_message(event_key: str, openid: str | None = None) -> str:
+    normalized_key = str(event_key or "").strip()
+    if normalized_key == WECHAT_MENU_KEY_REGISTER:
+        register_url = build_wechat_bind_entry_url(openid=openid, target="register")
+        login_url = build_wechat_bind_entry_url(openid=openid, target="login")
+        return "\n".join(
+            [
+                "请点击以下链接完成供应商入驻或加入申请：",
+                f"供应商入驻：{register_url}",
+                "",
+                f"已有账号请登录：{login_url}",
+            ]
+        )
+
+    login_url = build_wechat_bind_entry_url(openid=openid, target="login")
+    register_url = build_wechat_bind_entry_url(openid=openid, target="register")
+    return "\n".join(
+        [
+            "请点击以下链接完成供应商登录绑定：",
+            f"供应商登录：{login_url}",
+            "",
+            f"首次合作请入驻：{register_url}",
+        ]
+    )
 
 
 def build_wechat_subscribe_welcome_message(openid: str | None = None) -> str:

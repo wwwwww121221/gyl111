@@ -21,6 +21,7 @@ from xml.etree import ElementTree as ET
 
 from services.wechat_service import (
     build_wechat_frontend_route_url,
+    build_wechat_menu_click_message,
     build_wechat_oauth_authorize_url,
     build_wechat_subscribe_welcome_message,
     build_wechat_text_reply,
@@ -219,6 +220,7 @@ async def wechat_event_callback(
     from_user = (root.findtext("FromUserName") or "").strip()
     to_user = (root.findtext("ToUserName") or "").strip()
     event = (root.findtext("Event") or "").strip().lower()
+    event_key = (root.findtext("EventKey") or "").strip()
 
     if msg_type == "event" and event == "subscribe" and from_user and to_user:
         welcome_message = build_wechat_subscribe_welcome_message(from_user)
@@ -229,6 +231,15 @@ async def wechat_event_callback(
                 content=welcome_message,
             )
             return PlainTextResponse(content=reply_xml, media_type="application/xml")
+
+    if msg_type == "event" and event == "click" and event_key and from_user and to_user:
+        reply_content = build_wechat_menu_click_message(event_key, from_user)
+        reply_xml = build_wechat_text_reply(
+            to_user=from_user,
+            from_user=to_user,
+            content=reply_content,
+        )
+        return PlainTextResponse(content=reply_xml, media_type="application/xml")
 
     return PlainTextResponse(content="success")
 

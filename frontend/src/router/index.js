@@ -22,6 +22,8 @@ const clearAuth = () => {
 
 const getSupplierHomePath = () => {
   const supplierStatus = localStorage.getItem('supplier_status')
+  const memberStatus = localStorage.getItem('member_status')
+  if (supplierStatus === 'approved' && memberStatus && memberStatus !== 'active') return '/login'
   return supplierStatus === 'approved' ? '/supplier/inquiries' : '/supplier/company-info'
 }
 
@@ -312,6 +314,15 @@ router.beforeEach((to, from) => {
 
   if (isScoringOnlyUser() && to.path !== '/suppliers/assessment-scoring') {
     return '/suppliers/assessment-scoring'
+  }
+
+  if (role === 'supplier') {
+    const supplierStatus = localStorage.getItem('supplier_status')
+    const memberStatus = localStorage.getItem('member_status')
+    if (supplierStatus === 'approved' && memberStatus && memberStatus !== 'active') {
+      clearAuth()
+      return '/login'
+    }
   }
 
   if (role === 'supplier' && localStorage.getItem('supplier_status') !== 'approved' && to.path !== '/supplier/company-info') {

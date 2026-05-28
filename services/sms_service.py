@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import random
 import time
@@ -14,9 +15,12 @@ import httpx
 from fastapi import HTTPException
 
 
+logger = logging.getLogger(__name__)
+
 _SMS_CODE_STORE: dict[str, dict] = {}
 _SMS_SEND_COOLDOWN_SECONDS = 60
 _SMS_CODE_EXPIRE_MINUTES = 5
+_SUPPORTED_SCENES = {"login", "onboarding", "join", "reset_password"}
 
 
 @dataclass
@@ -98,6 +102,18 @@ def _aliyun_credentials() -> tuple[str, str, str]:
     return access_key_id, access_key_secret, sign_name
 
 
+def _is_truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_sms_debug_mode() -> bool:
+    return _is_truthy_env("SMS_DEBUG")
+
+
+def _should_fallback_to_local_code() -> bool:
+    return _is_truthy_env("SMS_FALLBACK_TO_DEBUG_ON_ERROR")
+
+
 def _call_dypnsapi(action: str, action_params: dict[str, str | int | bool]) -> dict:
     access_key_id, access_key_secret, _ = _aliyun_credentials()
     params = {
@@ -122,28 +138,31 @@ def _call_dypnsapi(action: str, action_params: dict[str, str | int | bool]) -> d
     params["Signature"] = _aliyun_sign(params, access_key_secret)
 
     try:
-        response = httpx.get(
-            "https://dypnsapi.aliyuncs.com/",
-            params=params,
-            timeout=15.0,
-        )
+        timeout = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+        transport = httpx.HTTPTransport(retries=2)
+        with httpx.Client(timeout=timeout, transport=transport, http2=False) as client:
+            response = client.get(
+                "https://dypnsapi.aliyuncs.com/",
+                params=params,
+            )
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"阿里云号码认证服务请求失败: {exc}") from exc
+        logger.exception("Aliyun SMS request failed for action=%s", action)
+        raise HTTPException(status_code=503, detail="短信服务暂时不可用，请稍后重试") from exc
 
     if str(payload.get("Code") or "").strip() != "OK":
         provider_code = str(payload.get("Code") or "").strip()
         provider_message = str(payload.get("Message") or "短信服务调用失败").strip()
-        if provider_code == "biz.FREQUENCY":
-            raise HTTPException(
-                status_code=429,
-                detail="验证码发送过于频繁，请稍后再试",
-            )
-        raise HTTPException(
-            status_code=502,
-            detail=f"阿里云号码认证服务失败[{provider_code}]: {provider_message}",
+        logger.warning(
+            "Aliyun SMS responded with non-OK code for action=%s code=%s message=%s",
+            action,
+            provider_code,
+            provider_message,
         )
+        if provider_code == "biz.FREQUENCY":
+            raise HTTPException(status_code=429, detail="验证码发送过于频繁，请稍后再试")
+        raise HTTPException(status_code=502, detail="短信服务调用失败，请稍后重试")
 
     return payload
 
@@ -189,7 +208,7 @@ def _check_via_aliyun(phone: str, sms_code: str) -> None:
 def send_sms_code(phone: str, scene: str) -> SmsSendResult:
     normalized_phone = validate_phone_or_raise(phone)
     normalized_scene = (scene or "").strip().lower()
-    if normalized_scene not in {"login", "onboarding", "join", "reset_password"}:
+    if normalized_scene not in _SUPPORTED_SCENES:
         raise HTTPException(status_code=400, detail="短信场景不支持")
 
     now = time.time()
@@ -198,8 +217,9 @@ def send_sms_code(phone: str, scene: str) -> SmsSendResult:
     if existing and now - existing["sent_at"] < _SMS_SEND_COOLDOWN_SECONDS:
         raise HTTPException(status_code=429, detail="验证码发送过于频繁，请稍后再试")
 
-    debug_mode = os.getenv("SMS_DEBUG", "").strip().lower() in {"1", "true", "yes"}
+    debug_mode = _is_sms_debug_mode()
     debug_code = None
+
     if debug_mode:
         debug_code = _generate_sms_code()
         _SMS_CODE_STORE[key] = {
@@ -208,12 +228,28 @@ def send_sms_code(phone: str, scene: str) -> SmsSendResult:
             "expires_at": now + _SMS_CODE_EXPIRE_MINUTES * 60,
         }
     else:
-        _send_via_aliyun(normalized_phone, normalized_scene)
-        _SMS_CODE_STORE[key] = {
-            "code": None,
-            "sent_at": now,
-            "expires_at": now + _SMS_CODE_EXPIRE_MINUTES * 60,
-        }
+        try:
+            _send_via_aliyun(normalized_phone, normalized_scene)
+            _SMS_CODE_STORE[key] = {
+                "code": None,
+                "sent_at": now,
+                "expires_at": now + _SMS_CODE_EXPIRE_MINUTES * 60,
+            }
+        except HTTPException as exc:
+            if exc.status_code == 503 and _should_fallback_to_local_code():
+                debug_code = _generate_sms_code()
+                _SMS_CODE_STORE[key] = {
+                    "code": debug_code,
+                    "sent_at": now,
+                    "expires_at": now + _SMS_CODE_EXPIRE_MINUTES * 60,
+                }
+                logger.warning(
+                    "Aliyun SMS unavailable for scene=%s phone=%s, using local fallback code",
+                    normalized_scene,
+                    normalized_phone,
+                )
+            else:
+                raise
 
     return SmsSendResult(
         message="验证码已发送",
@@ -235,8 +271,7 @@ def verify_sms_code(phone: str, scene: str, sms_code: str) -> None:
         _SMS_CODE_STORE.pop(key, None)
         raise HTTPException(status_code=400, detail="验证码已过期")
 
-    debug_mode = os.getenv("SMS_DEBUG", "").strip().lower() in {"1", "true", "yes"}
-    if debug_mode:
+    if _is_sms_debug_mode() or record["code"] is not None:
         if record["code"] != normalized_code:
             raise HTTPException(status_code=400, detail="验证码错误")
     else:

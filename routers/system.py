@@ -10,8 +10,10 @@ from core.config import settings
 from services.wechat_service import (
     build_wechat_menu_payload,
     build_wechat_oauth_entry_url,
+    delete_wechat_menu,
     get_wechat_menu,
     is_wechat_configured,
+    reset_wechat_menu,
     send_wechat_test_notification,
     sync_wechat_menu,
 )
@@ -381,5 +383,41 @@ def update_wechat_menu(
 
     return {
         "message": "WeChat menu synced successfully",
+        **result,
+    }
+
+
+@router.post("/wechat/menu/delete")
+def remove_wechat_menu(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="Only admin users can delete WeChat menu settings")
+
+    try:
+        result = delete_wechat_menu()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "message": "WeChat menu deleted successfully",
+        "wechat_result": result,
+    }
+
+
+@router.post("/wechat/menu/reset")
+def recreate_wechat_menu(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    if not _is_admin_like(current_user):
+        raise HTTPException(status_code=403, detail="Only admin users can reset WeChat menu settings")
+
+    try:
+        result = reset_wechat_menu()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "message": "WeChat menu reset successfully",
         **result,
     }

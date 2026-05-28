@@ -53,8 +53,8 @@
           class="wechat-alert"
         />
 
-        <div v-if="!isInternalMode && !hasOpenid" class="wechat-bind-entry">
-          <span class="wechat-bind-copy">当前页面未带微信身份，首次绑定请先完成微信授权。</span>
+        <div v-if="!isInternalMode && showWechatBindEntry" class="wechat-bind-entry">
+          <span class="wechat-bind-copy">当前页面未携带微信身份，首次绑定请先完成微信授权。</span>
           <el-button type="success" plain @click="startWechatBind('login')">
             微信授权绑定
           </el-button>
@@ -343,6 +343,8 @@ const resetForm = reactive({
 const isInternalMode = computed(() => activeTab.value === 'internal')
 const getOpenid = () => String(route.query.openid || '').trim()
 const hasOpenid = computed(() => Boolean(getOpenid()))
+const isWechatBrowser = computed(() => /micromessenger/i.test(window.navigator.userAgent || ''))
+const showWechatBindEntry = computed(() => isWechatBrowser.value && !hasOpenid.value)
 
 const phoneValidator = (_, value, callback) => {
   if (!/^1[3-9]\d{9}$/.test(String(value || '').trim())) {
@@ -435,8 +437,16 @@ const startCountdown = (target) => {
   }
 }
 
+const showSmsDebugIfNeeded = (data) => {
+  if (data?.debug_code) {
+    ElMessage.info(`调试验证码：${data.debug_code}`)
+  }
+}
+
 const sendSceneCode = async (phone, scene) => {
-  await api.post('/auth/supplier/send-sms-code', { phone, scene })
+  const { data } = await api.post('/auth/supplier/send-sms-code', { phone, scene })
+  showSmsDebugIfNeeded(data)
+  return data
 }
 
 const sendLoginSmsCode = async () => {
@@ -445,9 +455,11 @@ const sendLoginSmsCode = async () => {
 
   smsSending.value = true
   try {
-    await sendSceneCode(supplierSmsForm.phone, 'login')
-    ElMessage.success('验证码已发送')
+    const data = await sendSceneCode(supplierSmsForm.phone, 'login')
+    ElMessage.success(data?.message || '验证码已发送')
     startCountdown(smsCountdown)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '验证码发送失败')
   } finally {
     smsSending.value = false
   }
@@ -459,9 +471,11 @@ const sendResetSmsCode = async () => {
 
   resetSmsSending.value = true
   try {
-    await sendSceneCode(resetForm.phone, 'reset_password')
-    ElMessage.success('验证码已发送')
+    const data = await sendSceneCode(resetForm.phone, 'reset_password')
+    ElMessage.success(data?.message || '验证码已发送')
     startCountdown(resetCountdown)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '验证码发送失败')
   } finally {
     resetSmsSending.value = false
   }
@@ -481,6 +495,8 @@ const handleSupplierPasswordLogin = async () => {
     persistLogin(data, supplierPasswordForm.phone)
     ElMessage.success('登录成功')
     router.push(getSupplierHomePath(data))
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '登录失败')
   } finally {
     loading.value = false
   }
@@ -500,6 +516,8 @@ const handleSupplierSmsLogin = async () => {
     persistLogin(data, supplierSmsForm.phone)
     ElMessage.success('登录成功')
     router.push(getSupplierHomePath(data))
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '登录失败')
   } finally {
     loading.value = false
   }
@@ -555,6 +573,8 @@ const submitResetPassword = async () => {
     supplierPasswordForm.password = ''
     resetDialogVisible.value = false
     activeTab.value = 'supplier-password'
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '重置失败')
   } finally {
     resetSubmitting.value = false
   }
@@ -577,15 +597,19 @@ const tryWechatDirectLogin = async () => {
       return
     }
 
-    wechatHint.value = data?.message || '请先绑定手机号后再使用微信登录。'
+    wechatHint.value = '当前微信账号尚未绑定手机号，请先完成手机号登录或绑定。'
     activeTab.value = 'supplier-password'
   } catch (error) {
-    wechatHint.value = error.response?.data?.detail || '微信登录校验失败，请改用手机号登录。'
+    wechatHint.value = '微信登录校验失败，请改用手机号登录。'
     activeTab.value = 'supplier-password'
   }
 }
 
 onMounted(() => {
+  const wechatError = String(route.query.wechat_error || '').trim()
+  if (wechatError) {
+    wechatHint.value = wechatError
+  }
   tryWechatDirectLogin()
   requestAnimationFrame(() => {
     cardEntered.value = true

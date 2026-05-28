@@ -10,7 +10,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from core.config import settings
-from core.redis_client import cache_get, cache_set
+from core.redis_client import cache_delete, cache_get, cache_set
 from models import InquirySupplier, InquiryTask, LinkStatus, Supplier, SupplierMember, TaskStatus, User
 
 logger = logging.getLogger(__name__)
@@ -31,12 +31,21 @@ def is_wechat_configured() -> bool:
     return bool(settings.WECHAT_APP_ID and settings.WECHAT_APP_SECRET and settings.WECHAT_TOKEN)
 
 
+def _get_wechat_access_token_cache_key() -> str:
+    app_id = str(settings.WECHAT_APP_ID or "").strip()
+    return f"{WECHAT_ACCESS_TOKEN_CACHE_KEY}:{app_id}" if app_id else WECHAT_ACCESS_TOKEN_CACHE_KEY
+
+
 def get_wechat_access_token(force_refresh: bool = False) -> str:
     if not is_wechat_configured():
         raise RuntimeError("微信公众号配置未完成")
 
+    cache_key = _get_wechat_access_token_cache_key()
+    if force_refresh:
+        cache_delete(WECHAT_ACCESS_TOKEN_CACHE_KEY, cache_key)
+
     if not force_refresh:
-        cached = cache_get(WECHAT_ACCESS_TOKEN_CACHE_KEY)
+        cached = cache_get(cache_key)
         if isinstance(cached, dict):
             token = str(cached.get("access_token") or "").strip()
             if token:
@@ -62,7 +71,7 @@ def get_wechat_access_token(force_refresh: bool = False) -> str:
         raise RuntimeError(f"微信公众号 access_token 响应无效: {payload}")
 
     cache_set(
-        WECHAT_ACCESS_TOKEN_CACHE_KEY,
+        cache_key,
         {"access_token": access_token},
         ttl=max(expires_in - 300, 60),
     )
@@ -292,9 +301,11 @@ def build_wechat_oauth_entry_url(target: str = "login") -> str:
 
 
 def build_wechat_menu_payload() -> dict[str, object]:
-    login_url = build_wechat_bind_entry_url(target="login")
-    register_url = build_wechat_bind_entry_url(target="register")
-    homepage_url = build_wechat_frontend_route_url("/login")
+    menu_version = str(settings.WECHAT_MENU_URL_VERSION or "").strip()
+    menu_query = {"menu_v": menu_version} if menu_version else None
+    login_url = build_wechat_frontend_route_url("/login", menu_query)
+    register_url = build_wechat_frontend_route_url("/register", menu_query)
+    homepage_url = build_wechat_frontend_route_url("/login", menu_query)
 
     return {
         "button": [
@@ -348,6 +359,27 @@ def get_wechat_menu() -> dict:
     return result
 
 
+def delete_wechat_menu() -> dict:
+    for attempt in range(2):
+        access_token = get_wechat_access_token(force_refresh=attempt > 0)
+        response = requests.get(
+            "https://api.weixin.qq.com/cgi-bin/menu/delete",
+            params={"access_token": access_token},
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+        errcode = int(result.get("errcode") or 0)
+        if errcode == 0:
+            return result
+        if errcode in {40001, 42001} and attempt == 0:
+            logger.info("WeChat access token expired while deleting menu, retrying once.")
+            continue
+        raise RuntimeError(f"Failed to delete WeChat menu: {result}")
+
+    raise RuntimeError("Failed to delete WeChat menu")
+
+
 def sync_wechat_menu() -> dict:
     payload = build_wechat_menu_payload()
 
@@ -371,6 +403,15 @@ def sync_wechat_menu() -> dict:
         raise RuntimeError(f"Failed to sync WeChat menu: {result}")
 
     raise RuntimeError("Failed to sync WeChat menu")
+
+
+def reset_wechat_menu() -> dict:
+    delete_result = delete_wechat_menu()
+    sync_result = sync_wechat_menu()
+    return {
+        "delete_result": delete_result,
+        **sync_result,
+    }
 
 
 def build_wechat_text_reply(

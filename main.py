@@ -102,13 +102,24 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Exception Handler Middleware
 @app.middleware("http")
-async def catch_exceptions_middleware(request: Request, call_next):
+async def ensure_utf8_charset(request: Request, call_next):
     try:
-        return await call_next(request)
+        response = await call_next(request)
     except Exception as e:
         print(f"Unhandled exception: {e}")
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"detail": "Internal Server Error", "error": str(e)})
+        try:
+            error_msg = str(e).encode('utf-8', errors='replace').decode('utf-8')
+        except Exception:
+            error_msg = "Internal Server Error"
+        response = JSONResponse(status_code=500, content={"detail": "Internal Server Error", "error": error_msg})
+
+    content_type = response.headers.get("content-type", "")
+    if "text/" in content_type or "json" in content_type or "javascript" in content_type:
+        if "charset" not in content_type.lower():
+            response.headers["content-type"] = f"{content_type}; charset=utf-8"
+
+    return response
 
 # CORS 配置
 app.add_middleware(
@@ -146,14 +157,21 @@ async def wechat_verify(
     state: str | None = Query(default=None),
 ):
     if code:
+        target_path = "/login" if state != "register" else "/register"
         try:
             openid = get_wechat_oauth_openid(code)
         except Exception as exc:
+            frontend_base = str(settings.WECHAT_OAUTH_FRONTEND_URL or "").strip()
+            if frontend_base:
+                redirect_url = build_wechat_frontend_route_url(
+                    target_path,
+                    {"wechat_error": str(exc)},
+                )
+                return RedirectResponse(url=redirect_url)
             return JSONResponse(status_code=400, content={"detail": str(exc)})
 
         frontend_base = str(settings.WECHAT_OAUTH_FRONTEND_URL or "").strip()
         if frontend_base:
-            target_path = "/login" if state != "register" else "/register"
             redirect_url = build_wechat_frontend_route_url(target_path, {"openid": openid})
             return RedirectResponse(url=redirect_url)
 

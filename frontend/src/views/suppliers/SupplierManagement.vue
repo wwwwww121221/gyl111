@@ -13,120 +13,116 @@
               @clear="handleSearch"
             />
             <el-button type="primary" @click="handleSearch">搜索</el-button>
-            <el-button v-if="canManage" type="primary" @click="openAddDialog">
-              新增供应商
-            </el-button>
+            <el-button v-if="canManage" type="primary" @click="openAddDialog">新增供应商</el-button>
           </div>
 
-      <el-table
-        :data="filteredSuppliers"
-        style="width: 100%"
-        v-loading="loading"
-        row-key="id"
-        @expand-change="handleExpandChange"
-        border
-      >
-        <el-table-column type="expand">
-          <template #default="{ row }">
-            <div class="expand-content" v-loading="memberLoadingMap[row.id]">
-              <div v-if="attachmentMap[row.id]?.length > 0" class="section-block">
-                <div class="section-title">资质文件</div>
-                <div class="attachment-list">
-                  <div v-for="(f, fIdx) in attachmentMap[row.id]" :key="fIdx" class="attachment-item">
-                    <el-icon class="attachment-icon"><Document /></el-icon>
-                    <span class="attachment-name">{{ f.name || f.filename || '附件' + (fIdx + 1) }}</span>
-                    <el-button size="small" text type="primary" @click="openAttachment(f)">
-                      查看
-                    </el-button>
-                    <el-button size="small" text type="primary" @click="downloadFileDirectly(f)">
-                      下载
-                    </el-button>
+          <el-table
+            :data="filteredSuppliers"
+            style="width: 100%"
+            v-loading="loading"
+            row-key="id"
+            @expand-change="handleExpandChange"
+            border
+          >
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="expand-content" v-loading="memberLoadingMap[row.id]">
+                  <div v-if="attachmentMap[row.id]?.length > 0" class="section-block">
+                    <div class="section-title">资质文件</div>
+                    <div class="attachment-list">
+                      <div v-for="(file, index) in attachmentMap[row.id]" :key="index" class="attachment-item">
+                        <el-icon class="attachment-icon"><Document /></el-icon>
+                        <span class="attachment-name">{{ file.name || file.filename || `附件${index + 1}` }}</span>
+                        <el-button size="small" text type="primary" @click="openAttachment(file)">查看</el-button>
+                        <el-button size="small" text type="primary" @click="downloadFileDirectly(file)">下载</el-button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
 
-              <template v-if="membersMap[row.id]?.length > 0">
-                <div class="section-block">
-                  <div class="section-title">成员列表（{{ membersMap[row.id].length }}人）</div>
-                <div class="member-grid">
-                  <div v-for="(m, idx) in membersMap[row.id]" :key="m.id" class="member-card">
-                    <div class="member-card-header">
-                      <span class="member-name">{{ m.member_name || '-' }}</span>
-                      <el-tag size="small" :type="m.role === 'admin' ? 'danger' : 'info'" effect="plain">
-                        {{ roleLabel(m.role) }}
-                      </el-tag>
-                      <el-tag size="small" :type="statusType(m.status)" effect="plain">
-                        {{ statusText(m.status) }}
-                      </el-tag>
+                  <template v-if="membersMap[row.id]?.length > 0">
+                    <div class="section-block">
+                      <div class="section-title">成员列表（{{ membersMap[row.id].length }}人）</div>
+                      <div class="member-grid">
+                        <div v-for="member in membersMap[row.id]" :key="member.id" class="member-card">
+                          <div class="member-card-header">
+                            <span class="member-name">{{ member.member_name || '-' }}</span>
+                            <el-tag size="small" :type="member.role === 'admin' ? 'danger' : 'info'" effect="plain">
+                              {{ roleLabel(member.role) }}
+                            </el-tag>
+                            <el-tag size="small" :type="statusType(member.status)" effect="plain">
+                              {{ statusText(member.status) }}
+                            </el-tag>
+                            <el-tag v-if="member.approval_mode" size="small" effect="plain" :type="member.approval_mode === 'platform_admin' ? 'warning' : 'success'">
+                              {{ member.approval_mode === 'platform_admin' ? '平台审核' : '供应商审核' }}
+                            </el-tag>
+                          </div>
+                          <div class="member-card-body">
+                            <div class="member-info-row"><span class="label">手机号</span><span>{{ member.phone || '-' }}</span></div>
+                            <div class="member-info-row"><span class="label">职位</span><span>{{ member.position || '-' }}</span></div>
+                            <div v-if="member.application_note" class="member-info-row"><span class="label">说明</span><span>{{ member.application_note }}</span></div>
+                            <div class="member-info-row"><span class="label">审核人</span><span>{{ member.reviewed_by_name || '-' }}</span></div>
+                            <div class="member-info-row"><span class="label">加入时间</span><span>{{ formatTime(member.created_at) }}</span></div>
+                          </div>
+                          <div v-if="canReviewMember(member)" class="member-card-actions">
+                            <el-button size="small" type="success" @click="reviewMemberRequest(memberToRequestRow(row, member), 'approved')">通过</el-button>
+                            <el-button size="small" type="danger" @click="reviewMemberRequest(memberToRequestRow(row, member), 'rejected')">拒绝</el-button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div class="member-card-body">
-                      <div class="member-info-row"><span class="label">手机号</span><span>{{ m.phone }}</span></div>
-                      <div class="member-info-row"><span class="label">职位</span><span>{{ m.position || '-' }}</span></div>
-                      <div v-if="m.application_note" class="member-info-row"><span class="label">说明</span><span>{{ m.application_note }}</span></div>
-                      <div class="member-info-row"><span class="label">审核人</span><span>{{ m.reviewed_by_name || '-' }}</span></div>
-                      <div class="member-info-row"><span class="label">加入时间</span><span>{{ formatTime(m.created_at) }}</span></div>
-                    </div>
+                  </template>
+
+                  <div v-else class="expand-empty">
+                    {{ memberLoadingMap[row.id] ? '' : (membersMap[row.id] ? '暂无成员数据' : '') }}
                   </div>
-                </div>
                 </div>
               </template>
-              <div v-else class="expand-empty">{{ memberLoadingMap[row.id] ? '' : (membersMap[row.id] ? '暂无成员数据' : '') }}</div>
-            </div>
-          </template>
-        </el-table-column>
+            </el-table-column>
 
-        <el-table-column type="index" label="序号" width="80" />
-        <el-table-column prop="name" label="供应商名称" />      
-        <el-table-column prop="contact_person" label="联系人" />
-        <el-table-column prop="phone" label="联系电话" width="140">
-          <template #default="{ row }">
-            <span style="white-space: nowrap;">{{ row.phone || '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="email" label="电子邮箱" />
-        
-        <el-table-column prop="grade" label="评级">
-          <template #default="{ row }">
-            <el-tag :type="row.grade === 'A级' ? 'success' : (row.grade === 'B级' ? 'warning' : (row.grade === 'C级' ? 'danger' : 'info'))">     
-              {{ row.grade || '一般' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        
-        <el-table-column prop="status" label="状态">
-          <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)">
-              {{ getStatusText(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
+            <el-table-column type="index" label="序号" width="80" />
+            <el-table-column prop="name" label="供应商名称" min-width="160" />
+            <el-table-column prop="contact_person" label="联系人" min-width="100" />
+            <el-table-column prop="phone" label="联系电话" width="140">
+              <template #default="{ row }">
+                <span style="white-space: nowrap;">{{ row.phone || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="email" label="电子邮箱" min-width="140" />
+            <el-table-column prop="grade" label="评级" width="100">
+              <template #default="{ row }">
+                <el-tag :type="gradeType(row.grade)">
+                  {{ row.grade || '一般' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getStatusType(row.status)">
+                  {{ getStatusText(row.status) }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="reviewer_name" label="审核人" width="110" />
+            <el-table-column prop="reviewed_at" label="审核时间" min-width="160" />
+            <el-table-column v-if="canManage" label="操作" width="220">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" @click="handleEdit(row)">管理等级/状态</el-button>
+                <el-button v-if="userRole === 'admin'" size="small" type="danger" plain @click="handleDelete(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
 
-        <el-table-column prop="reviewer_name" label="审核人" />
-        <el-table-column prop="reviewed_at" label="审核时间" min-width="160" />
-
-        <el-table-column label="操作" width="220" v-if="canManage">
-          <template #default="{ row }">
-            <el-button size="small" type="primary" @click="handleEdit(row)">
-              管理等级/状态
-            </el-button>
-            <el-button v-if="userRole === 'admin'" size="small" type="danger" plain @click="handleDelete(row)">
-              删除
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-
-      <div class="pagination-wrap" v-if="total > 0">
-        <el-pagination
-          v-model:current-page="currentPage"
-          v-model:page-size="pageSize"
-          :page-sizes="[20, 50, 100]"
-          :total="total"
-          layout="total, sizes, prev, pager, next, jumper"
-          @current-change="handlePageChange"
-          @size-change="handleSizeChange"
-        />
-      </div>
+          <div class="pagination-wrap" v-if="total > 0">
+            <el-pagination
+              v-model:current-page="currentPage"
+              v-model:page-size="pageSize"
+              :page-sizes="[20, 50, 100]"
+              :total="total"
+              layout="total, sizes, prev, pager, next, jumper"
+              @current-change="handlePageChange"
+              @size-change="handleSizeChange"
+            />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane name="member-requests">
@@ -134,7 +130,21 @@
             <span>成员申请</span>
             <el-badge v-if="pendingMemberCount > 0" :value="pendingMemberCount" class="tab-badge" />
           </template>
-          <el-table :data="memberRequests" v-loading="loadingMemberRequests" style="width: 100%" empty-text="暂无待审核的成员申请" border>
+
+          <el-alert
+            type="info"
+            :closable="false"
+            class="member-alert"
+            title="供应商第一个成员、或没有已激活管理员时的加入申请，会进入平台审核。"
+          />
+
+          <el-table
+            :data="memberRequests"
+            v-loading="loadingMemberRequests"
+            style="width: 100%"
+            empty-text="暂无待审核的成员申请"
+            border
+          >
             <el-table-column type="index" label="序号" width="64" />
             <el-table-column prop="supplier_name" label="供应商" min-width="140" />
             <el-table-column prop="member_name" label="申请人" min-width="100" />
@@ -199,10 +209,10 @@
         </el-form-item>
         <el-form-item label="供应商评级">
           <el-radio-group v-model="addForm.grade">
-            <el-radio value="A级">A级</el-radio>
-            <el-radio value="B级">B级</el-radio>
-            <el-radio value="C级">C级</el-radio>
-            <el-radio value="一般">一般</el-radio>
+            <el-radio label="A级">A级</el-radio>
+            <el-radio label="B级">B级</el-radio>
+            <el-radio label="C级">C级</el-radio>
+            <el-radio label="一般">一般</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-divider>登录账号（可选）</el-divider>
@@ -210,20 +220,17 @@
           <el-input v-model="addForm.username" placeholder="选填；填写后需同时填写密码" />
         </el-form-item>
         <el-form-item label="初始密码">
-          <el-input v-model="addForm.password" type="password" show-password placeholder="选填；至少6位" />
+          <el-input v-model="addForm.password" type="password" show-password placeholder="选填；至少 6 位" />
         </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="addDialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="submitAddSupplier" :loading="submitAddLoading">
-            确认创建
-          </el-button>
+          <el-button type="primary" @click="submitAddSupplier" :loading="submitAddLoading">确认创建</el-button>
         </span>
       </template>
     </el-dialog>
 
-    <!-- Edit Dialog -->
     <el-dialog
       v-model="dialogVisible"
       title="供应商管理"
@@ -235,30 +242,25 @@
         <el-form-item label="供应商名称">
           <el-input v-model="currentSupplierName" disabled />
         </el-form-item>
-        
         <el-form-item label="状态调整">
           <el-radio-group v-model="editForm.status">
             <el-radio label="approved">正常/已通过</el-radio>
             <el-radio label="rejected">停用/已拒绝</el-radio>
           </el-radio-group>
         </el-form-item>
-
         <el-form-item label="供应商评级">
           <el-radio-group v-model="editForm.grade">
-            <el-radio value="A级">A级</el-radio>
-            <el-radio value="B级">B级</el-radio>
-            <el-radio value="C级">C级</el-radio>
-            <el-radio value="一般">一般</el-radio>
+            <el-radio label="A级">A级</el-radio>
+            <el-radio label="B级">B级</el-radio>
+            <el-radio label="C级">C级</el-radio>
+            <el-radio label="一般">一般</el-radio>
           </el-radio-group>
         </el-form-item>
       </el-form>
-      
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="submitUpdate" :loading="submitLoading">
-            确认
-          </el-button>
+          <el-button type="primary" @click="submitUpdate" :loading="submitLoading">确认</el-button>
         </span>
       </template>
     </el-dialog>
@@ -288,7 +290,7 @@
       <div v-else class="preview-fallback">
         <el-result icon="warning" title="无法在线预览">
           <template #sub-title>
-            <p>{{ previewFileName }} 不支持浏览器内预览</p>
+            <p>{{ previewFileName }} 暂不支持浏览器内预览。</p>
           </template>
           <template #extra>
             <el-button type="primary" @click="downloadAttachment">下载文件</el-button>
@@ -300,7 +302,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import api from '../../api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Loading } from '@element-plus/icons-vue'
@@ -335,7 +337,7 @@ const addFormRef = ref(null)
 
 const editForm = ref({
   status: 'approved',
-  grade: '一般'
+  grade: '一般',
 })
 
 const addForm = ref({
@@ -347,19 +349,17 @@ const addForm = ref({
   status: 'approved',
   grade: '一般',
   username: '',
-  password: ''
+  password: '',
 })
 
 const addRules = {
-  name: [{ required: true, message: '请输入供应商名称', trigger: 'blur' }]
+  name: [{ required: true, message: '请输入供应商名称', trigger: 'blur' }],
 }
-
-const resetAllLoading = ref(false)
 
 const activeTab = ref('suppliers')
 const memberRequests = ref([])
 const loadingMemberRequests = ref(false)
-const pendingMemberCount = computed(() => memberRequests.value.filter(r => r.status === 'pending').length)
+const pendingMemberCount = computed(() => memberRequests.value.filter((item) => item.status === 'pending').length)
 
 const fetchMemberRequests = async () => {
   loadingMemberRequests.value = true
@@ -374,10 +374,18 @@ const fetchMemberRequests = async () => {
 }
 
 const handleTabChange = (tab) => {
-  if (tab === 'member-requests' && !memberRequests.value.length) {
+  if (tab === 'member-requests') {
     fetchMemberRequests()
   }
 }
+
+const memberToRequestRow = (supplier, member) => ({
+  ...member,
+  supplier_id: supplier.id,
+  supplier_name: supplier.name,
+})
+
+const canReviewMember = (member) => canManage.value && member.status === 'pending'
 
 const reviewMemberRequest = async (row, action) => {
   const actionText = action === 'approved' ? '通过' : '拒绝'
@@ -385,11 +393,12 @@ const reviewMemberRequest = async (row, action) => {
     await ElMessageBox.confirm(
       `确认${actionText} ${row.member_name} 加入 ${row.supplier_name} 的申请吗？`,
       '审核确认',
-      { type: 'warning' }
+      { type: 'warning' },
     )
   } catch {
     return
   }
+
   try {
     await api.put(`/auth/supplier/member-requests/${row.id}/review`, {
       status: action,
@@ -397,7 +406,7 @@ const reviewMemberRequest = async (row, action) => {
       review_comment: undefined,
     })
     ElMessage.success(`已${actionText}该申请`)
-    fetchMemberRequests()
+    await Promise.all([fetchMemberRequests(), refreshExpandedSupplierMembers(row.supplier_id)])
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '操作失败')
   }
@@ -411,7 +420,7 @@ const fetchSuppliers = async () => {
         page: currentPage.value,
         page_size: pageSize.value,
         keyword: searchQuery.value.trim(),
-      }
+      },
     })
     allSuppliers.value = res.data.list || []
     total.value = res.data.total || 0
@@ -443,30 +452,41 @@ const refreshList = () => {
   fetchSuppliers()
 }
 
-const handleExpandChange = async (row, expandedRows) => {
-  const isExpanded = expandedRows.some(r => r.id === row.id)
-  if (isExpanded) {
-    if (!membersMap.value[row.id]) {
-      memberLoadingMap.value[row.id] = true
-      try {
-        const [membersRes, detailRes] = await Promise.all([
-          api.get(`/supplier/${row.id}/members`),
-          api.get(`/supplier/${row.id}/detail`)
-        ])
-        membersMap.value[row.id] = membersRes.data || []
-        attachmentMap.value[row.id] = detailRes.data?.application_attachments || []
-      } catch (error) {
-        console.error(error)
-        membersMap.value[row.id] = []
-        attachmentMap.value[row.id] = []
-      } finally {
-        memberLoadingMap.value[row.id] = false
-      }
-    }
+const loadSupplierExpandData = async (supplierId) => {
+  const [membersRes, detailRes] = await Promise.all([
+    api.get(`/supplier/${supplierId}/members`),
+    api.get(`/supplier/${supplierId}/detail`),
+  ])
+  membersMap.value[supplierId] = membersRes.data || []
+  attachmentMap.value[supplierId] = detailRes.data?.application_attachments || []
+}
+
+const refreshExpandedSupplierMembers = async (supplierId) => {
+  if (!supplierId || !membersMap.value[supplierId]) return
+  try {
+    await loadSupplierExpandData(supplierId)
+  } catch (error) {
+    console.error(error)
   }
 }
 
-const formatTime = (val) => val ? val.slice(0, 16).replace('T', ' ') : '-'
+const handleExpandChange = async (row, expandedRows) => {
+  const isExpanded = expandedRows.some((item) => item.id === row.id)
+  if (!isExpanded || membersMap.value[row.id]) return
+
+  memberLoadingMap.value[row.id] = true
+  try {
+    await loadSupplierExpandData(row.id)
+  } catch (error) {
+    console.error(error)
+    membersMap.value[row.id] = []
+    attachmentMap.value[row.id] = []
+  } finally {
+    memberLoadingMap.value[row.id] = false
+  }
+}
+
+const formatTime = (value) => (value ? String(value).slice(0, 16).replace('T', ' ') : '-')
 
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
 const PDF_EXTS = ['pdf']
@@ -478,49 +498,48 @@ const getFileExt = (name) => {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : ''
 }
 
-const detectPreviewType = (f) => {
-  if (f.preview_file_path) return 'pdf'
-  const ext = getFileExt(f.name || f.filename || '')
+const detectPreviewType = (file) => {
+  if (file.preview_file_path) return 'pdf'
+  const ext = getFileExt(file.name || file.filename || '')
   if (IMAGE_EXTS.includes(ext)) return 'image'
   if (PDF_EXTS.includes(ext)) return 'pdf'
   if (OFFICE_EXTS.includes(ext)) return 'office'
   return 'other'
 }
 
-const base64ToBlobUrl = (base64Data, fileName) => {
+const base64ToBlobUrl = (base64Data) => {
   try {
     const byteStr = atob(base64Data.split(',')[1])
     const mime = base64Data.split(';')[0].split(':')[1] || 'application/octet-stream'
     const ab = new ArrayBuffer(byteStr.length)
     const ia = new Uint8Array(ab)
-    for (let i = 0; i < byteStr.length; i++) ia[i] = byteStr.charCodeAt(i)
-    const blob = new Blob([ab], { type: mime })
-    return URL.createObjectURL(blob)
-  } catch (e) {
-    console.error('Base64转换失败:', e)
+    for (let i = 0; i < byteStr.length; i += 1) ia[i] = byteStr.charCodeAt(i)
+    return URL.createObjectURL(new Blob([ab], { type: mime }))
+  } catch (error) {
+    console.error('Base64 转换失败:', error)
     return null
   }
 }
 
-const openAttachment = async (f) => {
-  const previewPath = f.preview_file_path || ''
-  const url = f.file_path || f.url || f.path || ''
+const openAttachment = async (file) => {
+  const previewPath = file.preview_file_path || ''
+  const url = file.file_path || file.url || file.path || ''
   if (!url && !previewPath) {
     ElMessage.warning('暂无可预览的附件地址')
     return
   }
-  previewFileName.value = f.name || f.filename || '附件'
-  previewType.value = detectPreviewType(f)
+
+  previewFileName.value = file.name || file.filename || '附件'
+  previewType.value = detectPreviewType(file)
   currentPreviewRawUrl.value = url
   previewLoading.value = true
   previewVisible.value = true
 
-  let resolvedUrl = previewPath || url
-
+  const resolvedUrl = previewPath || url
   if (previewType.value === 'office') {
     let srcUrl = url
     if (url.startsWith('data:')) {
-      srcUrl = base64ToBlobUrl(url, previewFileName.value) || url
+      srcUrl = base64ToBlobUrl(url) || url
       currentPreviewRawUrl.value = srcUrl
     }
     previewUrl.value = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(srcUrl)}`
@@ -531,7 +550,9 @@ const openAttachment = async (f) => {
   if (previewType.value === 'other') {
     previewLoading.value = false
   } else if (previewType.value !== 'office') {
-    setTimeout(() => { previewLoading.value = false }, 300)
+    setTimeout(() => {
+      previewLoading.value = false
+    }, 300)
   }
 }
 
@@ -551,97 +572,52 @@ const onPreviewError = () => {
 }
 
 const downloadAttachment = () => {
-  if (currentPreviewRawUrl.value) {
-    const a = document.createElement('a')
-    a.href = currentPreviewRawUrl.value
-    a.download = previewFileName.value || 'download'
-    a.target = '_blank'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-  }
+  if (!currentPreviewRawUrl.value) return
+  const a = document.createElement('a')
+  a.href = currentPreviewRawUrl.value
+  a.download = previewFileName.value || 'download'
+  a.target = '_blank'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
 }
 
-const downloadFileDirectly = (f) => {
-  const url = f.file_path || f.url || f.path || ''
+const downloadFileDirectly = (file) => {
+  const url = file.file_path || file.url || file.path || ''
   if (!url) {
     ElMessage.warning('暂无可下载的附件地址')
     return
   }
-  const fileName = f.name || f.filename || 'download'
   const a = document.createElement('a')
   a.href = url
-  a.download = fileName
+  a.download = file.name || file.filename || 'download'
   a.target = '_blank'
   a.style.display = 'none'
   document.body.appendChild(a)
   a.click()
-  setTimeout(() => { document.body.removeChild(a) }, 100)
+  setTimeout(() => {
+    document.body.removeChild(a)
+  }, 100)
 }
 
 const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || role || '-')
 const statusText = (status) => ({ active: '已激活', pending: '待审核', rejected: '已拒绝', disabled: '已停用' }[status] || status || '-')
 const statusType = (status) => ({ active: 'success', pending: 'warning', rejected: 'danger', disabled: 'info' }[status] || 'info')
+const gradeType = (grade) => ({ A级: 'success', B级: 'warning', C级: 'danger', 一般: 'info' }[grade] || 'info')
 
-// Only show approved/rejected suppliers in this view
-const filteredSuppliers = computed(() => {
-  return allSuppliers.value.filter(s => s.status !== 'pending')
-})
+const filteredSuppliers = computed(() => allSuppliers.value.filter((item) => item.status !== 'pending'))
 
-const handleResetAllAccounts = async () => {
-  try {
-    await ElMessageBox.confirm(
-      '确定要批量重置所有已通过审核的供应商账号密码吗？\n\n重置规则：\n• 登录账号 = 公司全称\n• 初始密码 = 123456\n\n此操作不可撤销！',
-      '批量重置账号密码',
-      {
-        confirmButtonText: '确认重置',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-  } catch {
-    return
-  }
+const getStatusText = (status) => ({
+  pending: '待审核',
+  approved: '已通过',
+  rejected: '已停用',
+}[status] || status)
 
-  resetAllLoading.value = true
-  try {
-    const res = await api.post('/supplier/reset-all-accounts')
-    const { updated_count, total_count, errors, errors_count } = res.data
-    let message = `批量重置完成：成功 ${updated_count}/${total_count} 个供应商`
-    if (errors_count > 0) {
-      message += `\n\n失败 ${errors_count} 个：\n${errors.join('\n')}`
-    }
-    await ElMessageBox.alert(message, '重置结果', { type: errors_count > 0 ? 'warning' : 'success' })
-    refreshList()
-  } catch (error) {
-    console.error(error)
-    ElMessage.error(error.response?.data?.detail || '批量重置失败')
-  } finally {
-    resetAllLoading.value = false
-  }
-}
-
-onMounted(() => {
-  fetchSuppliers()
-})
-
-const getStatusText = (status) => {
-  const map = {
-    pending: '待审核',
-    approved: '已通过',
-    rejected: '已停用'
-  }
-  return map[status] || status
-}
-
-const getStatusType = (status) => {
-  const map = {
-    pending: 'warning',
-    approved: 'success',
-    rejected: 'danger'
-  }
-  return map[status] || 'info'
-}
+const getStatusType = (status) => ({
+  pending: 'warning',
+  approved: 'success',
+  rejected: 'danger',
+}[status] || 'info')
 
 const handleEdit = (row) => {
   currentSupplierId.value = row.id
@@ -657,9 +633,7 @@ const openAddDialog = () => {
 }
 
 const resetAddForm = () => {
-  if (addFormRef.value) {
-    addFormRef.value.resetFields()
-  }
+  addFormRef.value?.resetFields()
   addForm.value = {
     name: '',
     code: '',
@@ -669,12 +643,13 @@ const resetAddForm = () => {
     status: 'approved',
     grade: '一般',
     username: '',
-    password: ''
+    password: '',
   }
 }
 
 const submitAddSupplier = async () => {
   if (!addFormRef.value) return
+
   await addFormRef.value.validate(async (valid) => {
     if (!valid) return
     if ((addForm.value.username && !addForm.value.password) || (!addForm.value.username && addForm.value.password)) {
@@ -682,9 +657,10 @@ const submitAddSupplier = async () => {
       return
     }
     if (addForm.value.password && addForm.value.password.length < 6) {
-      ElMessage.warning('密码长度至少6位')
+      ElMessage.warning('密码长度至少 6 位')
       return
     }
+
     submitAddLoading.value = true
     try {
       await api.post('/supplier/manage', addForm.value)
@@ -705,13 +681,14 @@ const submitUpdate = async () => {
   try {
     await api.put(`/supplier/${currentSupplierId.value}`, {
       status: editForm.value.status,
-      grade: editForm.value.grade
+      grade: editForm.value.grade,
     })
     ElMessage.success('更新成功')
     dialogVisible.value = false
     refreshList()
   } catch (error) {
     console.error(error)
+    ElMessage.error(error.response?.data?.detail || '更新失败')
   } finally {
     submitLoading.value = false
   }
@@ -720,28 +697,35 @@ const submitUpdate = async () => {
 const handleDelete = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确定要永久删除供应商 "${row.name}" 及其所有关联账号和业务数据吗？此操作不可恢复！`,
+      `确定要永久删除供应商“${row.name}”及其所有关联账号和业务数据吗？此操作不可恢复。`,
       '高危操作警告',
       {
         confirmButtonText: '确认删除',
         cancelButtonText: '取消',
         type: 'error',
-      }
+      },
     )
-    
-    loading.value = true
+  } catch {
+    return
+  }
+
+  loading.value = true
+  try {
     await api.delete(`/supplier/${row.id}`)
     ElMessage.success('供应商已成功删除')
     refreshList()
   } catch (error) {
-    if (error !== 'cancel') {
-      console.error(error)
-      ElMessage.error(error.response?.data?.detail || '删除失败')
-    }
+    console.error(error)
+    ElMessage.error(error.response?.data?.detail || '删除失败')
   } finally {
     loading.value = false
   }
 }
+
+onMounted(() => {
+  fetchSuppliers()
+  fetchMemberRequests()
+})
 </script>
 
 <style scoped>
@@ -763,14 +747,15 @@ const handleDelete = async (row) => {
 .toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
 .search-input {
-  width: 280px;
+  width: 320px;
 }
 
-/* 让表格自动占满剩余高度并内部滚动 */
 :deep(.el-table) {
   flex: 1;
   height: 100%;
@@ -807,6 +792,7 @@ const handleDelete = async (row) => {
   padding: 10px 14px;
   background: #f0f2f5;
   border-bottom: 1px solid #ebeef5;
+  flex-wrap: wrap;
 }
 
 .member-name {
@@ -821,6 +807,13 @@ const handleDelete = async (row) => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.member-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px 14px;
 }
 
 .member-info-row {
@@ -842,10 +835,6 @@ const handleDelete = async (row) => {
 
 .section-block {
   margin-bottom: 16px;
-}
-
-.section-block:last-child {
-  margin-bottom: 0;
 }
 
 .section-title {
@@ -885,6 +874,10 @@ const handleDelete = async (row) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.member-alert {
+  margin-bottom: 16px;
 }
 
 .preview-dialog :deep(.el-dialog__body) {

@@ -6,13 +6,22 @@
         <p>首次合作请先完成基础注册；注册成功后可登录系统继续完善调查表与资质附件。</p>
       </div>
 
-      <div v-if="!hasOpenid()" class="wechat-bind-entry">
+      <div v-if="showWechatBindEntry" class="wechat-bind-entry">
         <span class="wechat-bind-copy">当前页面未带微信身份，首次入驻或加入供应商前请先完成微信授权。</span>
         <div class="wechat-bind-actions">
           <el-button type="success" plain @click="startWechatBind('register')">微信授权后入驻</el-button>
           <el-button plain @click="startWechatBind('login')">微信授权后登录</el-button>
         </div>
       </div>
+
+      <el-alert
+        v-if="wechatHint"
+        :title="wechatHint"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="form-alert"
+      />
 
       <el-tabs v-model="activeTab" stretch>
         <el-tab-pane label="创建新供应商入驻" name="onboarding">
@@ -155,7 +164,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api, { getApiOrigin } from '../api'
@@ -171,6 +180,9 @@ const pushWithOpenid = (path) => {
 }
 
 const hasOpenid = () => Boolean(getOpenid())
+const isWechatBrowser = computed(() => /micromessenger/i.test(window.navigator.userAgent || ''))
+const showWechatBindEntry = computed(() => isWechatBrowser.value && !hasOpenid())
+const wechatHint = ref('')
 
 const startWechatBind = (target = 'register') => {
   const normalizedTarget = target === 'login' ? 'login' : 'register'
@@ -396,6 +408,13 @@ const submitJoinRequest = async () => {
 onBeforeUnmount(() => {
   if (onboardingTimer) clearInterval(onboardingTimer)
   if (joinTimer) clearInterval(joinTimer)
+})
+
+onMounted(() => {
+  const wechatError = String(route.query.wechat_error || '').trim()
+  if (wechatError) {
+    wechatHint.value = wechatError
+  }
 })
 </script>
 

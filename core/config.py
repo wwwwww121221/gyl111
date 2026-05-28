@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     WECHAT_VERIFY_URL: Optional[str] = None
     WECHAT_OAUTH_REDIRECT_URL: Optional[str] = None
     WECHAT_OAUTH_FRONTEND_URL: Optional[str] = None
+    WECHAT_MENU_URL_VERSION: Optional[str] = None
     WECHAT_TEMPLATE_DEFAULT_URL: Optional[str] = None
     WECHAT_TEMPLATE_ONBOARDING_RESULT_ID: Optional[str] = None
     WECHAT_TEMPLATE_NEW_INQUIRY_ID: Optional[str] = None

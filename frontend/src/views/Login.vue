@@ -54,9 +54,9 @@
         />
 
         <div v-if="!isInternalMode && showWechatBindEntry" class="wechat-bind-entry">
-          <span class="wechat-bind-copy">当前页面未携带微信身份，首次绑定请先完成微信授权。</span>
+          <span class="wechat-bind-copy">当前页面未携带微信身份，请从公众号底部菜单重新获取绑定链接。</span>
           <el-button type="success" plain @click="startWechatBind('login')">
-            微信授权绑定
+            查看操作提示
           </el-button>
         </div>
 
@@ -294,7 +294,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import api, { getApiOrigin } from '../api'
+import api from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -397,8 +397,7 @@ const pushWithOpenid = (path) => {
 }
 
 const startWechatBind = (target = 'login') => {
-  const normalizedTarget = target === 'register' ? 'register' : 'login'
-  window.location.href = `${getApiOrigin()}/wechat/oauth/start?target=${normalizedTarget}`
+  ElMessage.warning('请回到公众号聊天页，点击底部菜单获取带微信身份的登录/入驻链接。')
 }
 
 const persistLogin = (payload, fallbackUsername = '') => {
@@ -532,6 +531,10 @@ const handleInternalLogin = async () => {
     const formData = new URLSearchParams()
     formData.append('username', internalForm.username)
     formData.append('password', internalForm.password)
+    const openid = getOpenid()
+    if (openid) {
+      formData.append('openid', openid)
+    }
 
     const { data } = await api.post('/auth/login', formData, {
       headers: {

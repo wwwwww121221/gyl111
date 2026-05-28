@@ -226,6 +226,7 @@ def get_current_user_auth(
 def login_access_token(
     db: Session = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends(),
+    openid: str | None = Form(default=None),
     request: Request = None,
 ) -> Any:
     login_value = (form_data.username or "").strip()
@@ -248,6 +249,9 @@ def login_access_token(
     member = None
     if user.role == "supplier":
         supplier, member = get_supplier_context_for_portal(db, user)
+
+    _bind_openid_if_needed(db, user, openid)
+    db.commit()
 
     payload = _create_token_payload(user, supplier, member)
     _log_login(db, user, request=request, supplier=supplier)

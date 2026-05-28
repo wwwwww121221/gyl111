@@ -7,10 +7,10 @@
       </div>
 
       <div v-if="showWechatBindEntry" class="wechat-bind-entry">
-        <span class="wechat-bind-copy">当前页面未带微信身份，首次入驻或加入供应商前请先完成微信授权。</span>
+        <span class="wechat-bind-copy">当前页面未带微信身份，请从公众号底部菜单重新获取入驻或登录链接。</span>
         <div class="wechat-bind-actions">
-          <el-button type="success" plain @click="startWechatBind('register')">微信授权后入驻</el-button>
-          <el-button plain @click="startWechatBind('login')">微信授权后登录</el-button>
+          <el-button type="success" plain @click="startWechatBind('register')">查看操作提示</el-button>
+          <el-button plain @click="startWechatBind('login')">返回公众号菜单</el-button>
         </div>
       </div>
 
@@ -167,7 +167,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import api, { getApiOrigin } from '../api'
+import api from '../api'
 
 const router = useRouter()
 const route = useRoute()
@@ -185,8 +185,7 @@ const showWechatBindEntry = computed(() => isWechatBrowser.value && !hasOpenid()
 const wechatHint = ref('')
 
 const startWechatBind = (target = 'register') => {
-  const normalizedTarget = target === 'login' ? 'login' : 'register'
-  window.location.href = `${getApiOrigin()}/wechat/oauth/start?target=${normalizedTarget}`
+  ElMessage.warning('请回到公众号聊天页，点击底部菜单获取带微信身份的登录/入驻链接。')
 }
 
 const activeTab = ref('onboarding')

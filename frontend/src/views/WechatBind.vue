@@ -20,10 +20,10 @@
           v-if="openid"
           class="wechat-bind-primary"
           type="button"
-          :disabled="binding"
+          :disabled="binding || checking"
           @click="bindCurrentAccount"
         >
-          {{ binding ? '绑定中...' : '绑定到当前已登录账号' }}
+          {{ checking ? '检查绑定状态中...' : (binding ? '绑定中...' : '绑定到当前已登录账号') }}
         </button>
 
         <div class="wechat-bind-actions">
@@ -40,7 +40,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../api'
@@ -48,9 +48,35 @@ import api from '../api'
 const route = useRoute()
 const router = useRouter()
 const binding = ref(false)
+const checking = ref(false)
 
 const openid = computed(() => String(route.query.openid || '').trim())
 const target = computed(() => (String(route.query.target || '').trim().toLowerCase() === 'register' ? 'register' : 'login'))
+
+const clearAuthStorage = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('role')
+  localStorage.removeItem('department')
+  localStorage.removeItem('username')
+  localStorage.removeItem('supplier_id')
+  localStorage.removeItem('supplier_name')
+  localStorage.removeItem('supplier_status')
+  localStorage.removeItem('member_status')
+  localStorage.removeItem('bound_status')
+}
+
+const persistLogin = (payload) => {
+  localStorage.setItem('token', payload.access_token || '')
+  localStorage.setItem('role', payload.role || '')
+  localStorage.setItem('department', payload.department || '')
+  localStorage.setItem('username', payload.username || '')
+  localStorage.setItem('supplier_id', payload.supplier_id ? String(payload.supplier_id) : '')
+  localStorage.setItem('supplier_name', payload.supplier_name || '')
+  localStorage.setItem('supplier_status', payload.supplier_status || '')
+  localStorage.setItem('member_status', payload.member_status || '')
+  if (payload.bound_status) localStorage.setItem('bound_status', payload.bound_status)
+  else localStorage.removeItem('bound_status')
+}
 
 const displayOpenid = computed(() => openid.value || '未从微信回调中获取到 OpenID')
 const leadText = computed(() => {
@@ -68,7 +94,8 @@ const noteText = computed(() => {
 
 const pushWithOpenid = (path) => {
   const query = openid.value ? { openid: openid.value } : {}
-  router.push({ path, query })
+  clearAuthStorage()
+  router.replace({ path, query })
 }
 
 const goLogin = () => {
@@ -96,6 +123,7 @@ const bindCurrentAccount = async () => {
   try {
     const { data } = await api.post('/auth/wechat-bind', { openid: openid.value })
     ElMessage.success(data?.message || '微信绑定成功')
+    router.replace('/')
   } catch (error) {
     if (error?.response?.status !== 401) {
       ElMessage.error(error.response?.data?.detail || '微信绑定失败')
@@ -104,6 +132,34 @@ const bindCurrentAccount = async () => {
     binding.value = false
   }
 }
+
+const tryWechatLogin = async () => {
+  if (!openid.value) return
+
+  checking.value = true
+  try {
+    const { data } = await api.post(
+      '/auth/supplier/wechat-login',
+      { openid: openid.value },
+      { silentError: true },
+    )
+    if (data?.bound) {
+      persistLogin(data)
+      ElMessage.success('微信已绑定，已自动登录')
+      router.replace('/')
+    }
+  } catch (error) {
+    if (error?.response?.status !== 401) {
+      console.error('Wechat auto login failed', error)
+    }
+  } finally {
+    checking.value = false
+  }
+}
+
+onMounted(() => {
+  tryWechatLogin()
+})
 </script>
 
 <style scoped>

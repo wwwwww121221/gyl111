@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from core import security
@@ -14,11 +14,14 @@ from core.config import settings
 from core.redis_client import cache_clear_pattern
 from models import Supplier, SupplierMember, User, get_db
 from schemas import (
+    SupplierBindRequest,
     SupplierJoinRequestCreate,
     SupplierJoinRequestReview,
+    SupplierOnboardLoggedInRequest,
     SupplierOnboardingCreate,
     SupplierPasswordReset,
     SupplierPasswordLogin,
+    SupplierRegisterRequest,
     SupplierSmsCodeSendRequest,
     SupplierSmsLogin,
     SupplierWechatBindRequest,
@@ -63,6 +66,36 @@ def _is_admin_like(user: User | None) -> bool:
     return bool(user and user.role in ["admin", "buyer_manager"])
 
 
+def _normalize_supplier_name(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _normalize_social_credit_code(value: str | None) -> str | None:
+    normalized = "".join(str(value or "").strip().split()).upper()
+    return normalized or None
+
+
+def _ensure_supplier_not_exists(
+    db: Session,
+    company_name: str,
+    social_credit_code: str | None,
+    duplicate_name_message: str,
+    duplicate_code_message: str,
+) -> None:
+    normalized_name = _normalize_supplier_name(company_name)
+    if db.query(Supplier).filter(func.lower(Supplier.name) == normalized_name.lower()).first():
+        raise HTTPException(status_code=400, detail=duplicate_name_message)
+
+    if social_credit_code:
+        existing_code = (
+            db.query(Supplier)
+            .filter(func.lower(Supplier.social_credit_code) == social_credit_code.lower())
+            .first()
+        )
+        if existing_code:
+            raise HTTPException(status_code=400, detail=duplicate_code_message)
+
+
 def _find_user_for_login(db: Session, login_value: str) -> User | None:
     normalized = (login_value or "").strip()
     if not normalized:
@@ -82,7 +115,12 @@ def _bind_openid_if_needed(db: Session, user: User, openid: str | None) -> None:
 
     existing = db.query(User).filter(User.openid == normalized_openid).first()
     if existing and existing.id != user.id:
-        raise HTTPException(status_code=400, detail="该微信账号已绑定其他手机号")
+        if existing.role != "supplier" and not str(existing.phone or "").strip():
+            existing.openid = None
+            db.add(existing)
+            db.flush()
+        else:
+            raise HTTPException(status_code=400, detail="该微信账号已绑定其他手机号")
 
     if user.openid != normalized_openid:
         user.openid = normalized_openid
@@ -90,10 +128,59 @@ def _bind_openid_if_needed(db: Session, user: User, openid: str | None) -> None:
         db.flush()
 
 
+def _ensure_openid_can_bind_supplier(db: Session, openid: str | None, phone: str) -> str:
+    normalized_openid = (openid or "").strip()
+    if not normalized_openid:
+        return ""
+
+    existing = db.query(User).filter(User.openid == normalized_openid).first()
+    if not existing:
+        return normalized_openid
+    if existing.phone == phone:
+        raise HTTPException(status_code=400, detail="该手机号已注册，请直接登录")
+    if existing.role != "supplier" and not str(existing.phone or "").strip():
+        existing.openid = None
+        db.add(existing)
+        db.flush()
+        return normalized_openid
+    if existing.role != "supplier":
+        raise HTTPException(status_code=400, detail="该微信账号已绑定内部账号，请先使用原账号解绑或联系管理员")
+    raise HTTPException(status_code=400, detail="该微信账号已绑定其他手机号")
+
+
+def _resolve_supplier_login_status(db: Session, user: User) -> tuple[Supplier | None, SupplierMember | None, str, bool]:
+    from services.supplier_access import _load_supplier_memberships
+
+    memberships, supplier_map = _load_supplier_memberships(db, user)
+    for member in memberships:
+        supplier = supplier_map.get(member.supplier_id)
+        if supplier and supplier.status == "approved" and member.status == "active":
+            return supplier, member, "bound", True
+
+    has_supplier_record = db.query(Supplier).filter(
+        or_(Supplier.user_id == user.id, Supplier.phone == user.phone)
+    ).first() is not None
+
+    if not memberships:
+        return None, None, "unbound" if not has_supplier_record else "need_bind", has_supplier_record
+
+    for member in memberships:
+        supplier = supplier_map.get(member.supplier_id)
+        if supplier and supplier.status == "pending":
+            return supplier, member, "pending_review", True
+        if member.status == "pending" and supplier and supplier.status == "approved":
+            return supplier, member, "pending_review", True
+        if member.status in ("rejected", "disabled"):
+            continue
+    return None, None, "unbound" if not has_supplier_record else "need_bind", has_supplier_record
+
+
 def _create_token_payload(
     user: User,
     supplier: Supplier | None = None,
     member: SupplierMember | None = None,
+    bound_status: str = "bound",
+    supplier_exists: bool = False,
 ) -> dict[str, Any]:
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
@@ -101,17 +188,20 @@ def _create_token_payload(
         expires_delta=access_token_expires,
         additional_claims={"role": user.role},
     )
-    return {
+    payload = {
         "access_token": access_token,
         "token_type": "bearer",
         "role": user.role,
         "username": user.username,
         "department": user.department,
+        "bound_status": bound_status,
+        "supplier_exists": supplier_exists,
         "supplier_id": supplier.id if supplier else None,
         "supplier_name": supplier.name if supplier else None,
         "supplier_status": supplier.status if supplier else None,
         "member_status": member.status if member else None,
     }
+    return payload
 
 
 def _log_login(
@@ -222,6 +312,30 @@ def get_current_user_auth(
     return user
 
 
+@router.post("/internal/sms-login", response_model=Token)
+def internal_sms_login(
+    payload: SupplierSmsLogin,
+    db: Session = Depends(get_db),
+    request: Request = None,
+) -> Any:
+    phone = validate_phone_or_raise(payload.phone)
+    verify_sms_code(phone, "internal_login", payload.sms_code)
+
+    user = get_user_by_phone(db, phone)
+    if not user:
+        raise HTTPException(status_code=401, detail="该手机号尚未注册")
+
+    if user.role == "supplier":
+        raise HTTPException(status_code=401, detail="该手机号为供应商账号，请使用供应商登录")
+
+    _bind_openid_if_needed(db, user, payload.openid)
+    db.commit()
+
+    token_payload = _create_token_payload(user, None, None, "bound", False)
+    _log_login(db, user, request=request)
+    return token_payload
+
+
 @router.post("/login", response_model=Token)
 def login_access_token(
     db: Session = Depends(get_db),
@@ -245,17 +359,47 @@ def login_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    bound_status = "bound"
+    supplier_exists = False
     supplier = None
     member = None
     if user.role == "supplier":
-        supplier, member = get_supplier_context_for_portal(db, user)
+        supplier, member, bound_status, supplier_exists = _resolve_supplier_login_status(db, user)
 
     _bind_openid_if_needed(db, user, openid)
     db.commit()
 
-    payload = _create_token_payload(user, supplier, member)
+    payload = _create_token_payload(user, supplier, member, bound_status, supplier_exists)
     _log_login(db, user, request=request, supplier=supplier)
     return payload
+
+
+@router.post("/supplier/register")
+def supplier_register(
+    payload: SupplierRegisterRequest,
+    db: Session = Depends(get_db),
+) -> Any:
+    phone = validate_phone_or_raise(payload.phone)
+    verify_sms_code(phone, "register", payload.sms_code)
+
+    existing = get_user_by_phone(db, phone)
+    if existing:
+        raise HTTPException(status_code=400, detail="该手机号已注册，请直接登录")
+
+    normalized_openid = _ensure_openid_can_bind_supplier(db, payload.openid, phone)
+
+    username = f"supplier_{phone}"
+    user = User(
+        username=username,
+        phone=phone,
+        password_hash=security.get_password_hash(payload.password),
+        role="supplier",
+        openid=normalized_openid or None,
+    )
+    db.add(user)
+    db.commit()
+
+    return {"message": "注册成功，请登录"}
 
 
 @router.post("/supplier/send-sms-code")
@@ -272,10 +416,24 @@ def send_supplier_sms_code(
         if not user:
             raise HTTPException(
                 status_code=404,
-                detail="该手机号尚未绑定供应商，请先创建新供应商入驻或申请加入已有供应商",
+                detail="该手机号尚未注册，请先创建新供应商入驻或申请加入已有供应商",
             )
-        if not get_user_memberships(db, user.id):
-            raise HTTPException(status_code=403, detail="您尚未加入任何供应商企业")
+    elif scene == "register":
+        user = get_user_by_phone(db, phone)
+        if user:
+            raise HTTPException(status_code=400, detail="该手机号已注册，请直接登录")
+    elif scene == "internal_login":
+        user = get_user_by_phone(db, phone)
+        if not user:
+            raise HTTPException(status_code=404, detail="该手机号尚未注册")
+        if user.role == "supplier":
+            raise HTTPException(status_code=400, detail="该手机号为供应商账号，请使用供应商登录")
+    elif scene == "internal_reset_password":
+        user = get_user_by_phone(db, phone)
+        if not user:
+            raise HTTPException(status_code=404, detail="该手机号尚未注册")
+        if user.role == "supplier":
+            raise HTTPException(status_code=400, detail="该手机号为供应商账号，请使用供应商登录")
     elif scene not in {"onboarding", "join"}:
         raise HTTPException(status_code=400, detail="短信场景不支持")
 
@@ -308,6 +466,27 @@ def supplier_reset_password(
     return {"message": "密码已重置，请使用新密码登录"}
 
 
+@router.post("/internal/reset-password")
+def internal_reset_password(
+    payload: SupplierPasswordReset,
+    db: Session = Depends(get_db),
+) -> Any:
+    phone = validate_phone_or_raise(payload.phone)
+    user = get_user_by_phone(db, phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="该手机号尚未注册")
+
+    if user.role == "supplier":
+        raise HTTPException(status_code=400, detail="该手机号为供应商账号，请使用供应商找回密码")
+
+    verify_sms_code(phone, "internal_reset_password", payload.sms_code)
+
+    user.password_hash = security.get_password_hash(payload.new_password)
+    db.add(user)
+    db.commit()
+    return {"message": "密码已重置，请使用新密码登录"}
+
+
 @router.post("/supplier/password-login", response_model=Token)
 def supplier_password_login(
     payload: SupplierPasswordLogin,
@@ -319,7 +498,7 @@ def supplier_password_login(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="该手机号尚未绑定供应商，请先创建新供应商入驻或申请加入已有供应商",
+            detail="该手机号尚未注册，请先创建新供应商入驻或申请加入已有供应商",
         )
 
     _ensure_supplier_user_role(user)
@@ -330,16 +509,11 @@ def supplier_password_login(
             detail="密码错误",
         )
 
-    supplier, member = resolve_supplier_access(
-        db,
-        user,
-        allow_pending_supplier=True,
-        allow_pending_member=False,
-    )
+    supplier, member, bound_status, supplier_exists = _resolve_supplier_login_status(db, user)
     _bind_openid_if_needed(db, user, payload.openid)
     db.commit()
 
-    token_payload = _create_token_payload(user, supplier, member)
+    token_payload = _create_token_payload(user, supplier, member, bound_status, supplier_exists)
     _log_login(db, user, request=request, supplier=supplier)
     return token_payload
 
@@ -355,22 +529,17 @@ def supplier_sms_login(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="该手机号尚未绑定供应商，请先创建新供应商入驻或申请加入已有供应商",
+            detail="该手机号尚未注册，请先创建新供应商入驻或申请加入已有供应商",
         )
 
     _ensure_supplier_user_role(user)
     verify_sms_code(phone, "login", payload.sms_code)
 
-    supplier, member = resolve_supplier_access(
-        db,
-        user,
-        allow_pending_supplier=True,
-        allow_pending_member=False,
-    )
+    supplier, member, bound_status, supplier_exists = _resolve_supplier_login_status(db, user)
     _bind_openid_if_needed(db, user, payload.openid)
     db.commit()
 
-    token_payload = _create_token_payload(user, supplier, member)
+    token_payload = _create_token_payload(user, supplier, member, bound_status, supplier_exists)
     _log_login(db, user, request=request, supplier=supplier)
     return token_payload
 
@@ -391,14 +560,9 @@ def supplier_wechat_login(
         }
 
     _ensure_supplier_user_role(user)
-    supplier, member = resolve_supplier_access(
-        db,
-        user,
-        allow_pending_supplier=True,
-        allow_pending_member=False,
-    )
+    supplier, member, bound_status, supplier_exists = _resolve_supplier_login_status(db, user)
 
-    token_payload = _create_token_payload(user, supplier, member)
+    token_payload = _create_token_payload(user, supplier, member, bound_status, supplier_exists)
     _log_login(db, user, request=request, supplier=supplier)
     return {
         "bound": True,
@@ -517,18 +681,18 @@ def supplier_onboarding(
     phone = validate_phone_or_raise(payload.phone)
     verify_sms_code(phone, "onboarding", payload.sms_code)
 
-    company_name = (payload.company_name or "").strip()
+    company_name = _normalize_supplier_name(payload.company_name)
     if not company_name:
         raise HTTPException(status_code=400, detail="公司名称不能为空")
 
-    if db.query(Supplier).filter(Supplier.name == company_name).first():
-        raise HTTPException(status_code=400, detail="该企业已存在，请直接申请加入已有供应商")
-
-    social_credit_code = (payload.social_credit_code or "").strip() or None
-    if social_credit_code:
-        existing_code = db.query(Supplier).filter(Supplier.social_credit_code == social_credit_code).first()
-        if existing_code:
-            raise HTTPException(status_code=400, detail="该统一社会信用代码已存在，请直接申请加入已有供应商")
+    social_credit_code = _normalize_social_credit_code(payload.social_credit_code)
+    _ensure_supplier_not_exists(
+        db,
+        company_name,
+        social_credit_code,
+        "该企业已存在，请直接申请加入已有供应商",
+        "该统一社会信用代码已存在，请直接申请加入已有供应商",
+    )
 
     user = _get_or_create_supplier_user(
         db,
@@ -547,6 +711,7 @@ def supplier_onboarding(
         user_id=user.id,
         application_attachments=payload.attachments or [],
         onboarding_note=(payload.onboarding_note or "").strip() or None,
+        profile_audit_status="submitted",
     )
     db.add(supplier)
     db.flush()
@@ -582,8 +747,8 @@ def supplier_join_request(
     phone = validate_phone_or_raise(payload.phone)
     verify_sms_code(phone, "join", payload.sms_code)
 
-    company_name = (payload.company_name or "").strip()
-    social_credit_code = (payload.social_credit_code or "").strip()
+    company_name = _normalize_supplier_name(payload.company_name)
+    social_credit_code = _normalize_social_credit_code(payload.social_credit_code) or ""
     if not company_name and not social_credit_code:
         raise HTTPException(status_code=400, detail="Please provide a company name or social credit code")
 
@@ -630,7 +795,7 @@ def supplier_join_request(
         role="member",
     )
     member.status = "pending"
-    member.role = existing_member.role if existing_member and existing_member.role in {"admin"} else "member"
+    member.role = "admin" if not has_active_member else "member"
     member.member_name = (payload.member_name or "").strip()
     member.position = (payload.position or "").strip() or None
     member.application_note = (payload.application_note or "").strip() or None
@@ -650,6 +815,119 @@ def supplier_join_request(
         "approval_mode": member.approval_mode,
     }
 
+
+@router.post("/supplier/bind-supplier")
+def bind_supplier_after_login(
+    payload: SupplierBindRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    _ensure_supplier_user_role(current_user)
+
+    supplier = db.query(Supplier).filter(Supplier.id == payload.supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+
+    existing = (
+        db.query(SupplierMember)
+        .filter(SupplierMember.supplier_id == supplier.id, SupplierMember.user_id == current_user.id)
+        .first()
+    )
+    if existing and existing.status == "active":
+        raise HTTPException(status_code=400, detail="您已是该供应商的成员")
+    if existing and existing.status == "pending":
+        raise HTTPException(status_code=400, detail="您的加入申请已在审核中，请耐心等待")
+
+    approval_mode = "supplier_admin"
+    has_active = db.query(SupplierMember).filter(
+        SupplierMember.supplier_id == supplier.id, SupplierMember.status == "active"
+    ).first()
+    if not has_active:
+        approval_mode = "platform_admin"
+
+    default_role = "member" if has_active else "admin"
+    member = existing or SupplierMember(supplier_id=supplier.id, user_id=current_user.id, role=default_role)
+    member.role = default_role
+    member.status = "pending"
+    member.approval_mode = approval_mode
+    member.member_name = member.member_name or current_user.username or current_user.phone or ""
+    member.position = (payload.position or "").strip() or member.position or "成员"
+    member.application_note = (payload.application_note or "").strip() or "登录后发起绑定申请"
+    member.application_attachments = payload.attachments or []
+    member.reviewed_at = None
+    member.reviewed_by = None
+    member.review_comment = None
+    db.add(member)
+    db.commit()
+
+    return {
+        "message": "绑定申请已提交",
+        "supplier_id": supplier.id,
+        "supplier_name": supplier.name,
+        "member_status": member.status,
+        "approval_mode": member.approval_mode,
+    }
+
+
+@router.post("/supplier/onboard-logged-in")
+def supplier_onboard_logged_in(
+    payload: SupplierOnboardLoggedInRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    _ensure_supplier_user_role(current_user)
+
+    company_name = _normalize_supplier_name(payload.company_name)
+    if not company_name:
+        raise HTTPException(status_code=400, detail="公司名称不能为空")
+
+    social_credit_code = _normalize_social_credit_code(payload.social_credit_code)
+    _ensure_supplier_not_exists(
+        db,
+        company_name,
+        social_credit_code,
+        "该企业已存在，请直接绑定已有供应商",
+        "该统一社会信用代码已存在，请直接绑定已有供应商",
+    )
+
+    phone = (payload.phone or "").strip() or current_user.phone
+
+    supplier = Supplier(
+        name=company_name,
+        social_credit_code=social_credit_code,
+        contact_person=(payload.contact_person or "").strip(),
+        phone=phone,
+        email=(payload.email or "").strip() or None,
+        status="pending",
+        user_id=current_user.id,
+        application_attachments=payload.attachments or [],
+        onboarding_note=(payload.onboarding_note or "").strip() or None,
+        profile_audit_status="submitted",
+    )
+    db.add(supplier)
+    db.flush()
+
+    member = SupplierMember(
+        supplier_id=supplier.id,
+        user_id=current_user.id,
+        role="admin",
+        status="pending",
+        member_name=(payload.contact_person or "").strip(),
+        position="管理员",
+        application_note="登录后创建新供应商入驻",
+        application_attachments=payload.attachments or [],
+        approval_mode="platform_admin",
+    )
+    db.add(member)
+    db.commit()
+    _invalidate_supplier_cache()
+
+    return {
+        "message": "入驻申请已提交，请等待平台审核",
+        "supplier_id": supplier.id,
+        "supplier_status": supplier.status,
+        "member_status": member.status,
+    }
 
 
 @router.get("/supplier/member-requests")
@@ -741,9 +1019,9 @@ def review_supplier_member_request(
             if not has_other_active:
                 member.role = "admin"
             else:
-                member.role = (payload.role or member.role or "member").strip()
+                member.role = member.role or "member"
         else:
-            member.role = (payload.role or member.role or "member").strip()
+            member.role = member.role or "member"
     else:
         member.status = "rejected"
 

@@ -18,13 +18,27 @@ const clearAuth = () => {
   localStorage.removeItem('supplier_name')
   localStorage.removeItem('supplier_status')
   localStorage.removeItem('member_status')
+  localStorage.removeItem('bound_status')
 }
 
 const getSupplierHomePath = () => {
+  const boundStatus = localStorage.getItem('bound_status')
   const supplierStatus = localStorage.getItem('supplier_status')
   const memberStatus = localStorage.getItem('member_status')
-  if (supplierStatus === 'approved' && memberStatus && memberStatus !== 'active') return '/login'
-  return supplierStatus === 'approved' ? '/supplier/inquiries' : '/supplier/company-info'
+
+  if (boundStatus === 'bound' && supplierStatus === 'approved' && memberStatus === 'active') {
+    return '/supplier/inquiries'
+  }
+  if (supplierStatus === 'approved' && memberStatus === 'active') {
+    return '/supplier/inquiries'
+  }
+  if (supplierStatus === 'pending' || supplierStatus === 'rejected') {
+    return '/supplier/onboard'
+  }
+  if (boundStatus === 'pending_review') {
+    return '/supplier/onboard'
+  }
+  return '/supplier/onboard'
 }
 
 const isTokenValid = (token) => {
@@ -259,6 +273,12 @@ const routes = [
         name: 'CompanyInfo',
         component: () => import('../views/supplier/CompanyInfo.vue'),
         meta: { requiresRole: ['supplier'] }
+      },
+      {
+        path: 'onboard',
+        name: 'SupplierOnboard',
+        component: () => import('../views/supplier/SupplierOnboard.vue'),
+        meta: { requiresRole: ['supplier'] }
       }
     ]
   }
@@ -277,6 +297,10 @@ router.beforeEach((to, from) => {
   
   if (to.meta.requiresAuth === false) {
     if (tokenValid && to.path === '/login') {
+      const openid = String(to.query.openid || '').trim()
+      if (openid) {
+        return { path: '/wechat/bind', query: { openid, target: 'login' } }
+      }
       return '/' // 已经登录就不要去login了
     }
     return true
@@ -317,16 +341,22 @@ router.beforeEach((to, from) => {
   }
 
   if (role === 'supplier') {
+    const boundStatus = localStorage.getItem('bound_status')
     const supplierStatus = localStorage.getItem('supplier_status')
     const memberStatus = localStorage.getItem('member_status')
-    if (supplierStatus === 'approved' && memberStatus && memberStatus !== 'active') {
-      clearAuth()
-      return '/login'
-    }
-  }
 
-  if (role === 'supplier' && localStorage.getItem('supplier_status') !== 'approved' && to.path !== '/supplier/company-info') {
-    return '/supplier/company-info'
+    const isBound = boundStatus === 'bound' || (supplierStatus === 'approved' && memberStatus === 'active')
+    const isPending = boundStatus === 'pending_review' || supplierStatus === 'pending'
+
+    if (!isBound && !isPending) {
+      if (to.path !== '/supplier/onboard') {
+        return '/supplier/onboard'
+      }
+    } else if (isPending && supplierStatus !== 'approved') {
+      if (to.path !== '/supplier/onboard') {
+        return '/supplier/onboard'
+      }
+    }
   }
 
   return true

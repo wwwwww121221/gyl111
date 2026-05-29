@@ -20,7 +20,7 @@ WECHAT_ACCESS_TOKEN_CACHE_KEY = "wechat:access_token"
 WECHAT_TEMPLATE_COLOR = "#173177"
 WECHAT_DEADLINE_REMINDER_CACHE_PREFIX = "wechat:deadline-reminder"
 WECHAT_MENU_KEY_LOGIN = "SUPPLIER_LOGIN_BIND"
-WECHAT_MENU_KEY_REGISTER = "SUPPLIER_REGISTER_BIND"
+WECHAT_MENU_KEY_REGISTER = "SUPPLIER_ACCOUNT_REGISTER"
 
 
 def _wrap_template_value(value: object) -> dict[str, str]:
@@ -318,7 +318,7 @@ def build_wechat_menu_payload() -> dict[str, object]:
         "button": [
             {
                 "type": "click",
-                "name": "\u4f9b\u5e94\u5546\u767b\u5f55",
+                "name": "\u5e73\u53f0\u767b\u5f55",
                 "key": WECHAT_MENU_KEY_LOGIN,
             },
             {
@@ -342,10 +342,10 @@ def build_wechat_menu_click_message(event_key: str, openid: str | None = None) -
         login_url = build_wechat_bind_entry_url(openid=openid, target="login")
         return "\n".join(
             [
-                "请点击以下链接完成供应商入驻或加入申请：",
+                "请先创建供应商账号。注册完成后，系统会进入同一个资料提交页面，可选择绑定已有供应商，或创建新供应商入驻申请。",
                 f"供应商入驻：{register_url}",
                 "",
-                f"已有账号请登录：{login_url}",
+                f"已有账号请直接登录：{login_url}",
             ]
         )
 
@@ -353,10 +353,10 @@ def build_wechat_menu_click_message(event_key: str, openid: str | None = None) -
     register_url = build_wechat_bind_entry_url(openid=openid, target="register")
     return "\n".join(
         [
-            "请点击以下链接完成供应商登录绑定：",
-            f"供应商登录：{login_url}",
+            "请登录供应链协同平台。内部人员可直接使用账号登录；供应商登录后可绑定已有供应商，或创建新供应商入驻申请。",
+            f"平台登录：{login_url}",
             "",
-            f"首次合作请入驻：{register_url}",
+            f"供应商没有账号请先入驻：{register_url}",
         ]
     )
 
@@ -370,9 +370,16 @@ def build_wechat_subscribe_welcome_message(openid: str | None = None) -> str:
     lines.extend(
         [
             "",
-            "请点击以下链接完成账号绑定：",
-            f"供应商登录绑定：{login_url}",
-            f"供应商入驻绑定：{register_url}",
+            "您可以在这里接收：",
+            "1. 供应商入驻审核结果",
+            "2. 新询价邀请",
+            "3. 发货预警提醒",
+            "4. 合同与报价相关通知",
+            "",
+            "请点击公众号底部菜单【平台登录】进入系统。内部人员可直接登录，供应商登录后可绑定已有供应商或创建新供应商入驻申请。",
+            "供应商没有账号时，请点击【供应商入驻】先完成账号创建。",
+            f"平台登录：{login_url}",
+            f"供应商入驻：{register_url}",
         ]
     )
     return "\n".join(lines)

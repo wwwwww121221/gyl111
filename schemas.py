@@ -10,10 +10,37 @@ class Token(BaseModel):
     role: Optional[str] = None
     username: Optional[str] = None
     department: Optional[str] = None
+    bound_status: Optional[str] = "bound"
+    supplier_exists: Optional[bool] = False
     supplier_id: Optional[int] = None
     supplier_name: Optional[str] = None
     supplier_status: Optional[str] = None
     member_status: Optional[str] = None
+
+
+class SupplierBindRequest(BaseModel):
+    supplier_id: int
+    position: Optional[str] = None
+    application_note: Optional[str] = None
+    attachments: Optional[List[dict]] = None
+
+
+class SupplierOnboardLoggedInRequest(BaseModel):
+    company_name: str = Field(..., min_length=1)
+    social_credit_code: Optional[str] = None
+    contact_person: str = Field(..., min_length=1)
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    onboarding_note: Optional[str] = None
+    attachments: Optional[List[dict]] = None
+
+
+class SupplierRegisterRequest(BaseModel):
+    phone: str = Field(..., min_length=1)
+    sms_code: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=6)
+    openid: Optional[str] = None
+
 
 class TokenData(BaseModel):
     username: Optional[str] = None

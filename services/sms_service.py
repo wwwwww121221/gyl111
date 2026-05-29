@@ -20,7 +20,15 @@ logger = logging.getLogger(__name__)
 _SMS_CODE_STORE: dict[str, dict] = {}
 _SMS_SEND_COOLDOWN_SECONDS = 60
 _SMS_CODE_EXPIRE_MINUTES = 5
-_SUPPORTED_SCENES = {"login", "onboarding", "join", "reset_password"}
+_SUPPORTED_SCENES = {
+    "login",
+    "register",
+    "onboarding",
+    "join",
+    "reset_password",
+    "internal_login",
+    "internal_reset_password",
+}
 
 
 @dataclass
@@ -75,9 +83,18 @@ def _aliyun_sign(params: dict[str, str], access_key_secret: str) -> str:
 def _resolve_template_code(scene: str) -> str:
     template_map = {
         "login": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_LOGIN", "").strip() or "100001",
+        "register": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_REGISTER", "").strip()
+        or os.getenv("ALIYUN_SMS_TEMPLATE_CODE_LOGIN", "").strip()
+        or "100001",
         "onboarding": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_ONBOARDING", "").strip() or "100003",
         "join": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_JOIN", "").strip() or "100003",
         "reset_password": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_RESET_PASSWORD", "").strip() or "100003",
+        "internal_login": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_INTERNAL_LOGIN", "").strip()
+        or os.getenv("ALIYUN_SMS_TEMPLATE_CODE_LOGIN", "").strip()
+        or "100001",
+        "internal_reset_password": os.getenv("ALIYUN_SMS_TEMPLATE_CODE_INTERNAL_RESET_PASSWORD", "").strip()
+        or os.getenv("ALIYUN_SMS_TEMPLATE_CODE_RESET_PASSWORD", "").strip()
+        or "100003",
     }
     return template_map.get(scene, os.getenv("ALIYUN_SMS_TEMPLATE_CODE", "").strip())
 

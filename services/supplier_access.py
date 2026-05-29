@@ -33,7 +33,7 @@ def _backfill_memberships_for_user(db: Session, user: User) -> list[SupplierMemb
     suppliers = (
         db.query(Supplier)
         .filter(Supplier.user_id == user.id)
-        .order_by(Supplier.created_at.asc(), Supplier.id.asc())
+        .order_by(Supplier.id.asc())
         .all()
     )
     if not suppliers:
@@ -105,7 +105,7 @@ def resolve_supplier_access(
     if not memberships:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="鎮ㄥ皻鏈姞鍏ヤ换浣曚緵搴斿晢浼佷笟",
+            detail="您尚未加入任何供应商企业",
         )
 
     for member in memberships:
@@ -123,27 +123,32 @@ def resolve_supplier_access(
             if member.status == "active" or allow_pending_member:
                 return supplier, member
 
+        for member in memberships:
+            supplier = supplier_map.get(member.supplier_id)
+            if supplier and supplier.status == "approved" and member.status == "pending":
+                return supplier, member
+
     for member in memberships:
         supplier = supplier_map.get(member.supplier_id)
         if supplier and supplier.status == "pending":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="浼佷笟寰呭鏍?")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="企业待审核")
 
     for member in memberships:
         if member.status == "pending":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="鎴愬憳鐢宠寰呭鏍?")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="成员申请待审核")
 
     for member in memberships:
         supplier = supplier_map.get(member.supplier_id)
         if supplier and supplier.status == "rejected":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="浼佷笟瀹℃牳鏈€氳繃")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="企业审核未通过")
 
     for member in memberships:
         if member.status in ["disabled", "rejected"]:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="璐﹀彿宸插仠鐢?")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已停用")
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="鎮ㄥ綋鍓嶆病鏈夊彲鐢ㄧ殑渚涘簲鍟嗕紒涓氭潈闄?",
+        detail="您当前没有可用的供应商企业权限",
     )
 
 

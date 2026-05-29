@@ -90,7 +90,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Document, Menu, OfficeBuilding, UserFilled, Warning } from '@element-plus/icons-vue'
+import { ArrowDown, Document, Menu, OfficeBuilding, Plus, UserFilled, Warning } from '@element-plus/icons-vue'
 import { jwtDecode } from 'jwt-decode'
 import api from '../api/index'
 
@@ -99,17 +99,22 @@ const route = useRoute()
 const isMobile = ref(window.innerWidth <= 768)
 const mobileMenuVisible = ref(false)
 const supplierStatus = ref(localStorage.getItem('supplier_status') || '')
+const boundStatus = ref(localStorage.getItem('bound_status') || '')
 
 const allMenus = [
   { path: '/supplier/inquiries', label: '我的询价单', icon: Document },
   { path: '/supplier/warnings', label: '发货预警', icon: Warning },
   { path: '/supplier/members', label: '成员管理', icon: UserFilled },
   { path: '/supplier/company-info', label: '公司信息', icon: OfficeBuilding },
+  { path: '/supplier/onboard', label: '入驻/绑定', icon: Plus },
 ]
 
 const visibleMenus = computed(() => {
-  if (supplierStatus.value === 'approved') return allMenus
-  return allMenus.filter((item) => item.path === '/supplier/company-info')
+  const isBound = boundStatus.value === 'bound' || (supplierStatus.value === 'approved' && localStorage.getItem('member_status') === 'active')
+  if (isBound) return allMenus.filter((item) => item.path !== '/supplier/onboard')
+  const isPending = boundStatus.value === 'pending_review' || supplierStatus.value === 'pending'
+  if (isPending) return allMenus.filter((item) => item.path === '/supplier/onboard')
+  return allMenus.filter((item) => item.path === '/supplier/onboard')
 })
 
 const activeMenu = computed(() => route.path)
@@ -120,6 +125,7 @@ const pageTitle = computed(() => {
     '/supplier/warnings': '发货预警',
     '/supplier/members': '成员管理',
     '/supplier/company-info': '公司信息',
+    '/supplier/onboard': '入驻/绑定',
   }
   return map[route.path] || '供应商服务平台'
 })
@@ -136,19 +142,51 @@ try {
 }
 
 const fetchSupplierDisplayName = async () => {
+  const memberStatus = localStorage.getItem('member_status') || ''
+  const shouldFetchProfile =
+    boundStatus.value === 'bound' ||
+    supplierStatus.value === 'approved' ||
+    supplierStatus.value === 'pending' ||
+    boundStatus.value === 'pending_review' ||
+    memberStatus === 'active'
+
+  if (!shouldFetchProfile) {
+    if (route.path !== '/supplier/onboard') {
+      router.replace('/supplier/onboard')
+    }
+    return
+  }
+
   try {
-    const res = await api.get('/supplier/me')
+    const res = await api.get('/supplier/me', { silentError: true })
     const companyName = res?.data?.company_name
     if (companyName) {
       displayName.value = companyName
     }
     supplierStatus.value = res?.data?.status || supplierStatus.value
     localStorage.setItem('supplier_status', supplierStatus.value || '')
-    if (supplierStatus.value !== 'approved' && route.path !== '/supplier/company-info') {
-      router.replace('/supplier/company-info')
+    if (res?.data?.member_status) {
+      localStorage.setItem('member_status', res.data.member_status)
+    }
+    if (res?.data?.status === 'approved' && res?.data?.member_status === 'active') {
+      boundStatus.value = 'bound'
+      localStorage.setItem('bound_status', 'bound')
+    }
+    if (boundStatus.value !== 'bound' && supplierStatus.value !== 'approved') {
+      if (route.path !== '/supplier/onboard') {
+        router.replace('/supplier/onboard')
+      }
     }
   } catch (error) {
     console.error('Failed to fetch supplier profile', error)
+    if ([403, 404].includes(error.response?.status) && route.path !== '/supplier/onboard') {
+      boundStatus.value = ''
+      supplierStatus.value = ''
+      localStorage.removeItem('bound_status')
+      localStorage.removeItem('supplier_status')
+      localStorage.removeItem('member_status')
+      router.replace('/supplier/onboard')
+    }
   }
 }
 
@@ -168,6 +206,7 @@ const clearSupplierAuth = () => {
   localStorage.removeItem('supplier_name')
   localStorage.removeItem('supplier_status')
   localStorage.removeItem('member_status')
+  localStorage.removeItem('bound_status')
 }
 
 onMounted(() => {

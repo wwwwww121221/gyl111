@@ -8,8 +8,8 @@ from routers.auth import get_current_user_auth
 from sqlalchemy import func, or_
 from core.config import settings
 from services.wechat_service import (
+    build_wechat_bind_entry_url,
     build_wechat_menu_payload,
-    build_wechat_oauth_entry_url,
     delete_wechat_menu,
     get_wechat_menu,
     is_wechat_configured,
@@ -26,6 +26,11 @@ class WechatTestSendPayload(BaseModel):
     subject: str | None = None
     result_text: str | None = None
     remark: str | None = None
+
+
+class UserProfileUpdatePayload(BaseModel):
+    phone: str | None = None
+    department: str | None = None
 
 
 def _is_admin_like(user: User | None) -> bool:
@@ -149,6 +154,63 @@ def log_operation(
     except Exception as e:
         print(f"Failed to log operation: {e}")
         db.rollback()
+
+
+@router.get("/profile")
+def get_current_user_profile(
+    current_user: User = Depends(get_current_user_auth),
+) -> Any:
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "role": current_user.role,
+        "department": current_user.department,
+        "phone": current_user.phone,
+    }
+
+
+@router.put("/profile")
+def update_current_user_profile(
+    payload: UserProfileUpdatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+    request: Request = None,
+) -> Any:
+    phone = (payload.phone or "").strip() or None
+    department = (payload.department or "").strip() or None
+
+    if phone:
+        duplicated = db.query(User).filter(User.phone == phone, User.id != current_user.id).first()
+        if duplicated:
+            raise HTTPException(status_code=400, detail="该手机号已被其他账号使用")
+
+    current_user.phone = phone
+    current_user.department = department
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+
+    log_operation(
+        db,
+        current_user.id,
+        "UPDATE_PROFILE",
+        f"用户 {current_user.username} 更新了个人信息",
+        request=request,
+        module="账号安全",
+        target_type="账号",
+        target_name=current_user.username,
+        result="success",
+        extra_data={"phone": current_user.phone, "department": current_user.department},
+    )
+
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "role": current_user.role,
+        "department": current_user.department,
+        "phone": current_user.phone,
+    }
+
 
 @router.get("/logs")
 def get_operation_logs(
@@ -287,10 +349,11 @@ def get_wechat_status(
 ) -> Any:
     login_url = None
     register_url = None
-    if is_wechat_configured() and settings.WECHAT_VERIFY_URL:
+    preview_openid = str(current_user.openid or "").strip() or None
+    if is_wechat_configured():
         try:
-            login_url = build_wechat_oauth_entry_url("login")
-            register_url = build_wechat_oauth_entry_url("register")
+            login_url = build_wechat_bind_entry_url(openid=preview_openid, target="login")
+            register_url = build_wechat_bind_entry_url(openid=preview_openid, target="register")
         except Exception:
             login_url = None
             register_url = None
@@ -299,8 +362,8 @@ def get_wechat_status(
         "configured": is_wechat_configured(),
         "app_id": settings.WECHAT_APP_ID,
         "verify_url": settings.WECHAT_VERIFY_URL,
-        "oauth_start_login_url": login_url or "/wechat/oauth/start?target=login",
-        "oauth_start_register_url": register_url or "/wechat/oauth/start?target=register",
+        "bind_login_url": login_url,
+        "bind_register_url": register_url,
         "menu_preview": build_wechat_menu_payload() if login_url and register_url else None,
         "current_user_openid": current_user.openid,
         "current_user_openid_bound": bool(str(current_user.openid or "").strip()),

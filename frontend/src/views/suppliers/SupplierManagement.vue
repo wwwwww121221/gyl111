@@ -232,6 +232,35 @@
     </el-dialog>
 
     <el-dialog
+      v-model="memberReviewDialogVisible"
+      :title="memberReviewAction === 'approved' ? '通过成员申请' : '拒绝成员申请'"
+      width="460px"
+      destroy-on-close
+    >
+      <div class="review-info">
+        <p><strong>供应商：</strong>{{ currentMemberReview?.supplier_name || '-' }}</p>
+        <p><strong>申请人：</strong>{{ currentMemberReview?.member_name || '-' }}（{{ currentMemberReview?.phone || '-' }}）</p>
+        <p v-if="currentMemberReview?.position"><strong>职位：</strong>{{ currentMemberReview.position }}</p>
+        <p v-if="currentMemberReview?.application_note"><strong>说明：</strong>{{ currentMemberReview.application_note }}</p>
+      </div>
+      <el-form label-width="90px">
+        <el-form-item label="审核意见">
+          <el-input v-model="memberReviewComment" type="textarea" :rows="3" placeholder="选填，可填写备注信息" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="memberReviewDialogVisible = false">取消</el-button>
+        <el-button
+          :type="memberReviewAction === 'approved' ? 'success' : 'danger'"
+          :loading="memberReviewSubmitting"
+          @click="submitMemberReview"
+        >
+          {{ memberReviewAction === 'approved' ? '确认通过' : '确认拒绝' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="dialogVisible"
       title="供应商管理"
       width="500px"
@@ -360,6 +389,11 @@ const activeTab = ref('suppliers')
 const memberRequests = ref([])
 const loadingMemberRequests = ref(false)
 const pendingMemberCount = computed(() => memberRequests.value.filter((item) => item.status === 'pending').length)
+const memberReviewDialogVisible = ref(false)
+const memberReviewSubmitting = ref(false)
+const currentMemberReview = ref(null)
+const memberReviewAction = ref('')
+const memberReviewComment = ref('')
 
 const fetchMemberRequests = async () => {
   loadingMemberRequests.value = true
@@ -388,27 +422,32 @@ const memberToRequestRow = (supplier, member) => ({
 const canReviewMember = (member) => canManage.value && member.status === 'pending'
 
 const reviewMemberRequest = async (row, action) => {
-  const actionText = action === 'approved' ? '通过' : '拒绝'
-  try {
-    await ElMessageBox.confirm(
-      `确认${actionText} ${row.member_name} 加入 ${row.supplier_name} 的申请吗？`,
-      '审核确认',
-      { type: 'warning' },
-    )
-  } catch {
-    return
-  }
+  currentMemberReview.value = row
+  memberReviewAction.value = action
+  memberReviewComment.value = ''
+  memberReviewDialogVisible.value = true
+}
 
+const submitMemberReview = async () => {
+  if (!currentMemberReview.value) return
+
+  const actionText = memberReviewAction.value === 'approved' ? '通过' : '拒绝'
+  memberReviewSubmitting.value = true
   try {
-    await api.put(`/auth/supplier/member-requests/${row.id}/review`, {
-      status: action,
-      role: action === 'approved' ? (row.approval_mode === 'platform_admin' ? 'admin' : 'member') : undefined,
-      review_comment: undefined,
+    await api.put(`/auth/supplier/member-requests/${currentMemberReview.value.id}/review`, {
+      status: memberReviewAction.value,
+      review_comment: memberReviewComment.value || undefined,
     })
     ElMessage.success(`已${actionText}该申请`)
-    await Promise.all([fetchMemberRequests(), refreshExpandedSupplierMembers(row.supplier_id)])
+    memberReviewDialogVisible.value = false
+    await Promise.all([
+      fetchMemberRequests(),
+      refreshExpandedSupplierMembers(currentMemberReview.value.supplier_id),
+    ])
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '操作失败')
+  } finally {
+    memberReviewSubmitting.value = false
   }
 }
 

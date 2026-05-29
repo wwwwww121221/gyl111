@@ -92,7 +92,7 @@
           </div>
 
           <div class="header-right">
-            <el-dropdown trigger="click">
+            <el-dropdown trigger="click" @command="handleUserCommand">
               <span class="el-dropdown-link">
                 {{ roleLabel }}
                 <span v-if="userDepartment && userRole !== 'admin'">-{{ userDepartment }}</span>
@@ -101,8 +101,8 @@
               </span>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item>个人中心</el-dropdown-item>
-                  <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
+                  <el-dropdown-item command="profile">个人中心</el-dropdown-item>
+                  <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -116,18 +116,49 @@
         </el-main>
       </el-container>
     </el-container>
+
+    <el-dialog v-model="profileDialogVisible" title="个人中心" width="420px" destroy-on-close>
+      <el-form ref="profileFormRef" :model="profileForm" :rules="profileRules" label-position="top" size="large">
+        <el-form-item label="账号">
+          <el-input v-model="profileForm.username" disabled />
+        </el-form-item>
+        <el-form-item label="角色">
+          <el-input :model-value="roleLabel" disabled />
+        </el-form-item>
+        <el-form-item label="所属部门" prop="department">
+          <el-input v-model="profileForm.department" placeholder="请输入所属部门" maxlength="30" />
+        </el-form-item>
+        <el-form-item label="手机号" prop="phone">
+          <el-input v-model="profileForm.phone" placeholder="请输入手机号" maxlength="11" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="profileDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="profileSaving" @click="saveProfile">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowDown, DataBoard, Expand, List, PieChart, Setting, User, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import api from '../api'
 
 const router = useRouter()
 const route = useRoute()
 const isCollapse = ref(false)
+const profileDialogVisible = ref(false)
+const profileSaving = ref(false)
+const profileFormRef = ref(null)
+const profileForm = reactive({
+  username: '',
+  role: '',
+  department: '',
+  phone: '',
+})
 
 const userRole = computed(() => localStorage.getItem('role') || '')
 const userName = computed(() => localStorage.getItem('username') || '')
@@ -174,6 +205,71 @@ const currentRouteName = computed(() => {
 
 const toggleSidebar = () => {
   isCollapse.value = !isCollapse.value
+}
+
+const phoneValidator = (_, value, callback) => {
+  const phone = String(value || '').trim()
+  if (!phone) {
+    callback()
+    return
+  }
+  if (!/^1[3-9]\d{9}$/.test(phone)) {
+    callback(new Error('请输入有效的 11 位手机号'))
+    return
+  }
+  callback()
+}
+
+const profileRules = {
+  phone: [{ validator: phoneValidator, trigger: 'blur' }],
+}
+
+const openProfileDialog = async () => {
+  profileDialogVisible.value = true
+  try {
+    const { data } = await api.get('/system/profile', { silentError: true })
+    profileForm.username = data.username || ''
+    profileForm.role = data.role || ''
+    profileForm.department = data.department || ''
+    profileForm.phone = data.phone || ''
+  } catch (error) {
+    profileForm.username = userName.value
+    profileForm.role = userRole.value
+    profileForm.department = userDepartment.value
+    profileForm.phone = ''
+    ElMessage.error(error.response?.data?.detail || '获取个人信息失败')
+  }
+}
+
+const saveProfile = async () => {
+  const valid = await profileFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+
+  profileSaving.value = true
+  try {
+    const { data } = await api.put('/system/profile', {
+      phone: profileForm.phone || null,
+      department: profileForm.department || null,
+    })
+    localStorage.setItem('department', data.department || '')
+    localStorage.setItem('username', data.username || userName.value)
+    ElMessage.success('个人信息已更新')
+    profileDialogVisible.value = false
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '保存失败')
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+const handleUserCommand = (command) => {
+  if (command === 'profile') {
+    openProfileDialog()
+    return
+  }
+  if (command === 'logout') {
+    handleLogout()
+  }
 }
 
 const handleLogout = () => {

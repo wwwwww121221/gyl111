@@ -85,14 +85,6 @@
         <p><strong>申请职位：</strong>{{ currentReview?.position || '-' }}</p>
         <p v-if="currentReview?.application_note"><strong>申请说明：</strong>{{ currentReview.application_note }}</p>
       </div>
-      <el-form v-if="reviewAction === 'approved'" label-width="90px">
-        <el-form-item label="分配角色">
-          <el-select v-model="reviewRole" style="width: 100%">
-            <el-option label="普通成员" value="member" />
-            <el-option label="管理员" value="admin" />
-          </el-select>
-        </el-form-item>
-      </el-form>
       <el-form label-width="90px">
         <el-form-item label="审核意见">
           <el-input v-model="reviewComment" type="textarea" :rows="3" placeholder="选填，可填写备注信息" />
@@ -128,7 +120,6 @@ const reviewDialogVisible = ref(false)
 const reviewing = ref(false)
 const currentReview = ref(null)
 const reviewAction = ref('')
-const reviewRole = ref('member')
 const reviewComment = ref('')
 
 const fetchPendingRequests = async () => {
@@ -172,7 +163,6 @@ const handleTabChange = () => {
 const openReviewDialog = (row, action) => {
   currentReview.value = row
   reviewAction.value = action
-  reviewRole.value = row.role || 'member'
   reviewComment.value = ''
   reviewDialogVisible.value = true
 }
@@ -193,7 +183,6 @@ const submitReview = async () => {
   try {
     await api.put(`/auth/supplier/member-requests/${currentReview.value.id}/review`, {
       status: reviewAction.value,
-      role: reviewAction.value === 'approved' ? reviewRole.value : undefined,
       review_comment: reviewComment.value || undefined,
     })
     ElMessage.success(`已${actionText}该申请`)

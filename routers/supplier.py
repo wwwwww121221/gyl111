@@ -63,8 +63,6 @@ def _invalidate_supplier_cache():
 
 def _normalize_supplier_profile_audit_status(supplier: Supplier) -> str:
     status = str(supplier.profile_audit_status or "").strip().lower()
-    if status:
-        return status
     if supplier.status == "pending":
         if str(supplier.review_comment or "").strip():
             return "returned"
@@ -75,7 +73,13 @@ def _normalize_supplier_profile_audit_status(supplier: Supplier) -> str:
             or str(supplier.onboarding_note or "").strip()
             or (supplier.application_attachments or [])
         )
+        if status == "draft" and has_completed_profile:
+            return "submitted"
+        if status:
+            return status
         return "submitted" if has_completed_profile else "draft"
+    if status:
+        return status
     if supplier.status == "approved":
         return "approved"
     if supplier.status == "rejected":
@@ -651,7 +655,8 @@ def download_supplier_onboarding_template(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _get_supplier_portal_context(db, current_user)
+    if current_user.role != "supplier":
+        raise HTTPException(status_code=403, detail="Not authorized")
     if not SUPPLIER_SURVEY_TEMPLATE_PATH.exists():
         raise HTTPException(status_code=404, detail="供应商调查表模板不存在")
     return FileResponse(

@@ -171,6 +171,9 @@ const fetchSupplierDisplayName = async () => {
     if (res?.data?.status === 'approved' && res?.data?.member_status === 'active') {
       boundStatus.value = 'bound'
       localStorage.setItem('bound_status', 'bound')
+      if (route.path === '/supplier/onboard') {
+        router.replace('/supplier/inquiries')
+      }
     }
     if (boundStatus.value !== 'bound' && supplierStatus.value !== 'approved') {
       if (route.path !== '/supplier/onboard') {

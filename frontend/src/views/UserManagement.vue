@@ -11,6 +11,9 @@
       <el-table :data="users" style="width: 100%" v-loading="loading" stripe border>
         <el-table-column type="index" label="序号" width="80" align="center" />
         <el-table-column prop="username" label="账号/姓名" />
+        <el-table-column prop="phone" label="手机号" width="140">
+          <template #default="{ row }">{{ row.phone || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="role" label="角色" width="160">
           <template #default="{ row }">
             <el-tag :type="getRoleTagType(row.role)">
@@ -19,6 +22,16 @@
           </template>
         </el-table-column>
         <el-table-column prop="department" label="所属部门" width="140" />
+        <el-table-column label="微信绑定" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.openid_bound ? 'success' : 'info'" size="small">
+              {{ row.openid_bound ? '已绑定' : '未绑定' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="170">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="150" align="center">
           <template #default="{ row }">
             <el-button 
@@ -39,7 +52,7 @@
     <el-dialog
       v-model="dialogVisible"
       :title="dialogTitle"
-      width="420px"
+      width="520px"
       draggable
       overflow
       @close="resetForm"
@@ -50,6 +63,9 @@
         </el-form-item>
         <el-form-item label="初始密码" prop="password">
           <el-input v-model="form.password" type="password" show-password placeholder="请输入至少6位密码" />
+        </el-form-item>
+        <el-form-item label="手机号" prop="phone">
+          <el-input v-model="form.phone" maxlength="11" placeholder="请输入手机号" />
         </el-form-item>
         <el-form-item label="所属部门" prop="department">
           <el-select v-model="form.department" style="width: 100%" placeholder="请选择部门" @change="onDepartmentChange">
@@ -89,6 +105,7 @@ const formRef = ref(null)
 const form = ref({
   username: '',
   password: '',
+  phone: '',
   role: 'buyer',
   department: ''
 })
@@ -135,12 +152,24 @@ const rules = {
     { required: true, message: '请输入初始密码', trigger: 'blur' },
     { min: 6, message: '密码长度至少6位', trigger: 'blur' }
   ],
+  phone: [
+    { required: true, message: '请输入手机号', trigger: 'blur' },
+    { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的手机号', trigger: 'blur' }
+  ],
   role: [
     { required: true, message: '请选择账号角色', trigger: 'change' }
   ],
   department: [
     { required: true, message: '请输入所属部门', trigger: 'blur' }
   ]
+}
+
+const formatDateTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 const getRoleLabel = (role) => {
@@ -181,6 +210,7 @@ const resetForm = () => {
   form.value = {
     username: '',
     password: '',
+    phone: '',
     role: 'buyer',
     department: isSuperAdmin ? '' : '采购部'
   }

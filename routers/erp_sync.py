@@ -45,6 +45,7 @@ def sync_purchase_requisitions(
                 material_code=material_id,
                 material_name=item.get("material_name"),
                 material_model=item.get("material_model"),
+                price_unit_name=item.get("price_unit_name"),
                 qty=item.get("purchase_qty", 0),
                 delivery_date=item.get("delivery_date"),
                 purchaser_name=item.get("purchaser_name"),

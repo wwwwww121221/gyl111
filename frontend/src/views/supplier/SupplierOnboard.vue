@@ -149,7 +149,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, reactive, ref, nextTick } from 'vue'
 import { ElButton, ElFormItem, ElMessage, ElUpload } from 'element-plus'
 import { useRouter } from 'vue-router'
 import api, { resolveAssetUrl } from '../../api'
@@ -214,6 +214,9 @@ const onboardForm = reactive({
 const statusText = computed(() => ({ pending: '待审核', approved: '已入库', rejected: '已拒绝' }[profile.value.status] || '待处理'))
 const statusTagType = computed(() => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[profile.value.status] || 'info'))
 const profileAlertText = computed(() => {
+  if (profile.value.status === 'approved' && profile.value.member_status !== 'active') {
+    return '供应商已入库，但当前账号的绑定关系还未审核通过，请联系平台管理员在供应商成员中通过该账号。'
+  }
   if (profile.value.status === 'approved') return '供应商已审核通过，可进入询价与资料管理。'
   if (profile.value.status === 'rejected') return '供应商申请未通过，请根据审核意见重新提交资料。'
   return '申请和附件已提交，正在等待采购审核。请勿重复申请，审核通过后即可进入供应商业务页面。'
@@ -240,6 +243,8 @@ const fetchProfile = async () => {
     if (data?.member_status) localStorage.setItem('member_status', data.member_status)
     if (data?.status === 'approved' && data?.member_status === 'active') {
       localStorage.setItem('bound_status', 'bound')
+      await nextTick()
+      router.replace('/supplier/inquiries')
     } else {
       localStorage.setItem('bound_status', 'pending_review')
     }

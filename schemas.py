@@ -54,7 +54,7 @@ class UserCreate(UserBase):
     password: str
     company_name: Optional[str] = None
     contact_person: Optional[str] = None
-    phone: Optional[str] = None
+    phone: str = Field(..., min_length=1)
     email: Optional[str] = None
 
 
@@ -123,6 +123,7 @@ class SupplierJoinRequestReview(BaseModel):
 
 class User(UserBase):
     id: int
+    phone: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -138,6 +139,7 @@ class InquiryRequestBase(BaseModel):
     material_code: str
     material_name: str
     material_model: Optional[str] = None
+    price_unit_name: Optional[str] = None
     qty: float
     delivery_date: Optional[datetime] = None
     purchaser_name: Optional[str] = None
@@ -167,6 +169,7 @@ class StrategyConfig(BaseModel):
     max_rounds: int = 3
     bargain_ratio: float = 0.05
     target_price_rule: Optional[dict] = None
+    score_weights: Optional[dict] = None
 
 
 class InquiryAttachment(BaseModel):

@@ -25,6 +25,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = BASE_DIR / "static" / "templates"
 CONTRACT_DIR = BASE_DIR / "static" / "contracts"
 FONT_DIR = BASE_DIR / "static" / "fonts"
+HEADER_DIR = BASE_DIR / "static" / "contract_header"
 SIMSUN_PATH = FONT_DIR / "SimSun.ttf"
 SYSTEM_SIMSUN_PATH = Path("C:/Windows/Fonts/simsun.ttc")
 os.makedirs("static/contracts", exist_ok=True)
@@ -471,6 +472,7 @@ def _build_task_split_allocated_qty_map(db: Session, quote_rows: list, link: Inq
         qid = row["quote"].id
         base_qty = row["base_qty"]
         if base_qty != base_qty.to_integral_value():
+            result_for_current[qid] = base_qty * ratios.get(link.id, Decimal("0"))
             continue
 
         total_int = int(base_qty)
@@ -594,6 +596,7 @@ def _collect_contract_payload(
         req = row["request"]
         material_name = req.material_name if req else ""
         material_code = req.material_code if req else ""
+        price_unit_name = req.price_unit_name if req else ""
         item_project_no = str(req.project_info.get("number") or req.project_info.get("name") or "") if req and req.project_info else ""
         item_project_name = str(req.project_info.get("name") or req.project_info.get("number") or "") if req and req.project_info else ""
         qty = allocated_qty_map.get(q.id, row["base_qty"])
@@ -615,6 +618,7 @@ def _collect_contract_payload(
             "project_name": item_project_name,
             "material_name": material_name,
             "material_code": material_code,
+            "price_unit_name": price_unit_name,
             "qty": int(qty) if qty == qty.to_integral_value() else float(qty),
             "price": float(price),
             "amount": float(amount),
@@ -802,6 +806,7 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
             9: item_material_name,
             11: item_material_code,
             15: item.get("qty", 0),
+            17: item.get("price_unit_name", ""),
             19: item.get("price", 0),
             26: item.get("amount", 0),
             29: item_delivery_date,
@@ -817,6 +822,7 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
                     target_cell.border = copy(source_cell.border)
                     target_cell.fill = copy(source_cell.fill)
                     target_cell.number_format = source_cell.number_format
+        get_item_cell(row, 15).number_format = "0.######"
         wrap_rules = {
             3: (item_project_no, 12),
             7: (item_project_name, 7),
@@ -840,6 +846,10 @@ def _fill_template_excel(payload: dict, output_xlsx: Path, template_path: Path =
     total_qty = _to_decimal(payload.get("total_qty", 0))
     set_cell_value(template_cells["total_amount_upper"], _to_chinese_upper_amount(total_amount))
     set_cell_value(template_cells["total_qty"], float(total_qty))
+    try:
+        ws[resolve_cell_ref(template_cells["total_qty"])].number_format = "0.######"
+    except Exception:
+        pass
     set_cell_value(template_cells["total_amount"], float(total_amount))
     set_cell_value(template_cells["sup_address"], payload.get("sup_address", ""))
     set_cell_value(template_cells["sup_legal_rep"], payload.get("sup_legal_rep", ""))
@@ -1023,12 +1033,18 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
             set_item_cell_value(row, 9, item_material_name)
             set_item_cell_value(row, 11, item_material_code)
             set_item_cell_value(row, 15, item.get("qty", 0))
+            set_item_cell_value(row, 17, item.get("price_unit_name", ""))
+            try:
+                qty_cell = sheet.Cells(row, 15)
+                (qty_cell.MergeArea if bool(qty_cell.MergeCells) else qty_cell).NumberFormat = "0.######"
+            except Exception:
+                pass
             set_item_cell_value(row, 19, item.get("price", 0))
             set_item_cell_value(row, 26, item.get("amount", 0))
             set_item_cell_value(row, 29, item_delivery_date)
             if row != base_row_num:
                 try:
-                    for col_idx in [2, 3, 7, 9, 11, 15, 19, 26, 29]:
+                    for col_idx in [2, 3, 7, 9, 11, 15, 17, 19, 26, 29]:
                         source_cell = sheet.Cells(base_row_num, col_idx)
                         target_cell = sheet.Cells(row, col_idx)
                         target_cell.Font.Name = source_cell.Font.Name
@@ -1054,6 +1070,11 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
         total_qty = _to_decimal(payload.get("total_qty", 0))
         set_range_value(template_cells["total_amount_upper"], _to_chinese_upper_amount(total_amount))
         set_range_value(template_cells["total_qty"], float(total_qty))
+        try:
+            total_qty_range = sheet.Range(template_cells["total_qty"])
+            (total_qty_range.MergeArea if bool(total_qty_range.MergeCells) else total_qty_range).NumberFormat = "0.######"
+        except Exception:
+            pass
         set_range_value(template_cells["total_amount"], float(total_amount))
         set_range_value(template_cells["sup_address"], payload.get("sup_address", ""))
         set_range_value(template_cells["sup_legal_rep"], payload.get("sup_legal_rep", ""))
@@ -1103,6 +1124,48 @@ def _fill_template_excel_with_win32(payload: dict, output_xlsx: Path, template_p
                 pass
 
 
+def _inject_header_images(xlsx_path: Path) -> None:
+    logo_path = HEADER_DIR / "logo.png"
+    stamp_path = HEADER_DIR / "stamp.png"
+    if not logo_path.exists() and not stamp_path.exists():
+        return
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.drawing.image import Image as XlImage
+        from openpyxl.styles import Font, Alignment
+        wb = load_workbook(str(xlsx_path))
+        ws = wb.active
+        # Match the proportions in the DOCX header template. The old placement
+        # pinned the assets to the page edge and separated the name from logo.
+        ws._images = [
+            image for image in ws._images
+            if not hasattr(image.anchor, "_from") or image.anchor._from.row != 0
+        ]
+        for cell in ws[1]:
+            cell.value = None
+        ws.page_margins.top = 0.25
+        ws.row_dimensions[1].height = 34
+        if logo_path.exists():
+            logo = XlImage(str(logo_path))
+            logo.width = 89
+            logo.height = 33
+            logo.anchor = "C1"
+            ws.add_image(logo)
+        if stamp_path.exists():
+            stamp = XlImage(str(stamp_path))
+            stamp.width = 37
+            stamp.height = 42
+            stamp.anchor = "AC1"
+            ws.add_image(stamp)
+        header_cell = ws.cell(row=1, column=8)
+        header_cell.value = "俊郎电气有限公司"
+        header_cell.font = Font(name="黑体", size=10.5)
+        header_cell.alignment = Alignment(horizontal="left", vertical="center")
+        wb.save(str(xlsx_path))
+    except Exception:
+        pass
+
+
 def _fill_template_to_temp_excel(payload: dict, template_path: Path = None) -> Path:
     import logging
     logger = logging.getLogger(__name__)
@@ -1110,9 +1173,10 @@ def _fill_template_to_temp_excel(payload: dict, template_path: Path = None) -> P
     template_path = template_path or _resolve_template_path()
     if _fill_template_excel_with_win32(payload, temp_xlsx, template_path=template_path):
         logger.info(f"Excel填充成功: 使用Win32(Excel)COM引擎 -> {temp_xlsx.name}")
-        return temp_xlsx
-    logger.info(f"Excel填充: Win32失败,使用openpyxl引擎 -> {temp_xlsx.name}")
-    _fill_template_excel(payload, temp_xlsx, template_path=template_path)
+    else:
+        logger.info(f"Excel填充: Win32失败,使用openpyxl引擎 -> {temp_xlsx.name}")
+        _fill_template_excel(payload, temp_xlsx, template_path=template_path)
+    _inject_header_images(temp_xlsx)
     return temp_xlsx
 
 
@@ -1359,6 +1423,22 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path, payload: dict 
     y = 800
     base_line_spacing = 20
 
+    logo_path = HEADER_DIR / "logo.png"
+    stamp_path = HEADER_DIR / "stamp.png"
+    if logo_path.exists():
+        try:
+            c.drawImage(str(logo_path), start_x + 12, y - 4, width=66, height=25, mask='auto')
+        except Exception:
+            pass
+    c.setFont(font_name, 10.5)
+    c.drawString(start_x + 98, y + 4, "俊郎电气有限公司")
+    if stamp_path.exists():
+        try:
+            c.drawImage(str(stamp_path), 492, y - 6, width=28, height=32, mask='auto')
+        except Exception:
+            pass
+
+    y -= 38
     c.setFont(font_name, 16)
     c.drawString(start_x + 210, y, "采购合同")
     y -= 32
@@ -1427,7 +1507,8 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path, payload: dict 
 
     y -= 10
     table_headers = ["序号", "项目号", "项目名称", "物料名称", "型号规格", "数量", "含税单价", "价税合计", "交货日期"]
-    col_widths = [32, 62, 75, 95, 95, 48, 68, 70, 70]
+    table_headers.insert(6, "单位")
+    col_widths = [30, 58, 70, 88, 88, 42, 42, 62, 66, 66]
     x = start_x
     for i, h in enumerate(table_headers):
         c.setFont(font_name, 11)
@@ -1451,6 +1532,7 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path, payload: dict 
                 item.get("material_name", ""),
                 item.get("material_code", ""),
                 item.get("qty", 0),
+                item.get("price_unit_name", ""),
                 item.get("price", 0),
                 item.get("amount", 0),
                 item.get("delivery_date", ""),
@@ -1471,6 +1553,7 @@ def _render_pdf_with_reportlab(xlsx_path: Path, output_pdf: Path, payload: dict 
                 get_display_value_by_pos(row, 9),
                 get_display_value_by_pos(row, 11),
                 get_display_value_by_pos(row, 15),
+                get_display_value_by_pos(row, 17),
                 get_display_value_by_pos(row, 19),
                 get_display_value_by_pos(row, 26),
                 get_display_value_by_pos(row, 29),

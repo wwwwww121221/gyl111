@@ -29,6 +29,10 @@
           
           <div class="page-header">
             <h2 class="page-main-title">智能比价看板 - {{ activeMaterial.materialName }}</h2>
+            <div v-if="compareTaskMeta?.id" class="score-weights-badge">
+              <el-tag type="primary" size="small">价格权重 {{ scoreWeightPrice }}%</el-tag>
+              <el-tag type="success" size="small" style="margin-left: 4px;">交期权重 {{ scoreWeightDelivery }}%</el-tag>
+            </div>
           </div>
           <el-divider class="header-divider" />
 
@@ -493,6 +497,18 @@ const newSupplierId = ref(undefined)
 const isInitializingAllocations = ref(false)
 const compareTaskMeta = ref({})
 
+const scoreWeightPrice = computed(() => {
+  const w = compareTaskMeta.value?.strategy_config?.score_weights
+  if (!w) return 70
+  return Math.round((w.price ?? 0.7) * 100)
+})
+
+const scoreWeightDelivery = computed(() => {
+  const w = compareTaskMeta.value?.strategy_config?.score_weights
+  if (!w) return 30
+  return Math.round((w.delivery ?? 0.3) * 100)
+})
+
 const analysisExpandedMap = ref({})
 
 const wechatTargetSupplier = ref('')
@@ -751,7 +767,8 @@ const loadWorkspaceDataByRoute = async () => {
         id: taskRes.data.id,
         status: taskRes.data.status,
         effective_status: taskRes.data.effective_status,
-        compare_ready: taskRes.data.compare_ready
+        compare_ready: taskRes.data.compare_ready,
+        strategy_config: taskRes.data.strategy_config
       }
 
       const resolveQuoteRound = (link) => {
@@ -885,6 +902,7 @@ const handleMaterialSelect = (materialKey) => {
 const loadActiveMaterialContext = async () => {
   if (!activeMaterial.value) return
   await loadSuppliersForMaterial(activeMaterial.value.materialCode)
+  initializeAllocations()
   await fetchHistoryStats()
   if (!isCompareReadOnly.value && !activeMaterial.value.aiAnalysisResult) {
     generateAnalysis(true)
@@ -967,8 +985,14 @@ const getAllocatedQty = (supplier) => {
   const totalQty = activeMaterial.value?.qty || 0
   const ratio = Number(currentMaterialAllocations.value[getAllocationKey(supplier)] || 0)
   if (totalQty <= 0 || ratio <= 0) return '-'
-  const allocatedQty = Math.round(totalQty * ratio / 100)
-  return `${allocatedQty}`
+  return formatQuantity(totalQty * ratio / 100)
+}
+
+const formatQuantity = (value) => {
+  const numeric = Number(value || 0)
+  if (!Number.isFinite(numeric)) return '-'
+  if (Number.isInteger(numeric)) return String(numeric)
+  return numeric.toFixed(6).replace(/\.?0+$/, '')
 }
 
 const getHistoricalAllocatedRatio = (supplier) => {
@@ -1112,12 +1136,32 @@ const initializeAllocations = () => {
   const previousAllocations = { ...ensureAllocationBucket() }
   const nextAllocations = {}
   const suppliers = activeMaterial.value?.suppliers || []
+  const hasPreviousValues = Object.values(previousAllocations).some(v => Number(v) > 0)
   suppliers.forEach((supplier) => {
     const key = getAllocationKey(supplier)
     if (key) {
       nextAllocations[key] = isCompareReadOnly.value ? getHistoricalAllocatedRatio(supplier) : Number(previousAllocations[key] || 0)
     }
   })
+  if (!isCompareReadOnly.value && !hasPreviousValues) {
+    const rankedHistoricalSuppliers = historicalSuppliers.value || []
+    const topHistoricalSupplier = rankedHistoricalSuppliers.length > 0 ? rankedHistoricalSuppliers[0] : null
+    const commonSupplierCode = topHistoricalSupplier?.code || null
+    const commonSupplierName = topHistoricalSupplier?.name || topHistoricalSupplier?.supplier_name || null
+    const commonSupplier = suppliers.find(s => (
+      Number(s.tax_net_price || 0) > 0 &&
+      (
+        (commonSupplierCode && s.code === commonSupplierCode) ||
+        (commonSupplierName && s.name === commonSupplierName)
+      )
+    ))
+    if (commonSupplier) {
+      const commonKey = getAllocationKey(commonSupplier)
+      if (commonKey && nextAllocations[commonKey] !== undefined) {
+        nextAllocations[commonKey] = 100
+      }
+    }
+  }
   if (materialKey) {
     allocations.value = {
       ...allocations.value,
@@ -1690,6 +1734,18 @@ onBeforeRouteLeave(async () => {
   font-weight: bold;
   color: #303133;
   margin: 0;
+}
+
+.score-weights-badge {
+  display: flex;
+  align-items: center;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
 }
 
 .header-content {

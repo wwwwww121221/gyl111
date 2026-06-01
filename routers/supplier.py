@@ -1244,6 +1244,7 @@ def get_inquiry_details(
             "material_name": item.request.material_name,
             "material_code": item.request.material_code,
             "material_model": item.request.material_model,
+            "price_unit_name": item.request.price_unit_name,
             "qty": item.request.qty,
             "target_delivery_date": item.request.delivery_date,
             "delivery_date": default_delivery,

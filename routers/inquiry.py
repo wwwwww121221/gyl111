@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 from typing import List, Any, Optional
 from pydantic import BaseModel
@@ -1025,6 +1025,8 @@ def create_inquiry_task(
                     existing.target_price = raw_req.target_price
                 if getattr(raw_req, 'material_model', None) is not None:
                     existing.material_model = raw_req.material_model
+                if getattr(raw_req, 'price_unit_name', None) is not None:
+                    existing.price_unit_name = raw_req.price_unit_name
                 request_ids.append(existing.id)
             else:
                 # 创建新记录
@@ -1035,6 +1037,7 @@ def create_inquiry_task(
                     material_code=raw_req.material_code,
                     material_name=raw_req.material_name,
                     material_model=getattr(raw_req, 'material_model', None),
+                    price_unit_name=getattr(raw_req, 'price_unit_name', None),
                     qty=raw_req.qty,
                     target_price=getattr(raw_req, 'target_price', None),
                     delivery_date=raw_req.delivery_date,
@@ -1099,6 +1102,8 @@ def create_inquiry_task(
                             req.target_price = raw_req.target_price
                         if getattr(raw_req, 'qty', None) is not None:
                             req.qty = raw_req.qty
+                        if getattr(raw_req, 'price_unit_name', None) is not None:
+                            req.price_unit_name = raw_req.price_unit_name
                         if getattr(raw_req, 'delivery_date', None) is not None:
                             req.delivery_date = raw_req.delivery_date
                         break
@@ -1295,6 +1300,7 @@ def get_task_details(
             "material_name": item.request.material_name,
             "material_code": item.request.material_code,
             "material_model": item.request.material_model,
+            "price_unit_name": item.request.price_unit_name,
             "qty": item.request.qty,
             "target_price": item.request.target_price,
             "delivery_date": item.request.delivery_date
@@ -1304,29 +1310,42 @@ def get_task_details(
     target_price_map = {item.id: item.request.target_price for item in task.items if item.request.target_price is not None}
 
     today = datetime.now().date()
+
+    def get_delivery_days(value) -> float:
+        delivery_days = 0.0
+        if isinstance(value, (datetime, date)):
+            d_date = value.date() if isinstance(value, datetime) else value
+            delivery_days = float((d_date - today).days)
+            if delivery_days < 0:
+                delivery_days = 0.0
+        elif value is not None:
+            try:
+                delivery_days = float(value)
+                if delivery_days < 0:
+                    delivery_days = 0.0
+            except (TypeError, ValueError):
+                delivery_days = 0.0
+        return delivery_days
+
     score_input = []
+    item_score_source = []
     for link in task.suppliers:
         if link.status == LinkStatus.REJECT:
             continue
         current_round_quotes = [q for q in link.quotations if q.round == link.current_round]
         score_items = []
         for q in current_round_quotes:
-            delivery_days = 0.0
-            if isinstance(q.delivery_date, (datetime, date)):
-                d_date = q.delivery_date.date() if isinstance(q.delivery_date, datetime) else q.delivery_date
-                delivery_days = float((d_date - today).days)
-                if delivery_days < 0:
-                    delivery_days = 0.0
-            elif q.delivery_date is not None:
-                try:
-                    delivery_days = float(q.delivery_date)
-                    if delivery_days < 0:
-                        delivery_days = 0.0
-                except (TypeError, ValueError):
-                    delivery_days = 0.0
+            delivery_days = get_delivery_days(q.delivery_date)
             score_items.append({
+                "item_id": q.item_id,
                 "price": float(q.price or 0),
                 "qty": float(q.qty or 0),
+                "delivery_days": delivery_days,
+            })
+            item_score_source.append({
+                "link_id": link.id,
+                "item_id": q.item_id,
+                "price": float(q.price or 0),
                 "delivery_days": delivery_days,
             })
         score_input.append({
@@ -1334,13 +1353,105 @@ def get_task_details(
             "items": score_items,
         })
 
-    score_rows = calculate_supplier_scores(score_input)
+    score_weights = (task.strategy_config or {}).get("score_weights") if task.strategy_config else None
+    score_rows = calculate_supplier_scores(score_input, score_weights)
     score_map = {row.get("supplier_id"): row for row in score_rows}
+    weights = score_weights or {"price": 0.7, "delivery": 0.3}
+    price_weight = float(weights.get("price", 0.7))
+    delivery_weight = float(weights.get("delivery", 0.3))
+
+    item_score_map = {}
+    item_ids = {row["item_id"] for row in item_score_source if row.get("item_id") is not None}
+    for item_id in item_ids:
+        rows_for_item = [
+            row for row in item_score_source
+            if row.get("item_id") == item_id and float(row.get("price") or 0) > 0
+        ]
+        if not rows_for_item:
+            continue
+        min_price = min(float(row["price"]) for row in rows_for_item)
+        positive_deliveries = [float(row.get("delivery_days") or 0) for row in rows_for_item if float(row.get("delivery_days") or 0) > 0]
+        min_delivery = min(positive_deliveries) if positive_deliveries else 0.0
+
+        item_rows = []
+        for row in rows_for_item:
+            price = float(row.get("price") or 0)
+            delivery_days = float(row.get("delivery_days") or 0)
+            price_score = (min_price / price * 100.0) if min_price > 0 and price > 0 else 0.0
+            delivery_score = (min_delivery / delivery_days * 100.0) if min_delivery > 0 and delivery_days > 0 else 0.0
+            total_score = price_score * price_weight + delivery_score * delivery_weight
+            item_rows.append({
+                **row,
+                "price_score": price_score,
+                "delivery_score": delivery_score,
+                "total_score": total_score,
+            })
+
+        ranked_item_rows = sorted(
+            item_rows,
+            key=lambda row: (
+                float(row.get("total_score", 0)),
+                -float(row.get("price", 0)),
+                -float(row.get("delivery_days", 0)),
+            ),
+            reverse=True,
+        )
+        prev_row = None
+        prev_rank = None
+        for index, row in enumerate(ranked_item_rows, start=1):
+            if (
+                prev_row
+                and float(row.get("total_score", 0)) == float(prev_row.get("total_score", 0))
+                and float(row.get("price", 0)) == float(prev_row.get("price", 0))
+                and float(row.get("delivery_days", 0)) == float(prev_row.get("delivery_days", 0))
+            ):
+                rank = prev_rank
+            else:
+                rank = index
+            item_score_map.setdefault(row["link_id"], {})[item_id] = {
+                "price_score": round(float(row.get("price_score", 0)), 2),
+                "delivery_score": round(float(row.get("delivery_score", 0)), 2),
+                "total_score": round(float(row.get("total_score", 0)), 2),
+                "rank": rank,
+            }
+            prev_row = row
+            prev_rank = rank
     # 按照 1.综合得分(降序) 2.总价(升序) 3.交期(升序) 进行多级排序
+    item_weight_map = {
+        item.id: float(item.request.qty or 0) if item.request else 0.0
+        for item in task.items
+    }
+    required_item_count = len(item_weight_map)
+    for row in score_rows:
+        supplier_id = row.get("supplier_id")
+        supplier_item_scores = item_score_map.get(supplier_id, {})
+        weighted_price_score = 0.0
+        weighted_delivery_score = 0.0
+        weighted_total_score = 0.0
+        quoted_weight = 0.0
+        quoted_item_count = 0
+        for item_id, fallback_weight in item_weight_map.items():
+            weight = fallback_weight if fallback_weight > 0 else 1.0
+            score = supplier_item_scores.get(item_id)
+            if score:
+                quoted_item_count += 1
+                quoted_weight += weight
+                weighted_price_score += float(score.get("price_score", 0)) * weight
+                weighted_delivery_score += float(score.get("delivery_score", 0)) * weight
+                weighted_total_score += float(score.get("total_score", 0)) * weight
+        effective_weight = quoted_weight or 1.0
+        row["price_score"] = weighted_price_score / effective_weight
+        row["delivery_score"] = weighted_delivery_score / effective_weight
+        row["total_score"] = weighted_total_score / effective_weight
+        row["quoted_item_count"] = quoted_item_count
+        row["required_item_count"] = required_item_count
+        row["coverage_ratio"] = quoted_item_count / required_item_count if required_item_count > 0 else 0.0
+
     rank_candidates = sorted(
         score_rows,
         key=lambda row: (
             float(row.get("total_score", 0)),
+            float(row.get("coverage_ratio", 0)),
             -float(row.get("total_price", 0)),
             -float(row.get("avg_delivery_days", 0))
         ),
@@ -1353,6 +1464,7 @@ def get_task_details(
             prev_row = rank_candidates[i - 1]
             # 如果三项核心指标完全一致，则赋予完全相同的名次（并列）
             if (float(row.get("total_score", 0)) == float(prev_row.get("total_score", 0)) and
+                float(row.get("coverage_ratio", 0)) == float(prev_row.get("coverage_ratio", 0)) and
                 float(row.get("total_price", 0)) == float(prev_row.get("total_price", 0)) and
                 float(row.get("avg_delivery_days", 0)) == float(prev_row.get("avg_delivery_days", 0))):
                 rank_map[row.get("supplier_id")] = rank_map[prev_row.get("supplier_id")]
@@ -1416,7 +1528,11 @@ def get_task_details(
             "price_score": float(score_info.get("price_score", 0)),
             "delivery_score": float(score_info.get("delivery_score", 0)),
             "total_score": float(score_info.get("total_score", 0)),
-            "score_rank": rank_map.get(link.id)
+            "quoted_item_count": int(score_info.get("quoted_item_count", 0) or 0),
+            "required_item_count": int(score_info.get("required_item_count", len(task.items)) or 0),
+            "coverage_ratio": float(score_info.get("coverage_ratio", 0) or 0),
+            "score_rank": rank_map.get(link.id),
+            "item_scores": item_score_map.get(link.id, {})
         })
 
     proposed_suppliers = []

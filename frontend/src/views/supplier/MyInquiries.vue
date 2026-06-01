@@ -214,10 +214,13 @@
             <el-table-column prop="material_code" label="物料编码" />
             <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
             <el-table-column prop="qty" label="采购数量" width="100" />
+            <el-table-column prop="price_unit_name" label="计价单位" width="100">
+              <template #default="{ row }">{{ row.price_unit_name || '-' }}</template>
+            </el-table-column>
             <el-table-column prop="target_delivery_date" label="期望交期" :formatter="formatDate" />
             <el-table-column label="您的可供数量" width="130">
               <template #default="{ row }">
-                <el-input-number v-model="quoteForm[row.request_id].qty" :min="1" size="small" :disabled="!canQuote" />
+                <el-input-number v-model="quoteForm[row.request_id].qty" :min="0.0001" :step="0.01" size="small" :disabled="!canQuote" />
               </template>
             </el-table-column>
             <el-table-column label="您的承诺交期" width="150">

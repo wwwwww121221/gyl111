@@ -49,6 +49,8 @@ def ensure_runtime_schema_columns():
         inquiry_request_columns = {col["name"] for col in inspector.get_columns("inquiry_requests")}
         if "material_model" not in inquiry_request_columns:
             alter_statements.append("ALTER TABLE inquiry_requests ADD COLUMN material_model VARCHAR")
+        if "price_unit_name" not in inquiry_request_columns:
+            alter_statements.append("ALTER TABLE inquiry_requests ADD COLUMN price_unit_name VARCHAR")
 
     if "warning_messages" in table_names:
         warning_columns = {col["name"] for col in inspector.get_columns("warning_messages")}
@@ -202,6 +204,7 @@ class InquiryRequest(Base):
     material_code = Column(String, index=True)
     material_name = Column(String)
     material_model = Column(String, nullable=True, comment="规格型号")
+    price_unit_name = Column(String, nullable=True, comment="计价单位名称")
     qty = Column(Float)
     target_price = Column(Float, nullable=True, comment="期望单价")
     delivery_date = Column(DateTime)

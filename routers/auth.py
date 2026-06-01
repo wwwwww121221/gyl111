@@ -1170,7 +1170,18 @@ def get_users(
         raise HTTPException(status_code=403, detail="只有超级管理员或采购部经理可以访问账号列表")
 
     users = db.query(User).filter(User.role.in_(["admin", "buyer", "scorer", "buyer_manager"])).all()
-    return [{"id": u.id, "username": u.username, "role": u.role, "department": u.department} for u in users]
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "department": u.department,
+            "phone": u.phone,
+            "openid_bound": bool((u.openid or "").strip()),
+            "created_at": u.created_at,
+        }
+        for u in users
+    ]
 
 
 @router.delete("/users/{user_id}")

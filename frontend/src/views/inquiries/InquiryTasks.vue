@@ -214,6 +214,10 @@
             <el-descriptions-item label="AI 期望降价幅度">
               <el-tag type="warning" size="small">{{ (currentTaskDetails.strategy_config?.bargain_ratio * 100).toFixed(0) }}%</el-tag>
             </el-descriptions-item>
+            <el-descriptions-item label="评分权重">
+              <el-tag type="primary" size="small">价格 {{ ((currentTaskDetails.strategy_config?.score_weights?.price || 0.7) * 100).toFixed(0) }}%</el-tag>
+              <el-tag type="success" size="small" style="margin-left: 6px;">交期 {{ ((currentTaskDetails.strategy_config?.score_weights?.delivery || 0.3) * 100).toFixed(0) }}%</el-tag>
+            </el-descriptions-item>
             <el-descriptions-item label="截止时间">
               {{ formatDateTime(currentTaskDetails.deadline) }}
             </el-descriptions-item>
@@ -451,15 +455,18 @@
                   <span v-else>-</span>
                 </template>
               </el-table-column>
-              <el-table-column label="综合评分" width="120" align="center">
+              <el-table-column label="已报物料评分" width="120" align="center">
                 <template #default="scope">
                   <span v-if="scope.row.total_score > 0" style="color: #409EFF; font-weight: bold; font-size: 15px;">
                     {{ Number(scope.row.total_score).toFixed(2) }}
                   </span>
                   <span v-else>-</span>
+                  <div v-if="scope.row.required_item_count" class="score-coverage">
+                    {{ scope.row.quoted_item_count || 0 }}/{{ scope.row.required_item_count }} 项
+                  </div>
                 </template>
               </el-table-column>
-              <el-table-column label="当前排名" width="90" align="center">
+              <el-table-column label="综合排名" width="110" align="center">
                 <template #default="scope">
                   <el-tag v-if="scope.row.score_rank" :type="scope.row.score_rank === 1 ? 'danger' : 'info'" effect="dark">
                     第 {{ scope.row.score_rank }} 名
@@ -570,6 +577,7 @@
                       <div class="allocation-item-meta">
                         <span>物料编码：{{ item.material_code }}</span>
                         <span>需求数量：{{ item.qty }}</span>
+                        <span>计价单位：{{ item.price_unit_name || '-' }}</span>
                       </div>
                     </div>
                     <div class="allocation-item-actions">
@@ -606,6 +614,22 @@
                   <el-table-column label="报价(元)" width="120" align="right">
                     <template #default="scope">
                       <span>{{ Number(scope.row.price || 0).toFixed(2) }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="综合评分" width="110" align="center">
+                    <template #default="scope">
+                      <span v-if="scope.row.item_total_score > 0" class="score-value">
+                        {{ Number(scope.row.item_total_score).toFixed(2) }}
+                      </span>
+                      <span v-else>-</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="物料排名" width="100" align="center">
+                    <template #default="scope">
+                      <el-tag v-if="scope.row.item_rank" :type="scope.row.item_rank === 1 ? 'danger' : 'info'" effect="dark">
+                        第 {{ scope.row.item_rank }} 名
+                      </el-tag>
+                      <span v-else>-</span>
                     </template>
                   </el-table-column>
                   <el-table-column label="分配比例 (%)" width="180" align="center">
@@ -650,6 +674,9 @@
               <el-table-column prop="material_code" label="物料编码" width="150" />
               <el-table-column prop="material_name" label="物料名称" min-width="200" />
               <el-table-column prop="qty" label="需求数量" width="120" align="right" />
+              <el-table-column prop="price_unit_name" label="计价单位" width="100" align="center">
+                <template #default="scope">{{ scope.row.price_unit_name || '-' }}</template>
+              </el-table-column>
               <el-table-column prop="target_price" label="设定期望单价(¥)" width="150" align="right">
                 <template #default="scope">
                   <span v-if="scope.row.target_price" style="color: #f56c6c; font-weight: bold;">{{ Number(scope.row.target_price).toFixed(2) }}</span>
@@ -919,12 +946,12 @@ const viewTaskDetails = async (task, preferredTab = 'suppliers') => {
   try {
     const res = await getTaskDetails(task.id)
     currentTaskDetails.value = res.data
-    initializeAutoItemAllocations()
     if (currentTaskDetails.value?.type === 'auto') {
       await loadTopHistoricalSuppliers(currentTaskDetails.value)
     } else {
       topHistoricalSupplierMap.value = {}
     }
+    initializeAutoItemAllocations()
   } catch (error) {
     console.error(error)
     ElMessage.error('获取任务详情失败')
@@ -1309,11 +1336,23 @@ const initializeAutoItemAllocations = () => {
   const nextAllocations = {}
   ;(task.items || []).forEach((item) => {
     nextAllocations[item.id] = {}
+    const commonSupplier = topHistoricalSupplierMap.value?.[item.material_code]
+    const commonCode = String(commonSupplier?.code || '')
+    const commonName = String(commonSupplier?.name || commonSupplier?.supplier_name || '')
+    let commonLinkId = null
     ;(task.links || []).forEach((link) => {
       const quote = resolveLatestItemQuote(link, item.id)
       if (!quote) return
+      const isCommon = (commonCode && String(link.supplier_code || '') === commonCode) ||
+        (commonName && String(link.supplier_name || '') === commonName)
+      if (isCommon && Number(quote.price || 0) > 0) {
+        commonLinkId = link.link_id
+      }
       nextAllocations[item.id][link.link_id] = isAutoAllocationReadonly.value ? getHistoricalAllocatedRatio(link, item) : 0
     })
+    if (!isAutoAllocationReadonly.value && commonLinkId) {
+      nextAllocations[item.id][commonLinkId] = 100
+    }
   })
   autoItemAllocations.value = nextAllocations
 }
@@ -1351,6 +1390,8 @@ const getAllocationSuppliersForItem = (item) => {
       status: link.status,
       price: Number(quote.price || 0),
       qty: Number(quote.qty || item.qty || 0),
+      item_total_score: Number(link.item_scores?.[item.id]?.total_score || 0),
+      item_rank: link.item_scores?.[item.id]?.rank,
       material_allocations: link.material_allocations || []
     }
   }).filter(Boolean)
@@ -1394,7 +1435,14 @@ const getItemAllocationSum = (itemId) => {
 const getItemAllocatedQty = (item, supplierRow) => {
   const ratio = Number(getItemAllocationBucket(item.id)[supplierRow.link_id] || 0)
   if (ratio <= 0) return '-'
-  return Math.round(Number(item.qty || 0) * ratio / 100)
+  return formatQuantity(Number(item.qty || 0) * ratio / 100)
+}
+
+const formatQuantity = (value) => {
+  const numeric = Number(value || 0)
+  if (!Number.isFinite(numeric)) return '-'
+  if (Number.isInteger(numeric)) return String(numeric)
+  return numeric.toFixed(6).replace(/\.?0+$/, '')
 }
 
 const applyItemAllocationStrategy = (item, type, silent = false) => {
@@ -1878,6 +1926,19 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.score-value {
+  color: #409EFF;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.score-coverage {
+  margin-top: 3px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 .allocation-strategy-toolbar {

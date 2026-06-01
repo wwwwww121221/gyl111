@@ -132,6 +132,11 @@
             </template>
           </el-table-column>
           <el-table-column prop="qty" label="数量" :width="getColumnWidth('qty', 80)" resizable />
+          <el-table-column prop="price_unit_name" label="计价单位" :width="getColumnWidth('price_unit_name', 90)" resizable show-overflow-tooltip>
+            <template #default="scope">
+              {{ scope.row.price_unit_name || '-' }}
+            </template>
+          </el-table-column>
           <el-table-column prop="delivery_date" label="需求日期" :width="getColumnWidth('delivery_date', 100)" resizable>
             <template #default="scope">
               {{ formatDate(scope.row.delivery_date) }}
@@ -177,7 +182,7 @@
         <el-form-item label="任务标题">
           <el-input v-model="taskForm.title" placeholder="例如：3月份电子元器件采购" />
         </el-form-item>
-        <el-form-item v-if="taskForm.type === 'auto'" label="截止日期" prop="deadline">
+        <el-form-item v-if="taskForm.type === 'auto'" label="截止日期" prop="deadlineDate">
           <div class="deadline-inputs">
             <el-date-picker
               v-model="taskForm.deadlineDate"
@@ -208,6 +213,19 @@
           <el-col :span="12">
             <el-form-item label="砍价比例">
               <el-input-number v-model="taskForm.strategy_config.bargain_ratio" :step="0.01" :min="0" :max="1" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="20" v-if="taskForm.type === 'auto'">
+          <el-col :span="12">
+            <el-form-item label="价格评分权重 (%)">
+              <el-input-number v-model="taskForm.strategy_config.score_weights.price" :min="0" :max="100" :step="5" style="width: 100%" @change="(val) => taskForm.strategy_config.score_weights.delivery = 100 - val" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="交期评分权重 (%)">
+              <el-input-number v-model="taskForm.strategy_config.score_weights.delivery" :min="0" :max="100" :step="5" style="width: 100%" @change="(val) => taskForm.strategy_config.score_weights.price = 100 - val" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -284,7 +302,13 @@
           </el-table-column>
           <el-table-column label="需求数量" width="120">
             <template #default="scope">
-              <el-input-number v-model="scope.row.qty" :min="1" size="small" style="width: 100%" controls-position="right" />
+              <el-input-number v-model="scope.row.qty" :min="0.0001" :step="0.01" size="small" style="width: 100%" controls-position="right" />
+            </template>
+          </el-table-column>
+          <el-table-column label="计价单位" width="100">
+            <template #default="scope">
+              <el-input v-if="scope.row.is_custom" v-model="scope.row.price_unit_name" size="small" placeholder="选填" />
+              <span v-else>{{ scope.row.price_unit_name || '-' }}</span>
             </template>
           </el-table-column>
           <el-table-column label="期望交期" width="150">
@@ -379,6 +403,9 @@
         <el-table-column prop="material_name" label="物料名称" min-width="120" show-overflow-tooltip />
         <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
         <el-table-column prop="qty" label="数量" width="80" align="right" />
+        <el-table-column prop="price_unit_name" label="计价单位" width="90" align="center">
+          <template #default="scope">{{ scope.row.price_unit_name || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="delivery_date" label="需求日期" width="100">
           <template #default="scope">
             {{ formatDate(scope.row.delivery_date) }}
@@ -433,7 +460,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { createInquiryTask, syncErpRequisitions, uploadInquiryAttachment } from '../../api/inquiry'
 import api, { getApiOrigin, resolveAssetUrl } from '../../api/index'
 import { ElMessage } from 'element-plus'
@@ -596,7 +623,11 @@ const taskForm = reactive({
   strategy_config: {
     max_rounds: 3,
     bargain_ratio: 0.05,
-    target_total_price: undefined
+    target_total_price: undefined,
+    score_weights: {
+      price: 70,
+      delivery: 30
+    }
   }
 })
 
@@ -643,16 +674,17 @@ const syncDeadlineValue = () => {
   taskForm.deadline = `${taskForm.deadlineDate}T${taskForm.deadlineTime}:00`
 }
 
-const validateDeadline = (_, value, callback) => {
+const validateDeadline = (_, _value, callback) => {
+  syncDeadlineValue()
   if (taskForm.type !== 'auto') {
     callback()
     return
   }
-  if (!value) {
+  if (!taskForm.deadlineDate || !taskForm.deadlineTime || !taskForm.deadline) {
     callback(new Error('请选择截止日期'))
     return
   }
-  const deadlineTime = new Date(value).getTime()
+  const deadlineTime = new Date(taskForm.deadline).getTime()
   if (Number.isNaN(deadlineTime)) {
     callback(new Error('截止日期格式无效'))
     return
@@ -665,7 +697,7 @@ const validateDeadline = (_, value, callback) => {
 }
 
 const taskFormRules = {
-  deadline: [
+  deadlineDate: [
     { validator: validateDeadline, trigger: 'change' }
   ]
 }
@@ -688,6 +720,9 @@ watch(
   () => [taskForm.deadlineDate, taskForm.deadlineTime, taskForm.type],
   () => {
     syncDeadlineValue()
+    if (taskForm.deadline) {
+      taskFormRef.value?.clearValidate?.(['deadlineDate'])
+    }
   }
 )
 
@@ -711,6 +746,32 @@ const fetchSuppliers = async () => {
 }
 
 const normalizeMaterialCode = (materialCode) => String(materialCode || '').trim()
+const normalizeSupplierLookupText = (value) => String(value || '').trim().toLowerCase()
+
+const resolveRecommendedSupplier = (supplier) => {
+  const supplierId = Number(supplier?.id)
+  if (Number.isFinite(supplierId) && supplierId > 0) {
+    return { ...supplier, id: supplierId }
+  }
+
+  const supplierCode = normalizeSupplierLookupText(supplier?.code || supplier?.supplier_code)
+  const supplierName = normalizeSupplierLookupText(supplier?.name || supplier?.supplier_name)
+  const matched = supplierList.value.find((item) => {
+    const itemCode = normalizeSupplierLookupText(item?.code)
+    const itemName = normalizeSupplierLookupText(item?.name)
+    return (supplierCode && itemCode === supplierCode) || (supplierName && itemName === supplierName)
+  })
+
+  if (!matched?.id) return supplier
+  return {
+    ...supplier,
+    id: Number(matched.id),
+    code: supplier?.code || matched.code || '',
+    name: supplier?.name || matched.name || '',
+    grade: supplier?.grade || matched.grade,
+    transaction_count: supplier?.transaction_count ?? matched.transaction_count
+  }
+}
 
 const fetchLatestTargetPricesBatch = async (materialCodes) => {
   const normalizedCodes = Array.from(new Set(
@@ -799,7 +860,9 @@ const applyMaterialSpecificRecommendedSuppliers = async () => {
     const noHistoryMaterials = []
     selectedRequestsForTask.value.forEach((item) => {
       item.material_code = normalizeMaterialCode(item.material_code)
-      const recommendedSuppliers = recommendationMap[item.material_code] || []
+      const recommendedSuppliers = (recommendationMap[item.material_code] || [])
+        .map(resolveRecommendedSupplier)
+        .filter((supplier) => Number.isFinite(Number(supplier?.id)) && Number(supplier.id) > 0)
       const latestPriceInfo = latestPriceMap[item.material_code] || {}
       const recommendedIds = recommendedSuppliers
         .map((supplier) => Number(supplier.id))
@@ -937,6 +1000,7 @@ const addCustomMaterial = () => {
     material_code: '',
     material_name: '',
     material_model: '',
+    price_unit_name: '',
     qty: 1,
     target_price: undefined,
     quotes: {},
@@ -1004,7 +1068,8 @@ const showCreateTaskDialog = async (isJump = false) => {
     selectedRequests.value.forEach(item => {
       const dateStr = item.delivery_date ? String(item.delivery_date).substring(0, 10) : 'none'
       const normalizedMaterialCode = normalizeMaterialCode(item.material_code)
-      const key = `${normalizedMaterialCode}_${dateStr}`
+      const priceUnitName = String(item.price_unit_name || '').trim()
+      const key = `${normalizedMaterialCode}_${dateStr}_${priceUnitName}`
       
       if (aggregatedMap.has(key)) {
         const existing = aggregatedMap.get(key)
@@ -1064,13 +1129,17 @@ const showCreateTaskDialog = async (isJump = false) => {
     taskForm.deadlineDate = defaultDeadline.date
     taskForm.deadlineTime = defaultDeadline.time
   }
+  syncDeadlineValue()
   
   dialogVisible.value = true
+  await nextTick()
+  taskFormRef.value?.clearValidate?.(['deadlineDate'])
   await fetchSuppliers()
   await applyMaterialSpecificRecommendedSuppliers()
 }
 
 const confirmCreateTask = async () => {
+  syncDeadlineValue()
   const formValid = await taskFormRef.value?.validate().catch(() => false)
   if (!formValid) return
 
@@ -1095,7 +1164,13 @@ const confirmCreateTask = async () => {
       buyer_comment: isApprovalRequired.value ? (taskForm.buyer_comment || '').trim() : undefined,
       attachments: Array.isArray(taskForm.attachments) ? taskForm.attachments : [],
       deadline: taskForm.type === 'auto' ? (taskForm.deadline || null) : null,
-      strategy_config: taskForm.strategy_config,
+      strategy_config: {
+        ...taskForm.strategy_config,
+        score_weights: {
+          price: (taskForm.strategy_config.score_weights?.price || 70) / 100,
+          delivery: (taskForm.strategy_config.score_weights?.delivery || 30) / 100
+        }
+      },
       raw_requests: selectedRequestsForTask.value.map(item => ({
         ...item,
         delivery_date: item.delivery_date ? (item.delivery_date.length === 10 ? item.delivery_date + 'T00:00:00' : item.delivery_date) : null,

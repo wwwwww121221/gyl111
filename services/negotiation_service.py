@@ -39,9 +39,13 @@ def calculate_bargain_feedback(
     return actual_drop_ratio, new_price, message
 
 
-def calculate_supplier_scores(suppliers_data: list[dict]) -> list[dict]:
+def calculate_supplier_scores(suppliers_data: list[dict], score_weights: dict | None = None) -> list[dict]:
     if not suppliers_data:
         return []
+
+    weights = score_weights or {"price": 0.7, "delivery": 0.3}
+    price_weight = float(weights.get("price", 0.7))
+    delivery_weight = float(weights.get("delivery", 0.3))
 
     item_prices: dict[Any, list[float]] = {}
     item_deliveries: dict[Any, list[float]] = {}
@@ -108,7 +112,7 @@ def calculate_supplier_scores(suppliers_data: list[dict]) -> list[dict]:
             price_score = 0.0
             delivery_score = 0.0
 
-        total_score = price_score * 0.7 + delivery_score * 0.3
+        total_score = price_score * price_weight + delivery_score * delivery_weight
         record["price_score"] = price_score
         record["delivery_score"] = delivery_score
         record["total_score"] = total_score

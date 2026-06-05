@@ -11,7 +11,7 @@ import asyncio
 
 from models import (
     get_db, SessionLocal, InquirySupplier, InquiryTaskItem,
-    Quotation, LinkStatus, InquiryRequest, TaskStatus, InquiryTask, Supplier, SupplierMember, User, Contract, SupplierMetric, PurchaseOrderHistory
+    Quotation, LinkStatus, InquiryRequest, TaskStatus, InquiryTask, Supplier, SupplierMember, User, Contract, SupplierMetric, PurchaseOrderMonthlyStat, PurchaseOrderSummary
 )
 from schemas_supplier import (
     QuoteSubmission,
@@ -231,12 +231,14 @@ def get_supplier_analysis(
             "tableData": []
         }
 
-    from models import PurchaseOrderHistory
     
     # 获取该供应商的所有历史订单明细
-    history_records = db.query(PurchaseOrderHistory).filter(
-        PurchaseOrderHistory.supplier_code == supplier.code
-    ).order_by(PurchaseOrderHistory.date.desc()).all()
+    history_records = db.query(PurchaseOrderSummary).filter(
+        PurchaseOrderSummary.supplier_code == supplier.code
+    ).order_by(PurchaseOrderSummary.latest_date.desc()).all()
+    monthly_records = db.query(PurchaseOrderMonthlyStat).filter(
+        PurchaseOrderMonthlyStat.supplier_code == supplier.code
+    ).order_by(PurchaseOrderMonthlyStat.stat_month.asc()).all()
     
     if not history_records:
         return {
@@ -254,30 +256,28 @@ def get_supplier_analysis(
         }
 
     # 1. 核心指标统计
-    total_amount = sum(r.qty * r.tax_net_price for r in history_records if r.qty and r.tax_net_price)
-    order_count = len(set(r.bill_no for r in history_records))
+    total_amount = sum(float(r.total_amount or 0.0) for r in history_records)
+    order_count = sum(int(r.order_count or 0) for r in history_records)
     material_count = len(set(r.material_code for r in history_records))
     
     # 平均含税单价 (简单平均)
-    valid_prices = [r.tax_net_price for r in history_records if r.tax_net_price and r.tax_net_price > 0]
+    valid_prices = [r.avg_tax_net_price for r in history_records if r.avg_tax_net_price and r.avg_tax_net_price > 0]
     avg_tax_net_price = sum(valid_prices) / len(valid_prices) if valid_prices else 0.0
     
     # 最大单笔采购量
-    max_qty = max((r.qty for r in history_records if r.qty), default=0)
+    max_qty = max((r.total_qty for r in history_records if r.total_qty), default=0)
     
     # 最近交易距今(天)
     latest_record = history_records[0] # 因为已经按 date.desc() 排序
-    days_since_last_order = (datetime.now() - latest_record.date).days if latest_record.date else 0
+    days_since_last_order = (datetime.now() - latest_record.latest_date).days if latest_record.latest_date else 0
 
     # 2. 过去6个月的成交趋势（折线图/散点图：按物料分类）
-    six_months_ago = datetime.now() - relativedelta(months=6)
-    recent_records = [r for r in history_records if r.date and r.date >= six_months_ago]
-    
+    recent_records = monthly_records
     from collections import defaultdict
     material_order_counts = defaultdict(int)
     for r in history_records:
         if r.material_name:
-            material_order_counts[r.material_name] += 1
+            material_order_counts[r.material_name] += int(r.order_count or 0)
             
     sorted_materials = sorted(material_order_counts.items(), key=lambda x: x[1], reverse=True)
     top_5_materials = [m[0] for m in sorted_materials[:5]]
@@ -358,9 +358,9 @@ def get_supplier_list(
 
     query = db.query(
         Supplier,
-        func.count(PurchaseOrderHistory.id).label("transaction_count"),
+        func.coalesce(func.sum(PurchaseOrderSummary.order_count), 0).label("transaction_count"),
     ).outerjoin(
-        PurchaseOrderHistory, Supplier.code == PurchaseOrderHistory.supplier_code
+        PurchaseOrderSummary, Supplier.code == PurchaseOrderSummary.supplier_code
     )
 
     if keyword:

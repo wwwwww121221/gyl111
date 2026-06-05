@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
-from models import get_db, User, PurchaseOrderHistory, Supplier, Material, InquiryRequest
+from models import get_db, User, PurchaseOrderSummary, Supplier, Material, InquiryRequest
 from routers.auth import get_current_user_auth
 from services.llm_factory import get_llm_service
+from services.purchase_stats import get_summary_rows_by_material_codes, get_summary_rows_by_material_names
 from schemas import ChatMessage
 import logging
 
@@ -146,45 +147,30 @@ def get_material_suppliers(material_code: str, db: Session = Depends(get_db), cu
     if not normalized_code:
         return []
 
-    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
-    records = db.query(
-        PurchaseOrderHistory.supplier_code,
-        PurchaseOrderHistory.supplier_name,
-        func.count(PurchaseOrderHistory.id).label('count')
-    ).filter(
-        trimmed_material_code == normalized_code
-    ).group_by(
-        PurchaseOrderHistory.supplier_code,
-        PurchaseOrderHistory.supplier_name
-    ).order_by(
-        desc('count')
-    ).all()
+    rows = sorted(
+        get_summary_rows_by_material_codes(db, [normalized_code]),
+        key=lambda item: int(item.order_count or 0),
+        reverse=True,
+    )
     
-    if not records:
+    if not rows:
         material_name = _get_material_name_map(db, [normalized_code]).get(normalized_code)
         if material_name:
-            records = db.query(
-                PurchaseOrderHistory.supplier_code,
-                PurchaseOrderHistory.supplier_name,
-                func.count(PurchaseOrderHistory.id).label('count')
-            ).filter(
-                func.trim(PurchaseOrderHistory.material_name) == material_name
-            ).group_by(
-                PurchaseOrderHistory.supplier_code,
-                PurchaseOrderHistory.supplier_name
-            ).order_by(
-                desc('count')
-            ).all()
+            rows = sorted(
+                get_summary_rows_by_material_names(db, [material_name]),
+                key=lambda item: int(item.order_count or 0),
+                reverse=True,
+            )
 
-    supplier_map = _build_supplier_map(db, [r.supplier_code for r in records if r.supplier_code])
+    supplier_map = _build_supplier_map(db, [r.supplier_code for r in rows if r.supplier_code])
     result_map: Dict[str, List[MaterialSupplierResponse]] = {normalized_code: []}
-    for r in records:
+    for r in rows:
         _append_supplier_recommendation(
             result_map,
             normalized_code,
             r.supplier_code,
             r.supplier_name,
-            r.count,
+            int(r.order_count or 0),
             supplier_map
         )
     return result_map[normalized_code]
@@ -204,22 +190,7 @@ def get_material_suppliers_batch(
     if not normalized_codes:
         return {}
 
-    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
-    records = db.query(
-        trimmed_material_code.label("material_code"),
-        PurchaseOrderHistory.supplier_code,
-        PurchaseOrderHistory.supplier_name,
-        func.count(PurchaseOrderHistory.id).label("count")
-    ).filter(
-        trimmed_material_code.in_(normalized_codes)
-    ).group_by(
-        trimmed_material_code,
-        PurchaseOrderHistory.supplier_code,
-        PurchaseOrderHistory.supplier_name
-    ).order_by(
-        trimmed_material_code,
-        desc("count")
-    ).all()
+    records = get_summary_rows_by_material_codes(db, normalized_codes)
 
     result: Dict[str, List[MaterialSupplierResponse]] = {code: [] for code in normalized_codes}
     supplier_codes = [r.supplier_code for r in records if getattr(r, "supplier_code", None)]
@@ -237,21 +208,7 @@ def get_material_suppliers_batch(
             fallback_name_to_codes.setdefault(name, []).append(code)
 
         if fallback_name_to_codes:
-            fallback_records = db.query(
-                func.trim(PurchaseOrderHistory.material_name).label("material_name"),
-                PurchaseOrderHistory.supplier_code,
-                PurchaseOrderHistory.supplier_name,
-                func.count(PurchaseOrderHistory.id).label("count")
-            ).filter(
-                func.trim(PurchaseOrderHistory.material_name).in_(list(fallback_name_to_codes.keys()))
-            ).group_by(
-                func.trim(PurchaseOrderHistory.material_name),
-                PurchaseOrderHistory.supplier_code,
-                PurchaseOrderHistory.supplier_name
-            ).order_by(
-                func.trim(PurchaseOrderHistory.material_name),
-                desc("count")
-            ).all()
+            fallback_records = get_summary_rows_by_material_names(db, list(fallback_name_to_codes.keys()))
             supplier_codes.extend([
                 r.supplier_code for r in fallback_records
                 if getattr(r, "supplier_code", None)
@@ -266,7 +223,7 @@ def get_material_suppliers_batch(
             material_code,
             supplier_code,
             record.supplier_name,
-            record.count,
+            int(record.order_count or 0),
             supplier_map
         )
 
@@ -278,7 +235,7 @@ def get_material_suppliers_batch(
                 material_code,
                 record.supplier_code,
                 record.supplier_name,
-                record.count,
+                int(record.order_count or 0),
                 supplier_map
             )
 
@@ -299,20 +256,10 @@ def get_material_latest_prices_batch(
     if not normalized_codes:
         return {}
 
-    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
-    records = db.query(
-        trimmed_material_code.label("material_code"),
-        PurchaseOrderHistory.price,
-        PurchaseOrderHistory.date,
-        PurchaseOrderHistory.id
-    ).filter(
-        trimmed_material_code.in_(normalized_codes),
-        PurchaseOrderHistory.price.isnot(None)
-    ).order_by(
-        trimmed_material_code,
-        PurchaseOrderHistory.date.desc(),
-        PurchaseOrderHistory.id.desc()
-    ).all()
+    records = sorted(
+        get_summary_rows_by_material_codes(db, normalized_codes),
+        key=lambda item: ((str(item.material_code or "").strip()), item.latest_date or datetime.min),
+    )
 
     result: Dict[str, MaterialLatestPriceResponse] = {
         code: MaterialLatestPriceResponse()
@@ -326,8 +273,8 @@ def get_material_latest_prices_batch(
         if result[material_code].latest_price is not None:
             continue
         result[material_code] = MaterialLatestPriceResponse(
-            latest_price=float(record.price) if record.price is not None else None,
-            latest_date=record.date.strftime("%Y-%m-%d") if record.date else None
+            latest_price=float(record.latest_price) if record.latest_price is not None else None,
+            latest_date=record.latest_date.strftime("%Y-%m-%d") if record.latest_date else None
         )
 
     missing_codes = [
@@ -340,19 +287,7 @@ def get_material_latest_prices_batch(
         fallback_name_to_codes.setdefault(name, []).append(code)
 
     if fallback_name_to_codes:
-        fallback_records = db.query(
-            func.trim(PurchaseOrderHistory.material_name).label("material_name"),
-            PurchaseOrderHistory.price,
-            PurchaseOrderHistory.date,
-            PurchaseOrderHistory.id
-        ).filter(
-            func.trim(PurchaseOrderHistory.material_name).in_(list(fallback_name_to_codes.keys())),
-            PurchaseOrderHistory.price.isnot(None)
-        ).order_by(
-            func.trim(PurchaseOrderHistory.material_name),
-            PurchaseOrderHistory.date.desc(),
-            PurchaseOrderHistory.id.desc()
-        ).all()
+        fallback_records = get_summary_rows_by_material_names(db, list(fallback_name_to_codes.keys()))
 
         for record in fallback_records:
             material_name = str(record.material_name or "").strip()
@@ -360,8 +295,8 @@ def get_material_latest_prices_batch(
                 if result[code].latest_price is not None:
                     continue
                 result[code] = MaterialLatestPriceResponse(
-                    latest_price=float(record.price) if record.price is not None else None,
-                    latest_date=record.date.strftime("%Y-%m-%d") if record.date else None
+                    latest_price=float(record.latest_price) if record.latest_price is not None else None,
+                    latest_date=record.latest_date.strftime("%Y-%m-%d") if record.latest_date else None
                 )
 
     return result
@@ -372,7 +307,6 @@ def get_history_prices(req: CompareRequest, db: Session = Depends(get_db), curre
     获取选定供应商和物料的历史价格统计 (优化 N+1 查询)
     """
     results = []
-    thirty_days_ago = datetime.now() - timedelta(days=30)
     normalized_code = str(req.material_code or "").strip()
     
     supplier_codes = [s.get("code") for s in req.suppliers if s.get("code")]
@@ -380,19 +314,18 @@ def get_history_prices(req: CompareRequest, db: Session = Depends(get_db), curre
         return []
 
     # 一次性查出所有相关供应商在该物料下的所有历史订单
-    trimmed_material_code = func.trim(PurchaseOrderHistory.material_code)
-    all_records = db.query(PurchaseOrderHistory).filter(
-        trimmed_material_code == normalized_code,
-        PurchaseOrderHistory.supplier_code.in_(supplier_codes)
-    ).all()
+    all_records = [
+        row for row in get_summary_rows_by_material_codes(db, [normalized_code])
+        if row.supplier_code in supplier_codes
+    ]
 
     if not all_records:
         normalized_name = str(req.material_name or "").strip()
         if normalized_name:
-            all_records = db.query(PurchaseOrderHistory).filter(
-                func.trim(PurchaseOrderHistory.material_name) == normalized_name,
-                PurchaseOrderHistory.supplier_code.in_(supplier_codes)
-            ).all()
+            all_records = [
+                row for row in get_summary_rows_by_material_names(db, [normalized_name])
+                if row.supplier_code in supplier_codes
+            ]
 
     # 按照 supplier_code 分组处理数据
     records_by_supplier = {}
@@ -413,35 +346,31 @@ def get_history_prices(req: CompareRequest, db: Session = Depends(get_db), curre
             continue
             
         # 按日期排序获取最近一次
-        sorted_by_date = sorted(supplier_records, key=lambda x: x.date or datetime.min, reverse=True)
+        sorted_by_date = sorted(supplier_records, key=lambda x: x.latest_date or datetime.min, reverse=True)
         latest_record = sorted_by_date[0]
         
         # 按价格排序获取最低和最高
-        valid_price_records = [r for r in supplier_records if r.tax_net_price is not None]
+        valid_price_records = [r for r in supplier_records if r.lowest_price is not None or r.highest_price is not None]
         if valid_price_records:
-            sorted_by_price = sorted(valid_price_records, key=lambda x: x.tax_net_price)
-            lowest_record = sorted_by_price[0]
-            highest_record = sorted_by_price[-1]
+            lowest_record = min(valid_price_records, key=lambda x: x.lowest_price if x.lowest_price is not None else float("inf"))
+            highest_record = max(valid_price_records, key=lambda x: x.highest_price if x.highest_price is not None else float("-inf"))
         else:
             lowest_record = None
             highest_record = None
             
         # 计算近30天均价
-        recent_records = [r for r in valid_price_records if r.date and r.date >= thirty_days_ago]
-        if recent_records:
-            avg_30 = sum(float(r.tax_net_price) for r in recent_records) / len(recent_records)
-        else:
-            avg_30 = 0.0
+        avg_values = [float(r.avg_30_days) for r in supplier_records if (r.avg_30_days or 0) > 0]
+        avg_30 = sum(avg_values) / len(avg_values) if avg_values else 0.0
         
         results.append(HistoryPriceResponse(
             supplier_code=supplier_code or "",
             supplier_name=supplier_name or "",
-            latest_price=float(latest_record.tax_net_price) if latest_record and latest_record.tax_net_price else 0.0,
-            latest_date=latest_record.date.strftime("%Y-%m-%d") if latest_record and latest_record.date else "-",
-            lowest_price=float(lowest_record.tax_net_price) if lowest_record and lowest_record.tax_net_price else 0.0,
-            lowest_date=lowest_record.date.strftime("%Y-%m-%d") if lowest_record and lowest_record.date else "-",
-            highest_price=float(highest_record.tax_net_price) if highest_record and highest_record.tax_net_price else 0.0,
-            highest_date=highest_record.date.strftime("%Y-%m-%d") if highest_record and highest_record.date else "-",
+            latest_price=float(latest_record.latest_tax_net_price) if latest_record and latest_record.latest_tax_net_price else 0.0,
+            latest_date=latest_record.latest_date.strftime("%Y-%m-%d") if latest_record and latest_record.latest_date else "-",
+            lowest_price=float(lowest_record.lowest_price) if lowest_record and lowest_record.lowest_price else 0.0,
+            lowest_date=lowest_record.lowest_date.strftime("%Y-%m-%d") if lowest_record and lowest_record.lowest_date else "-",
+            highest_price=float(highest_record.highest_price) if highest_record and highest_record.highest_price else 0.0,
+            highest_date=highest_record.highest_date.strftime("%Y-%m-%d") if highest_record and highest_record.highest_date else "-",
             avg_30_days=avg_30
         ))
         

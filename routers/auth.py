@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+import tempfile
 import uuid
 from typing import Any
 
@@ -37,6 +38,7 @@ from services.sms_service import (
     verify_sms_code,
 )
 from services.attachment_preview import generate_attachment_preview_file
+from services.storage_service import get_storage_service
 from services.supplier_access import (
     get_supplier_context_for_portal,
     get_supplier_context_for_user,
@@ -51,8 +53,6 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-SUPPLIER_UPLOAD_ROOT = BASE_DIR / "static" / "uploads" / "supplier_onboarding"
-SUPPLIER_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def _invalidate_supplier_cache() -> None:
@@ -652,22 +652,38 @@ async def upload_supplier_attachment(
 
     content = await file.read()
 
-    month_bucket = datetime.now().strftime("%Y%m")
-    target_dir = SUPPLIER_UPLOAD_ROOT / month_bucket
-    target_dir.mkdir(parents=True, exist_ok=True)
-
     safe_name = Path(file.filename).name
-    saved_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
-    saved_path = target_dir / saved_name
-    saved_path.write_bytes(content)
-    relative_path = f"/static/uploads/supplier_onboarding/{month_bucket}/{saved_name}"
-    preview_file_path = generate_attachment_preview_file(saved_path, base_dir=BASE_DIR)
+    storage = get_storage_service()
+    object_key = storage.build_object_key("supplier_onboarding", safe_name)
+    storage.upload_bytes(object_key, content, file.content_type)
+    preview_object_key = ""
+
+    if ext in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_path.write_bytes(content)
+        try:
+            preview_file_path = generate_attachment_preview_file(temp_path, base_dir=temp_path.parent)
+            if preview_file_path:
+                preview_local_path = temp_path.parent / preview_file_path.lstrip("/")
+                if preview_local_path.exists():
+                    preview_object_key = storage.build_object_key("supplier_onboarding/preview", f"{Path(safe_name).stem}_preview.pdf")
+                    storage.upload_bytes(preview_object_key, preview_local_path.read_bytes(), "application/pdf")
+        finally:
+            temp_path.unlink(missing_ok=True)
+            preview_dir = temp_path.parent / "preview"
+            if preview_dir.exists():
+                for item in preview_dir.iterdir():
+                    item.unlink(missing_ok=True)
+                preview_dir.rmdir()
 
     return {
         "message": "附件上传成功",
         "name": safe_name,
-        "file_path": relative_path,
-        "preview_file_path": preview_file_path,
+        "file_path": storage.get_download_url(object_key),
+        "storage_key": object_key,
+        "preview_file_path": storage.get_download_url(preview_object_key) if preview_object_key else "",
+        "preview_storage_key": preview_object_key,
         "size": len(content),
         "uploaded_at": datetime.now().isoformat(),
     }

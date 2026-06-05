@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 import asyncio
@@ -12,6 +12,7 @@ import logging
 from models import Contract, InquirySupplier, InquiryTask, Supplier, User, get_db, SessionLocal
 from routers.inquiry import get_current_user
 from services.contract_service import generate_contract_pdf
+from services.storage_service import get_storage_service
 
 
 router = APIRouter()
@@ -25,6 +26,8 @@ def _require_buyer_or_admin(current_user: User):
 
 
 def _resolve_local_path(file_path: str) -> Path:
+    if not file_path.startswith("/static/"):
+        raise FileNotFoundError("remote_storage")
     if file_path.startswith("/static/"):
         return BASE_DIR / file_path.lstrip("/")
     candidate = Path(file_path)
@@ -135,6 +138,9 @@ def preview_or_download_contract_pdf(
     if not contract.pdf_path:
         raise HTTPException(status_code=404, detail="Contract PDF not generated")
 
+    if not contract.pdf_path.startswith("/static/"):
+        return RedirectResponse(url=get_storage_service().get_download_url(contract.pdf_path))
+
     local_path = _resolve_local_path(contract.pdf_path)
     if not local_path.exists():
         history_versions = list(contract.history_versions or [])
@@ -206,9 +212,12 @@ def delete_contract_pdf(
         return {"message": "Contract PDF already empty", "id": contract.id}
 
     current_pdf_path = contract.pdf_path
-    local_path = _resolve_local_path(current_pdf_path)
-    if local_path.exists():
-        local_path.unlink()
+    if current_pdf_path.startswith("/static/"):
+        local_path = _resolve_local_path(current_pdf_path)
+        if local_path.exists():
+            local_path.unlink()
+    else:
+        get_storage_service().remove_object(current_pdf_path)
 
     history_versions = list(contract.history_versions or [])
     history_versions.append(
@@ -239,12 +248,15 @@ def delete_contract(
         raise HTTPException(status_code=404, detail="Contract not found")
 
     if contract.pdf_path:
-        local_path = _resolve_local_path(contract.pdf_path)
-        if local_path.exists():
-            try:
-                local_path.unlink()
-            except Exception:
-                pass
+        if contract.pdf_path.startswith("/static/"):
+            local_path = _resolve_local_path(contract.pdf_path)
+            if local_path.exists():
+                try:
+                    local_path.unlink()
+                except Exception:
+                    pass
+        else:
+            get_storage_service().remove_object(contract.pdf_path)
 
     db.delete(contract)
     db.commit()

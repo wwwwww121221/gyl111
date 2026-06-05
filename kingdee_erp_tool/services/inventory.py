@@ -74,7 +74,11 @@ def get_purchase_order_data():
         query_para = dict(para)
         query_para["FieldKeys"] = _build_warning_field_keys(material_model_field)
         print(f"Executing query with params: {query_para}")
-        rows = client.execute_query(query_para)
+        try:
+            rows = client.execute_query(query_para)
+        except Exception as exc:
+            print(f"Warning query failed with field {material_model_field}: {exc}")
+            continue
         if _is_query_error_response(rows):
             print(f"Warning query failed with field {material_model_field}, fallback to next candidate.")
             continue

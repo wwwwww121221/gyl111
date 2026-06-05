@@ -14,8 +14,9 @@ bcrypt
 python-dotenv
 openpyxl
 reportlab
-pywin32
+pywin32; sys_platform == "win32"
 apscheduler
 python-dateutil
 httpx
 redis
+minio

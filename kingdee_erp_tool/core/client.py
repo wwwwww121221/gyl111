@@ -2,6 +2,7 @@ import json
 import os
 import configparser
 from k3cloud_webapi_sdk.main import K3CloudApiSdk
+from core.config import settings
 
 
 def _extract_erp_error(response_data):
@@ -57,7 +58,7 @@ class KingdeeClient:
             
         # 定位配置文件
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.config_path = os.path.join(self.base_dir, "conf.ini")
+        self.config_path = str(settings.KINGDEE_CONFIG_PATH or os.path.join(self.base_dir, "conf.ini"))
         
         if not os.path.exists(self.config_path):
             print(f"Warning: Configuration file not found at {self.config_path}")

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Any, Optional
 from pydantic import BaseModel
 import uuid
+import tempfile
 from datetime import datetime, date
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
@@ -26,6 +27,7 @@ from services.wechat_service import (
     notify_inquiry_result,
     notify_new_inquiry_invitation,
 )
+from services.storage_service import get_storage_service
 
 # 简单的用户获取依赖
 from jose import jwt, JWTError
@@ -964,19 +966,40 @@ async def upload_inquiry_attachment(
         raise HTTPException(status_code=400, detail="附件大小不能超过20MB")
 
     safe_name = Path(file.filename).name
-    normalized_category, target_dir = _get_upload_directory(category)
-    month_bucket = target_dir.name
-    saved_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
-    saved_path = target_dir / saved_name
-    saved_path.write_bytes(content)
-    preview_file_path = _generate_attachment_preview_file(saved_path)
+    normalized_category = _normalize_upload_category(category)
+    storage = get_storage_service()
+    object_key = storage.build_object_key(normalized_category, safe_name)
+    storage.upload_bytes(object_key, content, file.content_type)
+    preview_object_key = ""
+    if ext in OFFICE_PREVIEW_EXTENSIONS:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_path.write_bytes(content)
+        try:
+            preview_file_path = _generate_attachment_preview_file(temp_path)
+            if preview_file_path:
+                preview_local_path = Path(preview_file_path)
+                if not preview_local_path.is_absolute():
+                    preview_local_path = temp_path.parent / preview_file_path.lstrip("/\\")
+                if preview_local_path.exists():
+                    preview_object_key = storage.build_object_key(f"{normalized_category}/preview", f"{Path(safe_name).stem}_preview.pdf")
+                    storage.upload_bytes(preview_object_key, preview_local_path.read_bytes(), "application/pdf")
+        finally:
+            temp_path.unlink(missing_ok=True)
+            preview_dir = temp_path.parent / "preview"
+            if preview_dir.exists():
+                for item in preview_dir.iterdir():
+                    item.unlink(missing_ok=True)
+                preview_dir.rmdir()
 
     return {
         "message": "Attachment uploaded successfully",
         "name": safe_name,
         "category": normalized_category,
-        "file_path": f"/static/uploads/{normalized_category}/{month_bucket}/{saved_name}",
-        "preview_file_path": preview_file_path,
+        "file_path": storage.get_download_url(object_key),
+        "storage_key": object_key,
+        "preview_file_path": storage.get_download_url(preview_object_key) if preview_object_key else "",
+        "preview_storage_key": preview_object_key,
         "size": len(content),
         "uploaded_at": datetime.now().isoformat()
     }
@@ -2172,6 +2195,4 @@ def manual_reject_link(
     link.latest_ai_feedback = payload.message or "经采购员人工复核，当前报价不满足要求，本轮已终止。"
     db.commit()
     return {"message": "已人工淘汰该供应商。"}
-
-
 

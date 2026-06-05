@@ -138,6 +138,59 @@ def ensure_runtime_schema_columns():
             """
         ])
 
+    if "purchase_order_summary" not in table_names:
+        alter_statements.extend([
+            """
+            CREATE TABLE IF NOT EXISTS purchase_order_summary (
+                id SERIAL PRIMARY KEY,
+                supplier_code VARCHAR NOT NULL,
+                supplier_name VARCHAR,
+                material_code VARCHAR NOT NULL,
+                material_name VARCHAR,
+                order_count INTEGER DEFAULT 0,
+                total_qty DOUBLE PRECISION DEFAULT 0,
+                total_amount DOUBLE PRECISION DEFAULT 0,
+                avg_price DOUBLE PRECISION DEFAULT 0,
+                avg_tax_net_price DOUBLE PRECISION DEFAULT 0,
+                latest_price DOUBLE PRECISION,
+                latest_tax_net_price DOUBLE PRECISION,
+                latest_date TIMESTAMP,
+                lowest_price DOUBLE PRECISION,
+                lowest_date TIMESTAMP,
+                highest_price DOUBLE PRECISION,
+                highest_date TIMESTAMP,
+                avg_30_days DOUBLE PRECISION DEFAULT 0,
+                recent_order_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                UNIQUE (supplier_code, material_code)
+            )
+            """
+        ])
+
+    if "purchase_order_monthly_stats" not in table_names:
+        alter_statements.extend([
+            """
+            CREATE TABLE IF NOT EXISTS purchase_order_monthly_stats (
+                id SERIAL PRIMARY KEY,
+                supplier_code VARCHAR NOT NULL,
+                supplier_name VARCHAR,
+                material_code VARCHAR NOT NULL,
+                material_name VARCHAR,
+                stat_month TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                order_count INTEGER DEFAULT 0,
+                total_qty DOUBLE PRECISION DEFAULT 0,
+                total_amount DOUBLE PRECISION DEFAULT 0,
+                avg_tax_net_price DOUBLE PRECISION DEFAULT 0,
+                min_tax_net_price DOUBLE PRECISION,
+                max_tax_net_price DOUBLE PRECISION,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                UNIQUE (supplier_code, material_code, stat_month)
+            )
+            """
+        ])
+
     if not alter_statements:
         return
 
@@ -511,8 +564,8 @@ def backfill_supplier_memberships():
                 role="admin",
                 status=member_status,
                 member_name=supplier.contact_person,
-                position="管理员",
-                application_note="历史供应商账号自动回填",
+                position="???",
+                application_note="???????????",
                 approval_mode="platform_admin",
                 reviewed_at=supplier.reviewed_at,
                 reviewed_by=supplier.reviewer_id,
@@ -525,7 +578,7 @@ def backfill_supplier_memberships():
     finally:
         db.close()
 
-# 依赖注入 Dependency
+
 def get_db():
     db = SessionLocal()
     try:
@@ -533,25 +586,88 @@ def get_db():
     finally:
         db.close()
 
-class PurchaseOrderHistory(Base):
-    """
-    采购订单历史明细表：用于 AI 价格分析与前端趋势展示
-    """
-    __tablename__ = "purchase_order_history"
-    
+
+class PurchaseOrderSummary(Base):
+    __tablename__ = "purchase_order_summary"
+    __table_args__ = (
+        UniqueConstraint("supplier_code", "material_code", name="uq_purchase_order_summary_supplier_material"),
+    )
+
     id = Column(Integer, primary_key=True, index=True)
-    erp_entry_id = Column(String, unique=True, index=True, comment="ERP订单明细内码(唯一)")
-    bill_no = Column(String, index=True, comment="采购订单号")
-    project_number = Column(String, index=True, nullable=True, comment="项目号")
-    supplier_code = Column(String, index=True, comment="供应商编码")
-    supplier_name = Column(String, comment="供应商名称")
-    material_code = Column(String, index=True, comment="物料编码")
-    material_name = Column(String, comment="物料名称")
-    qty = Column(Float, comment="采购数量")
-    price = Column(Float, comment="单价(不含税)")
-    tax_net_price = Column(Float, comment="含税净价(实付价)")
-    date = Column(DateTime, index=True, comment="订单日期")
+    supplier_code = Column(String, index=True, nullable=False)
+    supplier_name = Column(String, nullable=True)
+    material_code = Column(String, index=True, nullable=False)
+    material_name = Column(String, nullable=True)
+    order_count = Column(Integer, default=0)
+    total_qty = Column(Float, default=0.0)
+    total_amount = Column(Float, default=0.0)
+    avg_price = Column(Float, default=0.0)
+    avg_tax_net_price = Column(Float, default=0.0)
+    latest_price = Column(Float, nullable=True)
+    latest_tax_net_price = Column(Float, nullable=True)
+    latest_date = Column(DateTime, nullable=True, index=True)
+    lowest_price = Column(Float, nullable=True)
+    lowest_date = Column(DateTime, nullable=True)
+    highest_price = Column(Float, nullable=True)
+    highest_date = Column(DateTime, nullable=True)
+    avg_30_days = Column(Float, default=0.0)
+    recent_order_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def date(self):
+        return self.latest_date
+
+    @property
+    def qty(self):
+        return self.total_qty
+
+    @property
+    def price(self):
+        return self.avg_price
+
+    @property
+    def tax_net_price(self):
+        return self.avg_tax_net_price
+
+    @property
+    def bill_no(self):
+        return "统计汇总"
+
+
+class PurchaseOrderMonthlyStat(Base):
+    __tablename__ = "purchase_order_monthly_stats"
+    __table_args__ = (
+        UniqueConstraint("supplier_code", "material_code", "stat_month", name="uq_purchase_order_monthly_supplier_material_month"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    supplier_code = Column(String, index=True, nullable=False)
+    supplier_name = Column(String, nullable=True)
+    material_code = Column(String, index=True, nullable=False)
+    material_name = Column(String, nullable=True)
+    stat_month = Column(DateTime, index=True, nullable=False)
+    order_count = Column(Integer, default=0)
+    total_qty = Column(Float, default=0.0)
+    total_amount = Column(Float, default=0.0)
+    avg_tax_net_price = Column(Float, default=0.0)
+    min_tax_net_price = Column(Float, nullable=True)
+    max_tax_net_price = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def date(self):
+        return self.stat_month
+
+    @property
+    def tax_net_price(self):
+        return self.avg_tax_net_price
+
+    @property
+    def bill_no(self):
+        return ""
 
 
 class AssessmentTask(Base):

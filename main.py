@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(sync_suppliers, 'cron', hour=2, minute=30, id='daily_supplier_sync')
     # 每天凌晨 3 点增量同步一次采购订单数据，默认从过去 3 天的数据开始同步以防遗漏
     scheduler.add_job(
-        lambda: sync_po_history(start_date=(datetime.now() - timedelta(days=3)).strftime("%Y-%m-%dT00:00:00")),
+        lambda: sync_po_history(start_date=settings.PO_HISTORY_SYNC_START_DATE),
         'cron',
         hour=3,
         minute=0,

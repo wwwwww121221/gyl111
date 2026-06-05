@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import tempfile
 import warnings
 from copy import copy
 from datetime import datetime
@@ -19,6 +20,7 @@ from reportlab.pdfgen import canvas
 from sqlalchemy.orm import Session
 
 from models import InquirySupplier, InquiryTask, InquiryTaskItem, InquiryRequest, Quotation, Supplier, LinkStatus, Contract, ContractTemplate
+from services.storage_service import get_storage_service
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -59,8 +61,13 @@ TEMPLATE_DYNAMIC_RULES = {
 
 
 def _resolve_template_path(template_file_path: str = None) -> Path:
+    storage = get_storage_service()
     candidates = []
     if template_file_path:
+        if template_file_path.startswith(("http://", "https://")):
+            raise FileNotFoundError("暂不支持直接通过 URL 读取模板，请使用 MinIO 对象键")
+        if "/" in template_file_path and not str(template_file_path).startswith(("static/", "/static/")):
+            return storage.download_persistent_tempfile(template_file_path, suffix=Path(template_file_path).suffix or ".xlsx")
         custom_path = Path(template_file_path)
         if custom_path.is_absolute():
             candidates.append(custom_path)
@@ -1626,7 +1633,7 @@ async def generate_contract_pdf(
         buyer_company_name=resolved_buyer_name
     )
 
-    output_pdf = CONTRACT_DIR / f"合同_{inquiry_id}.pdf"
+    output_pdf = Path(tempfile.gettempdir()) / f"supply_chain_contract_{inquiry_id}_{uuid4().hex[:8]}.pdf"
     template_path = _resolve_template_path(resolved_template_file_path)
     temp_xlsx = _fill_template_to_temp_excel(payload, template_path=template_path)
     try:
@@ -1639,7 +1646,15 @@ async def generate_contract_pdf(
                 import logging
                 logging.getLogger(__name__).warning(f"无法删除临时Excel文件 {temp_xlsx}: {e}")
 
-    static_pdf_path = f"/static/contracts/{output_pdf.name}"
+    if template_path and template_path.exists() and str(template_path).startswith(tempfile.gettempdir()):
+        try:
+            template_path.unlink()
+        except Exception:
+            pass
+    storage = get_storage_service()
+    static_pdf_path = storage.build_object_key("contracts", f"合同_{inquiry_id}.pdf")
+    storage.upload_bytes(static_pdf_path, output_pdf.read_bytes(), "application/pdf")
+    output_pdf.unlink(missing_ok=True)
     if contract_record.pdf_path and contract_record.pdf_path != static_pdf_path:
         contract_record.history_versions = _append_history_version(
             contract_record.history_versions,

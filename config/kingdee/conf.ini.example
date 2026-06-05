@@ -1,0 +1,7 @@
+[config]
+X-KDApi-AcctID=change_me
+X-KDApi-AppID=change_me
+X-KDApi-AppSec=change_me
+X-KDApi-UserName=change_me
+X-KDApi-LCID=2052
+X-KDApi-ServerUrl=http://your-erp-host/k3cloud/

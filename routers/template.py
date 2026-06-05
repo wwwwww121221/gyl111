@@ -9,12 +9,11 @@ from sqlalchemy.orm import Session
 
 from models import ContractTemplate, User, get_db
 from routers.inquiry import get_current_user
+from services.storage_service import get_storage_service
 
 
 router = APIRouter()
 BASE_DIR = Path(__file__).resolve().parents[1]
-TEMPLATE_DIR = BASE_DIR / "static" / "templates"
-TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class ContractTemplatePayload(BaseModel):
@@ -30,10 +29,8 @@ def _require_buyer_or_admin(current_user: User):
 
 
 def _resolve_local_template_path(file_path: str) -> Path:
-    if file_path.startswith("/"):
-        return BASE_DIR / file_path.lstrip("/")
-    if file_path.startswith("static/"):
-        return BASE_DIR / file_path
+    if file_path.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Remote template path is not a local file")
     candidate = Path(file_path)
     return candidate if candidate.is_absolute() else BASE_DIR / file_path
 
@@ -159,9 +156,12 @@ def delete_template(
     template = db.query(ContractTemplate).filter(ContractTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
-    local_path = _resolve_local_template_path(template.file_path)
-    if local_path.exists():
-        local_path.unlink()
+    if "/" in template.file_path and not template.file_path.startswith(("static/", "/static/")):
+        get_storage_service().remove_object(template.file_path)
+    else:
+        local_path = _resolve_local_template_path(template.file_path)
+        if local_path.exists():
+            local_path.unlink()
     db.delete(template)
     db.commit()
     return {"message": "Template deleted successfully", "id": template_id}
@@ -178,13 +178,14 @@ async def upload_template_file(
     ext = Path(file.filename).suffix.lower()
     if ext not in [".xlsx", ".xls"]:
         raise HTTPException(status_code=400, detail="Only .xlsx or .xls is allowed")
-    safe_name = Path(file.filename).name
-    saved_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}_{safe_name}"
-    saved_path = TEMPLATE_DIR / saved_name
     content = await file.read()
-    saved_path.write_bytes(content)
+    safe_name = Path(file.filename).name
+    storage = get_storage_service()
+    object_key = storage.build_object_key("templates", safe_name)
+    storage.upload_bytes(object_key, content, file.content_type)
     return {
         "message": "Template uploaded successfully",
-        "file_path": f"static/templates/{saved_name}",
-        "filename": saved_name,
+        "file_path": object_key,
+        "file_url": storage.get_download_url(object_key),
+        "filename": safe_name,
     }

@@ -37,6 +37,30 @@ const getAssetOrigin = () => {
   return ''
 }
 
+const normalizeErrorMessage = (payload, fallback = '请求失败') => {
+  if (!payload) return fallback
+  if (typeof payload === 'string') return payload
+  if (typeof payload?.detail === 'string') return payload.detail
+  if (typeof payload?.error === 'string') return payload.error
+  if (typeof payload?.message === 'string') return payload.message
+  if (Array.isArray(payload?.detail)) {
+    const msg = payload.detail
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (typeof item?.msg === 'string') return item.msg
+        return ''
+      })
+      .filter(Boolean)
+      .join('；')
+    return msg || fallback
+  }
+  try {
+    return JSON.stringify(payload)
+  } catch {
+    return fallback
+  }
+}
+
 export const resolveAssetUrl = (path) => {
   const normalized = String(path || '').trim()
   if (!normalized) return ''

@@ -15,10 +15,24 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql://postgres:1234@localhost:5432/supply_chain_agent"
+    PO_HISTORY_SYNC_START_DATE: str = "2025-01-01T00:00:00"
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_CACHE_TTL: int = 86400
+
+    # MinIO / S3 compatible storage
+    MINIO_ENDPOINT: Optional[str] = None
+    MINIO_ACCESS_KEY: Optional[str] = None
+    MINIO_SECRET_KEY: Optional[str] = None
+    MINIO_BUCKET: str = "supply-chain-agent"
+    MINIO_SECURE: bool = False
+    MINIO_REGION: Optional[str] = None
+    MINIO_PUBLIC_BASE_URL: Optional[str] = None
+
+    # Centralized config paths
+    CONFIG_DIR: str = "config"
+    KINGDEE_CONFIG_PATH: Optional[str] = None
 
     # LLM
     LLM_PROVIDER: str = "openai"

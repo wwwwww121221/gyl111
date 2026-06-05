@@ -512,12 +512,13 @@ const getNewStatusType = (row) => {
 
 const getContractPath = (row) => row.contract_pdf || row.contract_pdf_path || ''
 const canViewContract = (row) => getDisplayStatus(row) === 'deal' && !!getContractPath(row)
-const isContractGenerating = (row) => getDisplayStatus(row) === 'deal' && !getContractPath(row) && row.contract_status === 'generating'
+const normalizeContractStatus = (status) => String(status || '').trim().toLowerCase()
+const isContractGenerating = (row) => getDisplayStatus(row) === 'deal' && !getContractPath(row) && normalizeContractStatus(row.contract_status) === 'generating'
 
 const canFillContract = (row) => {
   if (getDisplayStatus(row) !== 'deal' || getContractPath(row)) return false
-  const status = row.contract_status
-  return !status || ['failed', 'pending', '待供应商填写'].includes(status)
+  const status = normalizeContractStatus(row.contract_status)
+  return !status || ['failed', 'pending', 'pending_supplier_fill', '待供应商填写'].includes(status)
 }
 
 const handleClearFilters = () => {

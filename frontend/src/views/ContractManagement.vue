@@ -32,7 +32,7 @@
         <el-table-column label="状态" min-width="130" header-align="center" align="center">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)">
-              {{ row.status || '未知' }}
+              {{ getStatusText(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -156,7 +156,7 @@ const isFailedStatus = (status) => {
 }
 const isWaitingSupplierStatus = (status) => {
   const s = normalizeStatus(status)
-  return s.includes('待供应商') || s === 'pending' || s.includes('待')
+  return s.includes('待供应商') || s === 'pending' || s === 'pending_supplier_fill' || s.includes('待')
 }
 
 const canPreviewOrDownload = (row) => isGeneratedStatus(row?.status)
@@ -169,6 +169,18 @@ const getStatusType = (status) => {
   if (isWaitingSupplierStatus(status)) return 'warning'
   if (isGeneratedStatus(status)) return 'success'
   return 'info'
+}
+
+const getStatusText = (status) => {
+  const s = normalizeStatus(status)
+  if (!s) return '未知'
+  if (s === 'pending_supplier_fill' || s === '待供应商填写') return '待供应商填写'
+  if (s === 'pending') return '待处理'
+  if (s === 'generating') return '生成中'
+  if (s === 'generated') return '已生成'
+  if (s === 'failed') return '生成失败'
+  if (s === 'deleted') return '已删除'
+  return '未知状态'
 }
 
 const openBlobInNewTab = (blob) => {

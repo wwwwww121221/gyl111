@@ -639,8 +639,8 @@ const downloadFileDirectly = (file) => {
   }, 100)
 }
 
-const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || role || '-')
-const statusText = (status) => ({ active: '已激活', pending: '待审核', rejected: '已拒绝', disabled: '已停用' }[status] || status || '-')
+const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || '成员')
+const statusText = (status) => ({ active: '已激活', pending: '待审核', rejected: '已拒绝', disabled: '已停用' }[status] || '未知状态')
 const statusType = (status) => ({ active: 'success', pending: 'warning', rejected: 'danger', disabled: 'info' }[status] || 'info')
 const gradeType = (grade) => ({ A级: 'success', B级: 'warning', C级: 'danger', 一般: 'info' }[grade] || 'info')
 
@@ -650,7 +650,7 @@ const getStatusText = (status) => ({
   pending: '待审核',
   approved: '已通过',
   rejected: '已停用',
-}[status] || status)
+}[status] || '未知状态')
 
 const getStatusType = (status) => ({
   pending: 'warning',

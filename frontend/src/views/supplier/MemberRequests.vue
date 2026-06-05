@@ -228,7 +228,7 @@ const formatTime = (val) => {
   return new Date(val).toLocaleString('zh-CN')
 }
 
-const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || role)
+const roleLabel = (role) => ({ admin: '管理员', member: '成员' }[role] || '成员')
 const statusType = (status) => ({
   active: 'success',
   pending: 'warning',
@@ -241,7 +241,7 @@ const statusLabel = (status) => ({
   pending: '待审核',
   rejected: '已拒绝',
   disabled: '已停用',
-}[status] || status)
+}[status] || '未知状态')
 
 onMounted(() => {
   fetchCurrentRole()

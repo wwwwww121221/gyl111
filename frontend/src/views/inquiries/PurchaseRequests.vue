@@ -1038,7 +1038,8 @@ const handleSyncErp = async () => {
     }
   } catch (error) {
     console.error('Sync ERP failed:', error)
-    ElMessage.error('同步ERP数据失败: ' + (error.response?.data?.detail || error.message))
+    const detail = error.response?.data?.detail || error.message || '请稍后重试'
+    ElMessage.error(detail)
   } finally {
     syncingErp.value = false
   }

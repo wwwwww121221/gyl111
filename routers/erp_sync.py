@@ -71,7 +71,8 @@ def sync_purchase_requisitions(
         )
     except Exception as e:
         logger.exception("ERP sync failed")
-        raise HTTPException(status_code=500, detail=f"ERP 同步失败: {str(e)}")
+        message = str(e).strip() or "ERP 返回异常，请稍后重试"
+        raise HTTPException(status_code=500, detail=f"ERP 同步失败: {message}")
 
 @router.get("/po_history")
 def get_po_history(

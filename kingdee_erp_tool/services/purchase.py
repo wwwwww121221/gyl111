@@ -71,9 +71,16 @@ def process_purchase_data(rows):
     """
     将原始二维数组处理成结构化字典列表
     """
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise RuntimeError("ERP 返回数据格式异常")
+
     result = []
 
     for r in rows:
+        if not isinstance(r, list):
+            raise RuntimeError("ERP 返回数据格式异常")
         bill_type_id = r[0] if len(r) > 0 else ""
         project_number = r[1] if len(r) > 1 else ""
         project_name = r[2] if len(r) > 2 else ""

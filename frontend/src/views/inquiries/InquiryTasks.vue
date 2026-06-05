@@ -1139,7 +1139,7 @@ const getLinkStatusText = (status) => {
     'deal': '已成交',
     'reject': '已淘汰'
   }
-  return map[status] || status
+  return map[status] || '未知状态'
 }
 
 const formatDateTime = (dateStr) => {
@@ -1297,7 +1297,7 @@ const getTaskStatusLabel = (status) => {
     'pending_fill': '待填写',
     'analyzing': '分析中'
   }
-  return map[status] || status
+  return map[status] || '未知状态'
 }
 
 const getQuoteRowClassName = ({ row }) => {

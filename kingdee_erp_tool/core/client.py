@@ -3,6 +3,45 @@ import os
 import configparser
 from k3cloud_webapi_sdk.main import K3CloudApiSdk
 
+
+def _extract_erp_error(response_data):
+    candidates = []
+    if isinstance(response_data, dict):
+        candidates.append(response_data)
+    elif isinstance(response_data, list) and response_data:
+        first = response_data[0]
+        if isinstance(first, dict):
+            candidates.append(first)
+        elif isinstance(first, list) and first and isinstance(first[0], dict):
+            candidates.append(first[0])
+
+    for candidate in candidates:
+        result = candidate.get("Result")
+        if not isinstance(result, dict):
+            continue
+
+        response_status = result.get("ResponseStatus")
+        if not isinstance(response_status, dict):
+            continue
+        if response_status.get("IsSuccess") is True:
+            continue
+
+        errors = response_status.get("Errors") or []
+        messages = []
+        for error in errors:
+            if isinstance(error, dict):
+                message = error.get("Message") or error.get("FieldName") or error.get("DIndex")
+                if message:
+                    messages.append(str(message))
+
+        message = response_status.get("Message") or response_status.get("MsgCode") or result.get("Message")
+        if message:
+            messages.insert(0, str(message))
+
+        return "；".join(dict.fromkeys(messages)) or "ERP 返回错误响应"
+
+    return None
+
 class KingdeeClient:
     _instance = None
     
@@ -73,25 +112,23 @@ class KingdeeClient:
         
         return {**config, **raw_config}
 
+    def _execute_query_once(self, para):
+        response_str = self.sdk.ExecuteBillQuery(para)
+        response_data = json.loads(response_str)
+        erp_error = _extract_erp_error(response_data)
+        if erp_error:
+            raise RuntimeError(erp_error)
+        return response_data
+
     def execute_query(self, para):
         """执行单据查询"""
         try:
-            # 直接调用 SDK 的 ExecuteBillQuery
-            # SDK 返回的是 JSON 字符串
-            response_str = self.sdk.ExecuteBillQuery(para)
-            
-            # 尝试解析 JSON
             try:
-                response_data = json.loads(response_str)
-                return response_data
-            except json.JSONDecodeError:
-                print(f"Failed to decode JSON response: {response_str}")
-                # 如果返回的不是 JSON，可能是错误信息字符串
-                # 尝试重新初始化并重试一次 (简单的重试机制)
-                print("Retrying with re-initialization...")
+                return self._execute_query_once(para)
+            except (json.JSONDecodeError, RuntimeError) as first_error:
+                print(f"ERP query failed, retrying with re-initialization: {first_error}")
                 self.sdk.Init(config_path=self.config_path, config_node="config")
-                response_str = self.sdk.ExecuteBillQuery(para)
-                return json.loads(response_str)
+                return self._execute_query_once(para)
 
         except Exception as e:
             print(f"Execute query failed: {e}")

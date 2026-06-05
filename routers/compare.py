@@ -4,7 +4,7 @@ from sqlalchemy import func, desc
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
-from models import get_db, User, PurchaseOrderHistory, Supplier
+from models import get_db, User, PurchaseOrderHistory, Supplier, Material, InquiryRequest
 from routers.auth import get_current_user_auth
 from services.llm_factory import get_llm_service
 from schemas import ChatMessage
@@ -45,6 +45,98 @@ class MaterialLatestPriceResponse(BaseModel):
     latest_price: Optional[float] = None
     latest_date: Optional[str] = None
 
+
+def _normalize_material_codes(raw_codes: List[str]) -> List[str]:
+    normalized_codes = []
+    seen_codes = set()
+    for raw_code in raw_codes or []:
+        code = str(raw_code or "").strip()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        normalized_codes.append(code)
+    return normalized_codes
+
+
+def _get_supplier_grade(supplier: Optional[Supplier]) -> str:
+    grade = "一般"
+    if supplier:
+        if getattr(supplier, "grade", None):
+            grade = supplier.grade
+        elif getattr(supplier, "level", None) == "core":
+            grade = "A级"
+        elif getattr(supplier, "level", None) == "normal":
+            grade = "一般"
+    return grade
+
+
+def _get_material_name_map(db: Session, material_codes: List[str]) -> Dict[str, str]:
+    if not material_codes:
+        return {}
+
+    rows = db.query(Material.code, Material.name).filter(Material.code.in_(material_codes)).all()
+    result = {
+        str(row.code or "").strip(): str(row.name or "").strip()
+        for row in rows
+        if str(row.code or "").strip() and str(row.name or "").strip()
+    }
+
+    missing_codes = [code for code in material_codes if code not in result]
+    if missing_codes:
+        request_rows = db.query(
+            InquiryRequest.material_code,
+            InquiryRequest.material_name
+        ).filter(
+            InquiryRequest.material_code.in_(missing_codes)
+        ).order_by(
+            InquiryRequest.id.desc()
+        ).all()
+
+        for row in request_rows:
+            code = str(row.material_code or "").strip()
+            name = str(row.material_name or "").strip()
+            if code and name and code not in result:
+                result[code] = name
+
+    return result
+
+
+def _build_supplier_map(db: Session, supplier_codes: List[str]) -> Dict[str, Supplier]:
+    codes = list({code for code in supplier_codes if code})
+    if not codes:
+        return {}
+
+    suppliers = db.query(Supplier).filter(Supplier.code.in_(codes)).all()
+    return {supplier.code: supplier for supplier in suppliers}
+
+
+def _append_supplier_recommendation(
+    result: Dict[str, List[MaterialSupplierResponse]],
+    material_code: str,
+    supplier_code: str,
+    supplier_name: str,
+    count: int,
+    supplier_map: Dict[str, Supplier],
+    limit: int = 3
+) -> None:
+    if not material_code or not supplier_code:
+        return
+
+    result.setdefault(material_code, [])
+    if len(result[material_code]) >= limit:
+        return
+    if any(item.code == supplier_code for item in result[material_code]):
+        return
+
+    supplier = supplier_map.get(supplier_code)
+    result[material_code].append(MaterialSupplierResponse(
+        id=supplier.id if supplier else None,
+        code=supplier_code,
+        name=supplier_name,
+        count=count,
+        grade=_get_supplier_grade(supplier)
+    ))
+
 @router.get("/suppliers/{material_code}", response_model=List[MaterialSupplierResponse])
 def get_material_suppliers(material_code: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user_auth)):
     """
@@ -68,37 +160,34 @@ def get_material_suppliers(material_code: str, db: Session = Depends(get_db), cu
         desc('count')
     ).all()
     
-    result = []
-    supplier_codes = [r.supplier_code for r in records if r.supplier_code]
-    if supplier_codes:
-        suppliers = db.query(Supplier).filter(Supplier.code.in_(supplier_codes)).all()
-        supplier_map = {s.code: s for s in suppliers}
-    else:
-        supplier_map = {}
+    if not records:
+        material_name = _get_material_name_map(db, [normalized_code]).get(normalized_code)
+        if material_name:
+            records = db.query(
+                PurchaseOrderHistory.supplier_code,
+                PurchaseOrderHistory.supplier_name,
+                func.count(PurchaseOrderHistory.id).label('count')
+            ).filter(
+                func.trim(PurchaseOrderHistory.material_name) == material_name
+            ).group_by(
+                PurchaseOrderHistory.supplier_code,
+                PurchaseOrderHistory.supplier_name
+            ).order_by(
+                desc('count')
+            ).all()
 
+    supplier_map = _build_supplier_map(db, [r.supplier_code for r in records if r.supplier_code])
+    result_map: Dict[str, List[MaterialSupplierResponse]] = {normalized_code: []}
     for r in records:
-        if not r.supplier_code:
-            continue
-        
-        supplier = supplier_map.get(r.supplier_code)
-        
-        grade = "一般"
-        if supplier:
-            if getattr(supplier, 'grade', None):
-                grade = supplier.grade
-            elif getattr(supplier, 'level', None) == 'core':
-                grade = 'A级'
-            elif getattr(supplier, 'level', None) == 'normal':
-                grade = '一般'
-                
-        result.append(MaterialSupplierResponse(
-            id=supplier.id if supplier else None,
-            code=r.supplier_code,
-            name=r.supplier_name,
-            count=r.count,
-            grade=grade
-        ))
-    return result
+        _append_supplier_recommendation(
+            result_map,
+            normalized_code,
+            r.supplier_code,
+            r.supplier_name,
+            r.count,
+            supplier_map
+        )
+    return result_map[normalized_code]
 
 
 @router.post("/suppliers/batch", response_model=Dict[str, List[MaterialSupplierResponse]])
@@ -110,14 +199,7 @@ def get_material_suppliers_batch(
     """
     批量获取多个物料的历史供应商推荐，减少前端在多物料场景下的请求次数。
     """
-    normalized_codes = []
-    seen_codes = set()
-    for raw_code in payload.material_codes or []:
-        code = str(raw_code or "").strip()
-        if not code or code in seen_codes:
-            continue
-        seen_codes.add(code)
-        normalized_codes.append(code)
+    normalized_codes = _normalize_material_codes(payload.material_codes)
 
     if not normalized_codes:
         return {}
@@ -139,43 +221,66 @@ def get_material_suppliers_batch(
         desc("count")
     ).all()
 
-    supplier_codes = list({
-        r.supplier_code for r in records
-        if getattr(r, "supplier_code", None)
-    })
-    supplier_map = {}
-    if supplier_codes:
-        suppliers = db.query(Supplier).filter(Supplier.code.in_(supplier_codes)).all()
-        supplier_map = {supplier.code: supplier for supplier in suppliers}
-
     result: Dict[str, List[MaterialSupplierResponse]] = {code: [] for code in normalized_codes}
+    supplier_codes = [r.supplier_code for r in records if getattr(r, "supplier_code", None)]
+    missing_codes = set(normalized_codes)
+    for record in records:
+        material_code = str(record.material_code or "").strip()
+        if material_code in missing_codes:
+            missing_codes.remove(material_code)
+
+    fallback_records = []
+    fallback_name_to_codes: Dict[str, List[str]] = {}
+    if missing_codes:
+        material_name_map = _get_material_name_map(db, list(missing_codes))
+        for code, name in material_name_map.items():
+            fallback_name_to_codes.setdefault(name, []).append(code)
+
+        if fallback_name_to_codes:
+            fallback_records = db.query(
+                func.trim(PurchaseOrderHistory.material_name).label("material_name"),
+                PurchaseOrderHistory.supplier_code,
+                PurchaseOrderHistory.supplier_name,
+                func.count(PurchaseOrderHistory.id).label("count")
+            ).filter(
+                func.trim(PurchaseOrderHistory.material_name).in_(list(fallback_name_to_codes.keys()))
+            ).group_by(
+                func.trim(PurchaseOrderHistory.material_name),
+                PurchaseOrderHistory.supplier_code,
+                PurchaseOrderHistory.supplier_name
+            ).order_by(
+                func.trim(PurchaseOrderHistory.material_name),
+                desc("count")
+            ).all()
+            supplier_codes.extend([
+                r.supplier_code for r in fallback_records
+                if getattr(r, "supplier_code", None)
+            ])
+
+    supplier_map = _build_supplier_map(db, supplier_codes)
     for record in records:
         material_code = str(record.material_code or "").strip()
         supplier_code = record.supplier_code
-        if not material_code or not supplier_code:
-            continue
+        _append_supplier_recommendation(
+            result,
+            material_code,
+            supplier_code,
+            record.supplier_name,
+            record.count,
+            supplier_map
+        )
 
-        supplier = supplier_map.get(supplier_code)
-        grade = "一般"
-        if supplier:
-            if getattr(supplier, "grade", None):
-                grade = supplier.grade
-            elif getattr(supplier, "level", None) == "core":
-                grade = "A级"
-            elif getattr(supplier, "level", None) == "normal":
-                grade = "一般"
-
-        result.setdefault(material_code, [])
-        if len(result[material_code]) >= 3:
-            continue
-
-        result[material_code].append(MaterialSupplierResponse(
-            id=supplier.id if supplier else None,
-            code=supplier_code,
-            name=record.supplier_name,
-            count=record.count,
-            grade=grade
-        ))
+    for record in fallback_records:
+        material_name = str(record.material_name or "").strip()
+        for material_code in fallback_name_to_codes.get(material_name, []):
+            _append_supplier_recommendation(
+                result,
+                material_code,
+                record.supplier_code,
+                record.supplier_name,
+                record.count,
+                supplier_map
+            )
 
     return result
 
@@ -189,14 +294,7 @@ def get_material_latest_prices_batch(
     """
     批量获取多个物料最近一次成交的不含税单价，供自动询价默认期望单价使用。
     """
-    normalized_codes = []
-    seen_codes = set()
-    for raw_code in payload.material_codes or []:
-        code = str(raw_code or "").strip()
-        if not code or code in seen_codes:
-            continue
-        seen_codes.add(code)
-        normalized_codes.append(code)
+    normalized_codes = _normalize_material_codes(payload.material_codes)
 
     if not normalized_codes:
         return {}
@@ -232,6 +330,40 @@ def get_material_latest_prices_batch(
             latest_date=record.date.strftime("%Y-%m-%d") if record.date else None
         )
 
+    missing_codes = [
+        code for code in normalized_codes
+        if result[code].latest_price is None
+    ]
+    material_name_map = _get_material_name_map(db, missing_codes)
+    fallback_name_to_codes: Dict[str, List[str]] = {}
+    for code, name in material_name_map.items():
+        fallback_name_to_codes.setdefault(name, []).append(code)
+
+    if fallback_name_to_codes:
+        fallback_records = db.query(
+            func.trim(PurchaseOrderHistory.material_name).label("material_name"),
+            PurchaseOrderHistory.price,
+            PurchaseOrderHistory.date,
+            PurchaseOrderHistory.id
+        ).filter(
+            func.trim(PurchaseOrderHistory.material_name).in_(list(fallback_name_to_codes.keys())),
+            PurchaseOrderHistory.price.isnot(None)
+        ).order_by(
+            func.trim(PurchaseOrderHistory.material_name),
+            PurchaseOrderHistory.date.desc(),
+            PurchaseOrderHistory.id.desc()
+        ).all()
+
+        for record in fallback_records:
+            material_name = str(record.material_name or "").strip()
+            for code in fallback_name_to_codes.get(material_name, []):
+                if result[code].latest_price is not None:
+                    continue
+                result[code] = MaterialLatestPriceResponse(
+                    latest_price=float(record.price) if record.price is not None else None,
+                    latest_date=record.date.strftime("%Y-%m-%d") if record.date else None
+                )
+
     return result
 
 @router.post("/history", response_model=List[HistoryPriceResponse])
@@ -253,6 +385,14 @@ def get_history_prices(req: CompareRequest, db: Session = Depends(get_db), curre
         trimmed_material_code == normalized_code,
         PurchaseOrderHistory.supplier_code.in_(supplier_codes)
     ).all()
+
+    if not all_records:
+        normalized_name = str(req.material_name or "").strip()
+        if normalized_name:
+            all_records = db.query(PurchaseOrderHistory).filter(
+                func.trim(PurchaseOrderHistory.material_name) == normalized_name,
+                PurchaseOrderHistory.supplier_code.in_(supplier_codes)
+            ).all()
 
     # 按照 supplier_code 分组处理数据
     records_by_supplier = {}

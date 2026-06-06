@@ -2,7 +2,9 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /app
 
@@ -17,8 +19,7 @@ RUN apt-get update \
 
 COPY requirements.txt ./requirements.txt
 COPY python_sdk_v8.2.0 ./python_sdk_v8.2.0
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+RUN pip install --retries 5 -r requirements.txt
 
 COPY . .
 

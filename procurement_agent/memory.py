@@ -7,11 +7,12 @@ from collections import defaultdict
 from typing import Any
 
 from core.redis_client import get_redis
-from procurement_agent.schemas import AgentMemoryRecord
+from procurement_agent.schemas import AgentMemoryRecord, AgentSessionSummary
 
 
 _FALLBACK_MEMORY: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FALLBACK_LONG_TERM_MEMORY: dict[str, list[dict[str, Any]]] = defaultdict(list)
+_FALLBACK_SESSION_INDEX: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _SESSION_TTL_SECONDS = 60 * 60 * 24
 _MAX_MESSAGES = 12
 _MAX_LONG_TERM_MEMORIES = 50
@@ -29,6 +30,10 @@ def _key(user_id: int | str, session_id: str) -> str:
 
 def _long_term_key(user_id: int | str) -> str:
     return f"agent:user:{user_id}:long_term_memories"
+
+
+def _session_index_key(user_id: int | str) -> str:
+    return f"agent:user:{user_id}:sessions"
 
 
 def _get_memory_redis():
@@ -58,12 +63,19 @@ def load_messages(user_id: int | str, session_id: str) -> list[dict[str, Any]]:
     return list(_FALLBACK_MEMORY.get(key, []))
 
 
+def list_sessions(user_id: int | str, limit: int = 30) -> list[AgentSessionSummary]:
+    rows = _load_session_rows(user_id)
+    rows = sorted(rows, key=lambda item: int(item.get("updated_at") or 0), reverse=True)
+    return [AgentSessionSummary(**row) for row in rows[:limit]]
+
+
 def append_message(user_id: int | str, session_id: str, role: str, content: str) -> None:
     key = _key(user_id, session_id)
+    now = int(time.time())
     message = {
         "role": role,
         "content": content,
-        "created_at": int(time.time()),
+        "created_at": now,
     }
     try:
         redis = _get_memory_redis()
@@ -71,6 +83,7 @@ def append_message(user_id: int | str, session_id: str, role: str, content: str)
             redis.rpush(key, json.dumps(message, ensure_ascii=False))
             redis.ltrim(key, -_MAX_MESSAGES, -1)
             redis.expire(key, _SESSION_TTL_SECONDS)
+            _touch_session_index(user_id, session_id, role, content, now)
             return
     except Exception:
         pass
@@ -78,6 +91,7 @@ def append_message(user_id: int | str, session_id: str, role: str, content: str)
     rows = _FALLBACK_MEMORY[key]
     rows.append(message)
     del rows[:-_MAX_MESSAGES]
+    _touch_session_index(user_id, session_id, role, content, now)
 
 
 def summarize_recent_messages(messages: list[dict[str, Any]], limit: int = 6) -> str:
@@ -169,6 +183,7 @@ def clear_session_messages(user_id: int | str, session_id: str) -> int:
     except Exception:
         pass
     _FALLBACK_MEMORY.pop(key, None)
+    _remove_session_index(user_id, session_id)
     return count
 
 
@@ -198,6 +213,7 @@ def clear_all_session_memories(user_id: int | str) -> int:
         if key.startswith(prefix):
             count += len(_FALLBACK_MEMORY.get(key, []))
             _FALLBACK_MEMORY.pop(key, None)
+    _save_session_rows(user_id, [])
     return count
 
 
@@ -229,6 +245,20 @@ def _load_long_term_rows(user_id: int | str) -> list[dict[str, Any]]:
     return list(_FALLBACK_LONG_TERM_MEMORY.get(key, []))
 
 
+def _load_session_rows(user_id: int | str) -> list[dict[str, Any]]:
+    key = _session_index_key(user_id)
+    try:
+        redis = _get_memory_redis()
+        if redis:
+            payload = redis.get(key)
+            if payload:
+                data = json.loads(payload)
+                return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return list(_FALLBACK_SESSION_INDEX.get(key, []))
+
+
 def _save_long_term_rows(user_id: int | str, rows: list[dict[str, Any]]) -> None:
     key = _long_term_key(user_id)
     payload = json.dumps(rows, ensure_ascii=False)
@@ -240,6 +270,61 @@ def _save_long_term_rows(user_id: int | str, rows: list[dict[str, Any]]) -> None
     except Exception:
         pass
     _FALLBACK_LONG_TERM_MEMORY[key] = list(rows)
+
+
+def _save_session_rows(user_id: int | str, rows: list[dict[str, Any]]) -> None:
+    key = _session_index_key(user_id)
+    payload = json.dumps(rows, ensure_ascii=False)
+    try:
+        redis = _get_memory_redis()
+        if redis:
+            redis.set(key, payload)
+            redis.expire(key, _SESSION_TTL_SECONDS)
+            return
+    except Exception:
+        pass
+    _FALLBACK_SESSION_INDEX[key] = list(rows)
+
+
+def _touch_session_index(user_id: int | str, session_id: str, role: str, content: str, now: int) -> None:
+    rows = _load_session_rows(user_id)
+    cleaned_content = str(content or "").strip()
+    preview = cleaned_content[:120]
+    title = preview[:32] or "新对话"
+
+    matched = None
+    for row in rows:
+        if row.get("session_id") == session_id:
+            matched = row
+            break
+
+    if matched is None:
+        matched = {
+            "session_id": session_id,
+            "title": title,
+            "last_message_preview": preview,
+            "message_count": 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+        rows.append(matched)
+
+    if role == "user" and (not matched.get("title") or matched.get("title") == "新对话"):
+        matched["title"] = title
+    elif role == "user" and matched.get("message_count", 0) <= 1:
+        matched["title"] = title
+
+    matched["last_message_preview"] = preview
+    matched["updated_at"] = now
+    matched["message_count"] = len(load_messages(user_id, session_id))
+
+    rows = sorted(rows, key=lambda item: int(item.get("updated_at") or 0), reverse=True)[:100]
+    _save_session_rows(user_id, rows)
+
+
+def _remove_session_index(user_id: int | str, session_id: str) -> None:
+    rows = [row for row in _load_session_rows(user_id) if row.get("session_id") != session_id]
+    _save_session_rows(user_id, rows)
 
 
 def _tokenize(text: str) -> list[str]:

@@ -181,6 +181,9 @@ const roleLabel = computed(() => {
 const activeMenu = computed(() => route.path)
 
 const currentRouteName = computed(() => {
+  if (route.path === '/agent/workspace') {
+    return '采购助手'
+  }
   const map = {
     '/dashboard/supplier': '供应商预警',
     '/dashboard/warehouse': '仓库预警',
@@ -196,7 +199,7 @@ const currentRouteName = computed(() => {
     '/suppliers/assessment-summary': '考核汇总',
     '/analysis/supplier': '供应商分析',
     '/analysis/material': '物料分析',
-    '/analysis/buyer': '采购员效能分析',
+    '/analysis/buyer': '采购员分析',
     '/system/users': '账号管理',
     '/system/logs': '系统操作日志',
   }

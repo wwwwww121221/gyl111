@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     LLM_BASE_URL: Optional[str] = None
     LLM_MODEL: str = "gpt-3.5-turbo"
 
+    # Procurement Agent LLM
+    PROCUREMENT_AGENT_LLM_PROVIDER: str = "deepseek"
+    PROCUREMENT_AGENT_LLM_API_KEY: Optional[str] = None
+    PROCUREMENT_AGENT_LLM_BASE_URL: Optional[str] = None
+    PROCUREMENT_AGENT_LLM_MODEL: str = "deepseek-v4-flash"
+
     # Admin Init
     ADMIN_USERNAME: Optional[str] = None
     ADMIN_PASSWORD: Optional[str] = None

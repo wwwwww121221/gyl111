@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class AgentChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[str] = None
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentToolResult(BaseModel):
@@ -22,6 +23,21 @@ class AgentChatResponse(BaseModel):
     answer: str
     tool_results: list[AgentToolResult] = Field(default_factory=list)
     memory_count: int = 0
+
+
+class AgentSessionSummary(BaseModel):
+    session_id: str
+    title: str
+    last_message_preview: str = ""
+    message_count: int = 0
+    created_at: int
+    updated_at: int
+
+
+class AgentMessageRecord(BaseModel):
+    role: str
+    content: str
+    created_at: int
 
 
 class AgentMemoryRecord(BaseModel):

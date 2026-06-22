@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, or_
@@ -29,12 +29,16 @@ from services.contract_service import generate_contract_pdf
 from services.negotiation_service import calculate_bargain_feedback, calculate_supplier_scores
 from services.supplier_access import get_supplier_context_for_portal, get_supplier_context_for_user
 from services.wechat_service import notify_supplier_onboarding_result
+from services.cache_service import load_cache_entry, save_cached_data, should_refresh_cache
 import logging
 from routers.inquiry import get_current_user
 from core.security import get_password_hash
 from core.redis_client import cache_get, cache_set, cache_delete, cache_clear_pattern
 
 logger = logging.getLogger(__name__)
+
+_SUPPLIER_ANALYSIS_CACHE_TTL = 1800
+_SUPPLIER_ANALYSIS_SOFT_TTL = 180
 
 router = APIRouter()
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -76,6 +80,129 @@ def _empty_supplier_analysis_payload() -> dict[str, Any]:
         "radar": [70, 70, 70, 70, 70],
         "tableData": [],
     }
+
+
+def _supplier_analysis_cache_key(supplier_id: int) -> str:
+    return f"supplier:analysis:{supplier_id}"
+
+
+def _build_supplier_analysis_payload(supplier: Supplier, history_records: list[PurchaseOrderSummary], monthly_records: list[PurchaseOrderMonthlyStat]) -> dict[str, Any]:
+    if not history_records:
+        return _empty_supplier_analysis_payload()
+
+    total_amount = sum(float(row.total_amount or 0.0) for row in history_records)
+    order_count = sum(int(row.order_count or 0) for row in history_records)
+    material_count = len(set(row.material_code for row in history_records))
+    valid_prices = [row.avg_tax_net_price for row in history_records if row.avg_tax_net_price and row.avg_tax_net_price > 0]
+    avg_tax_net_price = sum(valid_prices) / len(valid_prices) if valid_prices else 0.0
+    max_qty = max((row.total_qty for row in history_records if row.total_qty), default=0)
+    latest_record = history_records[0]
+    days_since_last_order = (datetime.now() - latest_record.latest_date).days if latest_record.latest_date else 0
+
+    material_order_counts = defaultdict(int)
+    for row in history_records:
+        if row.material_name:
+            material_order_counts[row.material_name] += int(row.order_count or 0)
+
+    sorted_materials = sorted(material_order_counts.items(), key=lambda item: item[1], reverse=True)
+    top_5_materials = [item[0] for item in sorted_materials[:5]]
+    all_materials = [item[0] for item in sorted_materials]
+
+    trend_data = [
+        {
+            "date": row.stat_month.strftime("%Y-%m-%d") if row.stat_month else "",
+            "price": float(row.avg_tax_net_price or 0.0),
+            "material": row.material_name or "未知物料",
+            "bill_no": "",
+        }
+        for row in monthly_records
+    ]
+
+    table_data = []
+    for row in history_records:
+        date_str = row.latest_date.strftime("%Y-%m-%d") if row.latest_date else ""
+        table_data.append({
+            "date": date_str,
+            "bill_no": "统计汇总",
+            "total_amount": round(float(row.total_amount or 0.0), 2),
+            "items": [{
+                "material": row.material_name,
+                "quantity": float(row.total_qty) if row.total_qty else 0,
+                "price": float(row.avg_price) if row.avg_price else 0.0,
+                "taxNetPrice": float(row.avg_tax_net_price) if row.avg_tax_net_price else 0.0,
+            }],
+        })
+    table_data.sort(key=lambda item: item["date"], reverse=True)
+
+    base_score = 80
+    radar_scores = [
+        min(100, max(60, round(base_score + (hash(supplier.name + "price") % 15 - 5)))),
+        min(100, max(60, round(base_score + (hash(supplier.name + "speed") % 15 - 5)))),
+        min(100, max(60, round(base_score + (hash(supplier.name + "delivery") % 15 - 5)))),
+        min(100, max(60, round(base_score + (hash(supplier.name + "quality") % 15 - 5)))),
+        min(100, max(60, round(base_score + (hash(supplier.name + "service") % 15 - 5)))),
+    ]
+
+    payload = {
+        "coreStats": {
+            "totalAmount": round(total_amount, 2),
+            "orderCount": order_count,
+            "materialCount": material_count,
+            "avgTaxNetPrice": round(avg_tax_net_price, 2),
+            "maxQty": round(max_qty, 2),
+            "daysSinceLastOrder": days_since_last_order,
+        },
+        "trend": {
+            "data": trend_data,
+            "topMaterials": top_5_materials,
+            "allMaterials": all_materials,
+        },
+        "radar": radar_scores,
+        "tableData": table_data,
+    }
+
+
+def _refresh_supplier_analysis_cache(supplier_id: int) -> None:
+    db = SessionLocal()
+    try:
+        supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier or not supplier.code:
+            save_cached_data(_supplier_analysis_cache_key(supplier_id), _empty_supplier_analysis_payload(), ttl=_SUPPLIER_ANALYSIS_CACHE_TTL)
+            return
+
+        history_records = (
+            db.query(PurchaseOrderSummary)
+            .filter(PurchaseOrderSummary.supplier_code == supplier.code)
+            .order_by(PurchaseOrderSummary.latest_date.desc())
+            .all()
+        )
+        monthly_records = (
+            db.query(PurchaseOrderMonthlyStat)
+            .filter(PurchaseOrderMonthlyStat.supplier_code == supplier.code)
+            .order_by(PurchaseOrderMonthlyStat.stat_month.asc())
+            .all()
+        )
+        if not history_records or not monthly_records:
+            sync_recent_po_history_for_analysis(supplier_code=supplier.code, months_back=12)
+            history_records = (
+                db.query(PurchaseOrderSummary)
+                .filter(PurchaseOrderSummary.supplier_code == supplier.code)
+                .order_by(PurchaseOrderSummary.latest_date.desc())
+                .all()
+            )
+            monthly_records = (
+                db.query(PurchaseOrderMonthlyStat)
+                .filter(PurchaseOrderMonthlyStat.supplier_code == supplier.code)
+                .order_by(PurchaseOrderMonthlyStat.stat_month.asc())
+                .all()
+            )
+
+        payload = _build_supplier_analysis_payload(supplier, history_records, monthly_records)
+        save_cached_data(_supplier_analysis_cache_key(supplier_id), payload, ttl=_SUPPLIER_ANALYSIS_CACHE_TTL)
+    except Exception:
+        logger.exception("Background supplier analysis refresh failed, supplier_id=%s", supplier_id)
+    finally:
+        db.close()
 
 
 def _normalize_supplier_profile_audit_status(supplier: Supplier) -> str:
@@ -219,19 +346,34 @@ def _generate_contract_pdf_background(inquiry_id: int) -> None:
 @router.get("/{supplier_id}/analysis")
 def get_supplier_analysis(
     supplier_id: int,
+    force_refresh: bool = Query(False, description="是否强制刷新缓存"),
+    background_tasks: BackgroundTasks = None,
+    response: Response = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     """
     采购员获取单个供应商的综合数据画像 (基于真实ERP历史采购订单)
     """
     _require_admin_or_buyer(current_user)
+    cache_key = _supplier_analysis_cache_key(supplier_id)
+    entry = None if force_refresh else load_cache_entry(cache_key)
+
+    if entry:
+        if response:
+            response.headers["X-Cache"] = "HIT"
+        if background_tasks and should_refresh_cache(entry, _SUPPLIER_ANALYSIS_SOFT_TTL):
+            background_tasks.add_task(_refresh_supplier_analysis_cache, supplier_id)
+        return entry["data"]
 
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
         
     if not supplier.code:
+        payload = _empty_supplier_analysis_payload()
+        save_cached_data(cache_key, payload, ttl=_SUPPLIER_ANALYSIS_CACHE_TTL)
+        return payload
         # 如果没有ERP编码，无法关联数据
         return {
             "coreStats": {
@@ -364,6 +506,10 @@ def get_supplier_analysis(
         "radar": radar_scores,
         "tableData": table_data
     }
+    save_cached_data(cache_key, payload, ttl=_SUPPLIER_ANALYSIS_CACHE_TTL)
+    if response:
+        response.headers["X-Cache"] = "MISS"
+    return payload
 
 @router.get("/list")
 def get_supplier_list(

@@ -3,13 +3,31 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
-from kingdee_erp_tool.services.purchase import search_purchase_orders as erp_search_purchase_orders
+from kingdee_erp_tool.services.purchase import get_historical_purchase_prices
 from models import InquiryRequest, Material, PurchaseOrderMonthlyStat, PurchaseOrderSummary, Supplier
+
+
+class StructuredTool:
+    def __init__(self, func, name: str, description: str, args_schema: type[BaseModel] | None = None):
+        self._func = func
+        self.name = name
+        self.description = description
+        self.args_schema = args_schema
+
+    @classmethod
+    def from_function(cls, func, name: str, description: str, args_schema: type[BaseModel] | None = None):
+        return cls(func=func, name=name, description=description, args_schema=args_schema)
+
+    def invoke(self, args: dict[str, Any]) -> Any:
+        payload = args or {}
+        if self.args_schema is not None:
+            validated = self.args_schema(**payload)
+            payload = validated.model_dump(exclude_none=True)
+        return self._func(**payload)
 
 
 class SearchMaterialInput(BaseModel):
@@ -199,14 +217,69 @@ def search_purchase_orders(db: Session, args: dict[str, Any]) -> dict[str, Any]:
     end_date = _trimmed(args.get("end_date"))
     limit = int(args.get("limit") or 10)
 
-    rows = erp_search_purchase_orders(
-        keyword=keyword or None,
-        material_code=material_code or None,
-        supplier_code=supplier_code or None,
+    resolved_material_code = material_code
+    resolved_supplier_code = supplier_code
+
+    if keyword and not resolved_material_code:
+        material_match = (
+            db.query(Material)
+            .filter(
+                or_(
+                    Material.code.ilike(_like(keyword)),
+                    Material.name.ilike(_like(keyword)),
+                    Material.specification.ilike(_like(keyword)),
+                )
+            )
+            .order_by(Material.code.asc())
+            .first()
+        )
+        if material_match and material_match.code:
+            resolved_material_code = _trimmed(material_match.code)
+
+    if keyword and not resolved_supplier_code:
+        supplier_match = (
+            db.query(Supplier)
+            .filter(
+                or_(
+                    Supplier.code.ilike(_like(keyword)),
+                    Supplier.name.ilike(_like(keyword)),
+                    Supplier.short_name.ilike(_like(keyword)),
+                )
+            )
+            .order_by(Supplier.name.asc())
+            .first()
+        )
+        if supplier_match and supplier_match.code:
+            resolved_supplier_code = _trimmed(supplier_match.code)
+
+    if keyword and not resolved_material_code:
+        summary_match = (
+            db.query(PurchaseOrderSummary.material_code)
+            .filter(PurchaseOrderSummary.material_name.ilike(_like(keyword)))
+            .order_by(desc(PurchaseOrderSummary.latest_date))
+            .first()
+        )
+        if summary_match and summary_match[0]:
+            resolved_material_code = _trimmed(summary_match[0])
+
+    rows = get_historical_purchase_prices(
+        material_code=resolved_material_code or None,
+        supplier_code=resolved_supplier_code or None,
         start_date=start_date or None,
         end_date=end_date or None,
         limit=limit,
     )
+    if keyword and not (resolved_material_code or resolved_supplier_code):
+        pattern = keyword.lower()
+        rows = [
+            row for row in rows
+            if pattern in str(row.get("bill_no") or "").lower()
+            or pattern in str(row.get("material_code") or "").lower()
+            or pattern in str(row.get("material_name") or "").lower()
+            or pattern in str(row.get("supplier_code") or "").lower()
+            or pattern in str(row.get("supplier_name") or "").lower()
+            or pattern in str(row.get("project_number") or "").lower()
+        ]
     return {
         "items": rows,
         "count": len(rows),
@@ -217,6 +290,22 @@ def get_material_price_history(db: Session, args: dict[str, Any]) -> dict[str, A
     material_code = _trimmed(args.get("material_code"))
     material_name = _trimmed(args.get("material_name"))
     limit = int(args.get("limit") or 10)
+
+    if not material_code and material_name:
+        material_match = (
+            db.query(Material)
+            .filter(
+                or_(
+                    Material.name.ilike(_like(material_name)),
+                    Material.code.ilike(_like(material_name)),
+                    Material.specification.ilike(_like(material_name)),
+                )
+            )
+            .order_by(Material.code.asc())
+            .first()
+        )
+        if material_match and material_match.code:
+            material_code = _trimmed(material_match.code)
 
     query = db.query(PurchaseOrderSummary)
     if material_code:

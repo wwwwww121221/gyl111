@@ -22,15 +22,11 @@ from procurement_agent.prompts import AGENT_PROMPT, TOOL_PLANNER_PROMPT
 from procurement_agent.schemas import AgentChatResponse, AgentToolResult
 from procurement_agent.tools import create_langchain_tools
 from schemas import ChatMessage
-from services.llm_factory import get_llm_service
+from services.llm_factory import get_procurement_agent_llm_service
 
 
 class ProcurementAgentRunner:
-    """Small query-only procurement agent.
-
-    This version lets the model decide which tools to call, while the backend
-    still validates tool names and parameters before execution.
-    """
+    """Small query-only procurement agent."""
 
     MAX_TOOL_PLANNING_ROUNDS = 2
     MAX_TOOL_ACTIONS_PER_ROUND = 3
@@ -40,10 +36,16 @@ class ProcurementAgentRunner:
         self.user = user
         self.tools = create_langchain_tools(db)
 
-    async def chat(self, message: str, session_id: str | None = None) -> AgentChatResponse:
+    async def chat(
+        self,
+        message: str,
+        session_id: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> AgentChatResponse:
         session_id = session_id or new_session_id()
         user_id = self.user.id
         history = load_messages(user_id, session_id)
+        effective_message = self._merge_context_into_message(message, context or {})
 
         guardrail_reason = detect_prompt_injection(message)
         if guardrail_reason:
@@ -58,19 +60,19 @@ class ProcurementAgentRunner:
             )
 
         memory_text = summarize_recent_messages(history)
-        recalled_memories = recall_long_term_memories(user_id, message, limit=3)
+        recalled_memories = recall_long_term_memories(user_id, effective_message, limit=3)
         recalled_memory_text = self._format_recalled_memories(recalled_memories)
-        llm = get_llm_service()
+        llm = get_procurement_agent_llm_service()
         tool_results = await self._run_query_tools(
             llm=llm,
-            message=message,
+            message=effective_message,
             memory_text=memory_text,
             recalled_memory_text=recalled_memory_text,
         )
         tool_text = self._format_tool_results(tool_results)
 
         prompt_messages = AGENT_PROMPT.format_messages(
-            user_message=message,
+            user_message=effective_message,
             memory_text=memory_text or "无",
             recalled_memory_text=recalled_memory_text or "无",
             tool_text=tool_text or "无工具结果",
@@ -93,6 +95,122 @@ class ProcurementAgentRunner:
             memory_count=len(load_messages(user_id, session_id)),
         )
 
+    @staticmethod
+    def _merge_context_into_message(message: str, context: dict[str, Any]) -> str:
+        if not context:
+            return message
+
+        parts = []
+        route_name = str(context.get("route_name") or "").strip()
+        if route_name:
+            parts.append(f"当前页面: {route_name}")
+
+        material_name = str(context.get("material_name") or "").strip()
+        material_code = str(context.get("material_code") or "").strip()
+        if material_name or material_code:
+            parts.append(f"当前物料: {material_name or '-'} / {material_code or '-'}")
+
+        supplier_name = str(context.get("supplier_name") or "").strip()
+        supplier_code = str(context.get("supplier_code") or "").strip()
+        if supplier_name or supplier_code:
+            parts.append(f"当前供应商: {supplier_name or '-'} / {supplier_code or '-'}")
+
+        if not parts:
+            return message
+
+        return f"{message}\n\n[页面上下文]\n" + "\n".join(parts)
+
+    @staticmethod
+    def _extract_context_defaults(message: str) -> dict[str, str]:
+        defaults = {
+            "material_name": "",
+            "material_code": "",
+            "supplier_name": "",
+            "supplier_code": "",
+        }
+
+        material_match = re.search(r"当前物料:\s*(.*?)\s*/\s*(.*)", message or "")
+        if material_match:
+            defaults["material_name"] = material_match.group(1).strip().strip("-")
+            defaults["material_code"] = material_match.group(2).strip().strip("-")
+
+        supplier_match = re.search(r"当前供应商:\s*(.*?)\s*/\s*(.*)", message or "")
+        if supplier_match:
+            defaults["supplier_name"] = supplier_match.group(1).strip().strip("-")
+            defaults["supplier_code"] = supplier_match.group(2).strip().strip("-")
+
+        return defaults
+
+    @staticmethod
+    def _has_any_keyword(message: str, words: list[str]) -> bool:
+        text = str(message or "")
+        return any(word in text for word in words)
+
+    def _build_seed_actions(self, message: str) -> list[tuple[str, dict[str, Any]]]:
+        actions: list[tuple[str, dict[str, Any]]] = []
+        context_defaults = self._extract_context_defaults(message)
+        keywords = extract_keywords(message)
+        primary_keyword = keywords[0] if keywords else ""
+
+        asks_price = self._has_any_keyword(message, ["价格", "趋势", "均价", "最低价", "最高价", "报价", "比价"])
+        asks_supplier = self._has_any_keyword(message, ["供应商", "供货", "厂家", "厂商"])
+        asks_purchase_order = self._has_any_keyword(message, ["采购订单", "订单", "下单"])
+        asks_request = self._has_any_keyword(message, ["采购申请", "申请单", "需求池", "请购"])
+
+        if asks_price:
+            if context_defaults["material_code"] or context_defaults["material_name"]:
+                actions.append((
+                    "get_material_price_history",
+                    {
+                        "material_code": context_defaults["material_code"] or None,
+                        "material_name": context_defaults["material_name"] or None,
+                        "limit": 8,
+                    },
+                ))
+            elif primary_keyword:
+                actions.append((
+                    "get_material_price_history",
+                    {
+                        "material_name": primary_keyword,
+                        "limit": 8,
+                    },
+                ))
+                actions.append(("search_material", {"keyword": primary_keyword, "limit": 5}))
+
+        if asks_supplier and (context_defaults["supplier_code"] or context_defaults["supplier_name"]):
+            actions.append((
+                "get_supplier_purchase_profile",
+                {
+                    "supplier_code": context_defaults["supplier_code"] or None,
+                    "supplier_name": context_defaults["supplier_name"] or None,
+                    "limit": 8,
+                },
+            ))
+
+        if asks_purchase_order:
+            actions.append((
+                "search_purchase_orders",
+                {
+                    "material_code": context_defaults["material_code"] or None,
+                    "supplier_code": context_defaults["supplier_code"] or None,
+                    "keyword": primary_keyword or None,
+                    "limit": 10,
+                },
+            ))
+
+        if asks_request:
+            actions.append((
+                "search_purchase_requests",
+                {
+                    "material_code": context_defaults["material_code"] or None,
+                    "material_name": context_defaults["material_name"] or None,
+                    "keyword": primary_keyword or None,
+                    "limit": 10,
+                },
+            ))
+
+        return actions[:3]
+
     async def _run_query_tools(
         self,
         llm: Any,
@@ -102,6 +220,16 @@ class ProcurementAgentRunner:
     ) -> list[AgentToolResult]:
         results: list[AgentToolResult] = []
         seen_signatures = set()
+
+        for tool_name, raw_args in self._build_seed_actions(message):
+            if tool_name not in self.tools:
+                continue
+            args = self._normalize_tool_args(tool_name, raw_args, message, results)
+            signature = self._tool_signature(tool_name, args)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            results.append(self._call_tool(tool_name, args))
 
         for _ in range(self.MAX_TOOL_PLANNING_ROUNDS):
             actions = await self._plan_tool_actions(
@@ -152,10 +280,10 @@ class ProcurementAgentRunner:
     def _collect_material_codes(self, results: list[AgentToolResult]) -> list[str]:
         codes = []
         for result in results:
-            if result.name != "search_material":
+            if result.name not in {"search_material", "get_material_price_history"}:
                 continue
             for item in (result.data or {}).get("items", []):
-                code = str(item.get("code") or "").strip()
+                code = str(item.get("code") or item.get("material_code") or "").strip()
                 if code:
                     codes.append(code)
         return self._dedupe(codes)
@@ -163,10 +291,14 @@ class ProcurementAgentRunner:
     def _collect_supplier_codes(self, results: list[AgentToolResult]) -> list[str]:
         codes = []
         for result in results:
-            if result.name != "search_suppliers":
-                continue
-            for item in (result.data or {}).get("items", []):
-                code = str(item.get("code") or "").strip()
+            if result.name == "search_suppliers":
+                for item in (result.data or {}).get("items", []):
+                    code = str(item.get("code") or "").strip()
+                    if code:
+                        codes.append(code)
+            if result.name == "get_supplier_purchase_profile":
+                supplier = (result.data or {}).get("supplier") or {}
+                code = str(supplier.get("code") or "").strip()
                 if code:
                     codes.append(code)
         return self._dedupe(codes)
@@ -217,10 +349,10 @@ class ProcurementAgentRunner:
             return f"查询到 {count} 条供应商候选。"
         if name == "get_material_price_history":
             trend_count = len(data.get("monthly_trend") or [])
-            return f"查询到 {count} 条物料供应商历史汇总，{trend_count} 条月度趋势。"
+            return f"查询到 {count} 条物料价格历史汇总，{trend_count} 条月度趋势。"
         if name == "get_supplier_purchase_profile":
             return f"查询到供应商历史供货物料 {count} 条。"
-        return f"工具 {name} 返回完成。"
+        return f"工具 {name} 执行完成。"
 
     @staticmethod
     def _format_tool_results(results: list[AgentToolResult]) -> str:
@@ -262,36 +394,64 @@ class ProcurementAgentRunner:
         keywords = extract_keywords(message)
         material_codes = self._collect_material_codes(results)
         supplier_codes = self._collect_supplier_codes(results)
+        context_defaults = self._extract_context_defaults(message)
+
+        if context_defaults["material_code"] and context_defaults["material_code"] not in material_codes:
+            material_codes = [context_defaults["material_code"], *material_codes]
+        if context_defaults["supplier_code"] and context_defaults["supplier_code"] not in supplier_codes:
+            supplier_codes = [context_defaults["supplier_code"], *supplier_codes]
 
         if tool_name == "search_material":
-            args["keyword"] = str(args.get("keyword") or (keywords[0] if keywords else message[:40])).strip()
+            args["keyword"] = str(
+                args.get("keyword")
+                or context_defaults["material_code"]
+                or context_defaults["material_name"]
+                or (keywords[0] if keywords else message[:40])
+            ).strip()
             args["limit"] = int(args.get("limit") or 5)
         elif tool_name == "search_suppliers":
-            args["keyword"] = str(args.get("keyword") or (keywords[0] if keywords else message[:40])).strip()
+            args["keyword"] = str(
+                args.get("keyword")
+                or context_defaults["supplier_code"]
+                or context_defaults["supplier_name"]
+                or (keywords[0] if keywords else message[:40])
+            ).strip()
             args["limit"] = int(args.get("limit") or 8)
         elif tool_name == "search_purchase_requests":
             if not args.get("keyword") and not args.get("material_code") and not args.get("material_name"):
-                args["keyword"] = keywords[0] if keywords else message[:40]
+                args["keyword"] = (
+                    context_defaults["material_code"]
+                    or context_defaults["material_name"]
+                    or (keywords[0] if keywords else message[:40])
+                )
+            if not args.get("material_code") and material_codes:
+                args["material_code"] = material_codes[0]
             args["limit"] = int(args.get("limit") or 10)
         elif tool_name == "search_purchase_orders":
             if not args.get("keyword") and not args.get("material_code") and not args.get("supplier_code"):
-                args["keyword"] = keywords[0] if keywords else message[:40]
-            if not args.get("material_code") and material_codes and not args.get("supplier_code"):
+                args["keyword"] = (
+                    context_defaults["material_code"]
+                    or context_defaults["material_name"]
+                    or context_defaults["supplier_code"]
+                    or context_defaults["supplier_name"]
+                    or (keywords[0] if keywords else message[:40])
+                )
+            if not args.get("material_code") and material_codes:
                 args["material_code"] = material_codes[0]
-            if not args.get("supplier_code") and supplier_codes and not args.get("material_code"):
+            if not args.get("supplier_code") and supplier_codes:
                 args["supplier_code"] = supplier_codes[0]
             args["limit"] = int(args.get("limit") or 10)
         elif tool_name == "get_material_price_history":
             if not args.get("material_code") and material_codes:
                 args["material_code"] = material_codes[0]
             if not args.get("material_code") and not args.get("material_name"):
-                args["material_name"] = keywords[0] if keywords else message[:40]
+                args["material_name"] = context_defaults["material_name"] or (keywords[0] if keywords else message[:40])
             args["limit"] = int(args.get("limit") or 8)
         elif tool_name == "get_supplier_purchase_profile":
             if not args.get("supplier_code") and supplier_codes:
                 args["supplier_code"] = supplier_codes[0]
             if not args.get("supplier_code") and not args.get("supplier_name"):
-                args["supplier_name"] = keywords[0] if keywords else message[:40]
+                args["supplier_name"] = context_defaults["supplier_name"] or (keywords[0] if keywords else message[:40])
             args["limit"] = int(args.get("limit") or 8)
         return args
 

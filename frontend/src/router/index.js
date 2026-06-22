@@ -220,6 +220,18 @@ const routes = [
     ]
   },
   {
+    path: '/agent',
+    component: MainLayout,
+    children: [
+      {
+        path: 'workspace',
+        name: 'ProcurementAgentWorkspace',
+        component: () => import('../views/agent/ProcurementAgentWorkspace.vue'),
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
+      }
+    ]
+  },
+  {
     path: '/system',
     component: MainLayout,
     redirect: '/system/users',

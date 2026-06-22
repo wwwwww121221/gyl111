@@ -43,6 +43,11 @@
                 查询
               </el-button>
             </el-form-item>
+            <el-form-item>
+              <el-button type="default" :icon="RefreshRight" @click="handleSyncErp(true)" :loading="syncingErp">
+                刷新
+              </el-button>
+            </el-form-item>
           </el-form>
         </div>
         
@@ -464,7 +469,7 @@ import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { createInquiryTask, syncErpRequisitions, uploadInquiryAttachment } from '../../api/inquiry'
 import api, { getApiOrigin, resolveAssetUrl } from '../../api/index'
 import { ElMessage } from 'element-plus'
-import { Download, Search } from '@element-plus/icons-vue'
+import { Download, RefreshRight, Search } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
@@ -472,11 +477,63 @@ const syncingErp = ref(false)
 const requestList = ref([])
 const selectedRequests = ref([])
 const selectedRequestsForTask = ref([])
+const REQUISITION_SESSION_CACHE_PREFIX = 'purchase_requisition_cache:'
 const cartVisible = ref(false)
 const userRole = computed(() => localStorage.getItem('role') || '')
 const isApprovalRequired = computed(() => userRole.value === 'buyer')
 
 const tableRef = ref(null)
+
+const buildRequisitionParams = (forceRefresh = false) => ({
+  keyword: searchForm.keyword || null,
+  bill_type_id: searchForm.bill_type_id || null,
+  start_date: searchForm.dateRange && searchForm.dateRange[0] ? searchForm.dateRange[0] : null,
+  end_date: searchForm.dateRange && searchForm.dateRange[1] ? searchForm.dateRange[1] : null,
+  force_refresh: forceRefresh
+})
+
+const buildRequisitionCacheKey = (params) => {
+  const payload = {
+    keyword: params.keyword || '',
+    bill_type_id: params.bill_type_id || '',
+    start_date: params.start_date || '',
+    end_date: params.end_date || ''
+  }
+  return `${REQUISITION_SESSION_CACHE_PREFIX}${JSON.stringify(payload)}`
+}
+
+const applyRequestList = (rows = []) => {
+  requestList.value = (Array.isArray(rows) ? rows : []).map((item, index) => ({
+    ...item,
+    _uid: item._uid || item.erp_request_id || `sync_${index}_${Math.random().toString(36).substring(2, 9)}`
+  }))
+  currentPage.value = 1
+}
+
+const loadRequisitionSessionCache = (params) => {
+  try {
+    const raw = sessionStorage.getItem(buildRequisitionCacheKey(params))
+    if (!raw) return null
+    const payload = JSON.parse(raw)
+    return Array.isArray(payload?.data) ? payload.data : null
+  } catch {
+    return null
+  }
+}
+
+const saveRequisitionSessionCache = (params, rows) => {
+  try {
+    sessionStorage.setItem(
+      buildRequisitionCacheKey(params),
+      JSON.stringify({
+        data: Array.isArray(rows) ? rows : [],
+        cached_at: Date.now()
+      })
+    )
+  } catch {
+    // ignore browser storage failures
+  }
+}
 const attachmentUploadRef = ref(null)
 const REQUEST_TABLE_WIDTHS_STORAGE_KEY = 'purchaseRequestsTableWidths'
 const requestTableColumnWidths = ref({})
@@ -543,7 +600,7 @@ const getStartOfMonth = () => {
 const getCurrentTime = () => {
   const now = new Date()
   const pad = (n) => (n < 10 ? '0' + n : n)
-  return `${now.getFullYear()}/${pad(now.getMonth() + 1)}/${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+  return `${now.getFullYear()}/${pad(now.getMonth() + 1)}/${pad(now.getDate())} 23:59:59`
 }
 
 const searchForm = reactive({
@@ -1013,7 +1070,7 @@ const removeMaterial = (index) => {
   selectedRequestsForTask.value.splice(index, 1)
 }
 
-const handleSyncErp = async () => {
+const legacyHandleSyncErp = async (forceRefresh = false) => {
   syncingErp.value = true
   try {
     // 组装查询参数
@@ -1021,7 +1078,8 @@ const handleSyncErp = async () => {
       keyword: searchForm.keyword || null,
       bill_type_id: searchForm.bill_type_id || null,
       start_date: searchForm.dateRange && searchForm.dateRange[0] ? searchForm.dateRange[0] : null,
-      end_date: searchForm.dateRange && searchForm.dateRange[1] ? searchForm.dateRange[1] : null
+      end_date: searchForm.dateRange && searchForm.dateRange[1] ? searchForm.dateRange[1] : null,
+      force_refresh: forceRefresh
     }
 
     const res = await syncErpRequisitions(params)
@@ -1031,7 +1089,7 @@ const handleSyncErp = async () => {
         _uid: `sync_${index}_${Math.random().toString(36).substring(2, 9)}`
       }))
       currentPage.value = 1
-      ElMessage.success(`精准同步成功，获取到 ${res.data.length} 条记录`)
+      ElMessage.success(`查询成功，获取到 ${res.data.length} 条记录`)
     } else {
       requestList.value = []
       ElMessage.info('未获取到符合该高级条件的 ERP 数据')
@@ -1040,6 +1098,44 @@ const handleSyncErp = async () => {
     console.error('Sync ERP failed:', error)
     const detail = error.response?.data?.detail || error.message || '请稍后重试'
     ElMessage.error(detail)
+  } finally {
+    syncingErp.value = false
+  }
+}
+
+const handleSyncErp = async (forceRefresh = false, options = {}) => {
+  const { silent = false } = options
+  const params = buildRequisitionParams(forceRefresh)
+  const cachedRows = !forceRefresh ? loadRequisitionSessionCache(params) : null
+  const hasCachedRows = Array.isArray(cachedRows)
+
+  if (hasCachedRows) {
+    applyRequestList(cachedRows)
+  }
+
+  syncingErp.value = !hasCachedRows
+  try {
+    const res = await syncErpRequisitions(params)
+    const rows = Array.isArray(res.data) ? res.data : []
+    saveRequisitionSessionCache(params, rows)
+
+    if (rows.length > 0) {
+      applyRequestList(rows)
+      if (!silent && (!hasCachedRows || forceRefresh)) {
+        ElMessage.success(`查询成功，获取到 ${rows.length} 条记录`)
+      }
+    } else {
+      requestList.value = []
+      if (!silent || !hasCachedRows) {
+        ElMessage.info('未获取到符合当前条件的数据')
+      }
+    }
+  } catch (error) {
+    console.error('Sync ERP failed:', error)
+    if (!hasCachedRows) {
+      const detail = error.response?.data?.detail || error.message || '请稍后重试'
+      ElMessage.error(detail)
+    }
   } finally {
     syncingErp.value = false
   }
@@ -1360,7 +1456,7 @@ const getRemarkLines = (row) => buildUniqueLines([
 
 onMounted(() => {
   loadRequestTableColumnWidths()
-  handleSyncErp()
+  handleSyncErp(false, { silent: true })
 })
 </script>
 

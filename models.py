@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # 直接从环境变量读取，如果没有则提供一个备用默认值
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123456@localhost:5432/supply_chain_agent")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+pg8000://postgres:123456@localhost:5432/supply_chain_agent")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

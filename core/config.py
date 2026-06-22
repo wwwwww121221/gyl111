@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
 
     # Database
-    DATABASE_URL: str = "postgresql://postgres:1234@localhost:5432/supply_chain_agent"
+    DATABASE_URL: str = "postgresql+pg8000://postgres:123456@localhost:5432/supply_chain_agent"
     PO_HISTORY_SYNC_START_DATE: str = "2025-01-01T00:00:00"
 
     # Redis

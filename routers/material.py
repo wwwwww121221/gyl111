@@ -1,14 +1,17 @@
 from collections import defaultdict
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
+from backend.sync_po_history import sync_recent_po_history_for_analysis
 from models import Material, PurchaseOrderMonthlyStat, PurchaseOrderSummary, Supplier, User, get_db
 from routers.inquiry import get_current_user
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _require_buyer_or_admin(current_user: User):
@@ -54,6 +57,21 @@ def get_material_list(
         .all()
     )
 
+    if not rows and not keyword:
+        summary_exists = db.query(PurchaseOrderSummary.id).first()
+        if not summary_exists:
+            try:
+                sync_recent_po_history_for_analysis(months_back=12)
+            except Exception:
+                logger.exception("Auto sync recent PO history for material list failed")
+
+            rows = (
+                query.group_by(PurchaseOrderSummary.material_code, PurchaseOrderSummary.material_name, Material.specification)
+                .order_by(desc("count"))
+                .limit(limit)
+                .all()
+            )
+
     return [
         {
             "material_code": r.material_code,
@@ -90,6 +108,29 @@ def get_material_analysis(
         .all()
     )
 
+    if not records or not monthly_records:
+        try:
+            sync_recent_po_history_for_analysis(material_code=material_code, months_back=12)
+        except Exception:
+            logger.exception("Auto sync recent PO history for material analysis failed, material_code=%s", material_code)
+
+        records = (
+            db.query(
+                PurchaseOrderSummary,
+                Supplier.grade.label("supplier_grade"),
+            )
+            .outerjoin(Supplier, PurchaseOrderSummary.supplier_name == Supplier.name)
+            .filter(PurchaseOrderSummary.material_code == material_code)
+            .order_by(PurchaseOrderSummary.latest_date.desc())
+            .all()
+        )
+        monthly_records = (
+            db.query(PurchaseOrderMonthlyStat)
+            .filter(PurchaseOrderMonthlyStat.material_code == material_code)
+            .order_by(PurchaseOrderMonthlyStat.stat_month.asc())
+            .all()
+        )
+
     if not records:
         return {"kpi": {}, "trend": [], "supplier_share": [], "history": [], "all_suppliers": []}
 
@@ -125,7 +166,7 @@ def get_material_analysis(
         else:
             other_value += item["value"]
     if other_value > 0:
-        final_supplier_share.append({"name": "鍏朵粬", "value": other_value})
+        final_supplier_share.append({"name": "其他", "value": other_value})
 
     trend = []
     history = []

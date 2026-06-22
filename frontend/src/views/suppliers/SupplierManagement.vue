@@ -6,7 +6,7 @@
           <div class="toolbar">
             <el-input
               v-model="searchQuery"
-              placeholder="请输入供应商名称进行搜索"
+              placeholder="请输入供应商名称/简称/编码/联系人搜索"
               clearable
               class="search-input"
               @keyup.enter="handleSearch"

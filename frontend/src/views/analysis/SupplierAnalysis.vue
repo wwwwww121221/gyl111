@@ -227,7 +227,7 @@ const fetchSuppliers = async () => {
   try {
     const res = await api.get('/supplier/list')
     // 移除状态过滤，展示所有供应商以供分析
-    supplierList.value = res.data
+    supplierList.value = res.data.list || []
     filteredSupplierList.value = supplierList.value
     if (supplierList.value.length > 0) {
       // 默认选中第一个
@@ -407,8 +407,41 @@ const initCharts = (trendData, radarScores) => {
   }
 }
 
+const fetchAllSuppliersForAnalysis = async () => {
+  try {
+    const pageSize = 200
+    let page = 1
+    let total = 0
+    let allSuppliers = []
+
+    do {
+      const res = await api.get('/supplier/list', {
+        params: {
+          page,
+          page_size: pageSize
+        }
+      })
+      const payload = res.data || {}
+      const currentList = Array.isArray(payload.list) ? payload.list : []
+      total = Number(payload.total || 0)
+      allSuppliers = allSuppliers.concat(currentList)
+      page += 1
+    } while (allSuppliers.length < total)
+
+    supplierList.value = allSuppliers
+    filteredSupplierList.value = supplierList.value
+    if (supplierList.value.length > 0) {
+      selectedSupplierId.value = supplierList.value[0].id
+      handleSupplierChange()
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('获取供应商列表失败')
+  }
+}
+
 onMounted(() => {
-  fetchSuppliers()
+  fetchAllSuppliersForAnalysis()
   
   // 监听窗口大小变化以适配图表
   window.addEventListener('resize', () => {

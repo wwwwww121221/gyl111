@@ -1,4 +1,5 @@
 import datetime
+import time
 
 from fastapi import APIRouter
 
@@ -6,6 +7,13 @@ from kingdee_getdata.login.session import session
 from kingdee_getdata.getdata.GetPurData import get_pur_data
 
 router = APIRouter()
+
+# 缓存变量
+_pur_cache = {
+    "data": None,
+    "timestamp": 0,
+    "ttl": 300,  # 缓存有效期，单位秒，默认5分钟
+}
 
 
 def build_pur_data(rows):
@@ -47,15 +55,24 @@ def build_pur_data(rows):
 def pur():
     """
     采购申请单数据接口
-    直接调用 get_pur_data() 获取原始数据并返回
+    带缓存：5分钟内复用上次请求结果，避免频繁调用金蝶API
     """
+    now = time.time()
+    if _pur_cache["data"] is not None and (now - _pur_cache["timestamp"]) < _pur_cache["ttl"]:
+        return _pur_cache["data"]
+
     session()
     rows = get_pur_data()
     data = build_pur_data(rows)
 
-    return {
+    result = {
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "count": len(data),
         "total_purchase_qty": sum(item["purchase_qty"] for item in data),
         "list": data
     }
+
+    _pur_cache["data"] = result
+    _pur_cache["timestamp"] = time.time()
+
+    return result

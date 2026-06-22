@@ -9,6 +9,7 @@ from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import asyncio
 
+from backend.sync_po_history import sync_recent_po_history_for_analysis
 from models import (
     get_db, SessionLocal, InquirySupplier, InquiryTaskItem,
     Quotation, LinkStatus, InquiryRequest, TaskStatus, InquiryTask, Supplier, SupplierMember, User, Contract, SupplierMetric, PurchaseOrderMonthlyStat, PurchaseOrderSummary
@@ -59,6 +60,22 @@ def _invalidate_supplier_cache():
         cache_clear_pattern("supplier:*")
     except Exception:
         pass
+
+
+def _empty_supplier_analysis_payload() -> dict[str, Any]:
+    return {
+        "coreStats": {
+            "totalAmount": 0.0,
+            "orderCount": 0,
+            "materialCount": 0,
+            "avgTaxNetPrice": 0.0,
+            "maxQty": 0,
+            "daysSinceLastOrder": 0,
+        },
+        "trend": {"data": [], "topMaterials": [], "allMaterials": []},
+        "radar": [70, 70, 70, 70, 70],
+        "tableData": [],
+    }
 
 
 def _normalize_supplier_profile_audit_status(supplier: Supplier) -> str:
@@ -208,8 +225,7 @@ def get_supplier_analysis(
     """
     采购员获取单个供应商的综合数据画像 (基于真实ERP历史采购订单)
     """
-    if current_user.role not in ["admin", "buyer"]:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    _require_admin_or_buyer(current_user)
 
     supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not supplier:
@@ -239,6 +255,19 @@ def get_supplier_analysis(
     monthly_records = db.query(PurchaseOrderMonthlyStat).filter(
         PurchaseOrderMonthlyStat.supplier_code == supplier.code
     ).order_by(PurchaseOrderMonthlyStat.stat_month.asc()).all()
+
+    if not history_records or not monthly_records:
+        try:
+            sync_recent_po_history_for_analysis(supplier_code=supplier.code, months_back=12)
+        except Exception:
+            logger.exception("Auto sync recent PO history for supplier analysis failed, supplier_code=%s", supplier.code)
+
+        history_records = db.query(PurchaseOrderSummary).filter(
+            PurchaseOrderSummary.supplier_code == supplier.code
+        ).order_by(PurchaseOrderSummary.latest_date.desc()).all()
+        monthly_records = db.query(PurchaseOrderMonthlyStat).filter(
+            PurchaseOrderMonthlyStat.supplier_code == supplier.code
+        ).order_by(PurchaseOrderMonthlyStat.stat_month.asc()).all()
     
     if not history_records:
         return {
@@ -272,7 +301,6 @@ def get_supplier_analysis(
     days_since_last_order = (datetime.now() - latest_record.latest_date).days if latest_record.latest_date else 0
 
     # 2. 过去6个月的成交趋势（折线图/散点图：按物料分类）
-    recent_records = monthly_records
     from collections import defaultdict
     material_order_counts = defaultdict(int)
     for r in history_records:
@@ -284,33 +312,29 @@ def get_supplier_analysis(
     all_materials = [m[0] for m in sorted_materials]
 
     trend_data = []
-    for r in recent_records:
+    for r in monthly_records:
         trend_data.append({
-            "date": r.date.strftime("%Y-%m-%d"),
-            "price": float(r.tax_net_price) if r.tax_net_price else 0.0,
+            "date": r.stat_month.strftime("%Y-%m-%d") if r.stat_month else "",
+            "price": float(r.avg_tax_net_price) if r.avg_tax_net_price else 0.0,
             "material": r.material_name or "未知物料",
-            "bill_no": r.bill_no
+            "bill_no": ""
         })
 
-    # 3. 交易明细 (按订单聚合，供前端过滤)
-    orders_dict = defaultdict(lambda: {"date": "", "bill_no": "", "total_amount": 0.0, "items": []})
+    # 3. 交易明细 (按物料聚合，供前端过滤)
+    table_data = []
     for r in history_records:
-        date_str = r.date.strftime("%Y-%m-%d") if r.date else ""
-        key = (date_str, r.bill_no)
-        if not orders_dict[key]["bill_no"]:
-            orders_dict[key]["date"] = key[0]
-            orders_dict[key]["bill_no"] = key[1]
-        
-        amount = (r.qty or 0) * (r.tax_net_price or 0)
-        orders_dict[key]["total_amount"] += amount
-        orders_dict[key]["items"].append({
-            "material": r.material_name,
-            "quantity": float(r.qty) if r.qty else 0,
-            "price": float(r.price) if r.price else 0.0,
-            "taxNetPrice": float(r.tax_net_price) if r.tax_net_price else 0.0
+        date_str = r.latest_date.strftime("%Y-%m-%d") if r.latest_date else ""
+        table_data.append({
+            "date": date_str,
+            "bill_no": "统计汇总",
+            "total_amount": round(float(r.total_amount or 0.0), 2),
+            "items": [{
+                "material": r.material_name,
+                "quantity": float(r.total_qty) if r.total_qty else 0,
+                "price": float(r.avg_price) if r.avg_price else 0.0,
+                "taxNetPrice": float(r.avg_tax_net_price) if r.avg_tax_net_price else 0.0
+            }]
         })
-        
-    table_data = list(orders_dict.values())
     table_data.sort(key=lambda x: x["date"], reverse=True)
 
     # 雷达图 (暂时保持随机，后续可以根据预警数据做真实评价)
@@ -366,7 +390,7 @@ def get_supplier_list(
     if keyword:
         kw = f"%{keyword}%"
         query = query.filter(
-            Supplier.name.ilike(kw) | Supplier.code.ilike(kw) | Supplier.contact_person.ilike(kw)
+            Supplier.name.ilike(kw) | Supplier.code.ilike(kw) | Supplier.short_name.ilike(kw) | Supplier.contact_person.ilike(kw)
         )
 
     base_query = query.group_by(Supplier.id)

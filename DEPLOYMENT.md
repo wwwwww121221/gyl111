@@ -64,7 +64,7 @@ LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=qwen-plus
 
 # PostgreSQL
-DATABASE_URL=postgresql://postgres:1234@localhost:5432/supply_chain_agent
+DATABASE_URL=postgresql+pg8000://postgres:123456@localhost:5432/supply_chain_agent
 
 # Redis
 REDIS_URL=redis://localhost:6379/0

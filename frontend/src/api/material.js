@@ -9,3 +9,7 @@ export const getMaterialList = (params = {}) => {
 export const getMaterialAnalysis = (material_code, params = {}) => {
   return request.get(`${MATERIAL_BASE}/analysis`, { params: { material_code, ...params } })
 }
+
+export const getMaterialAnalysisHistory = (material_code, params = {}) => {
+  return request.get(`${MATERIAL_BASE}/analysis/history`, { params: { material_code, ...params } })
+}

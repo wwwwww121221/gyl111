@@ -88,8 +88,8 @@
                     />
                   </el-select>
                   <el-radio-group v-model="chartMode" size="small" @change="renderLineChart">
-                    <el-radio-button value="detail">明细版</el-radio-button>
-                    <el-radio-button value="average">曲线版</el-radio-button>
+                    <el-radio-button value="detail">明细点</el-radio-button>
+                    <el-radio-button value="average">均价线</el-radio-button>
                   </el-radio-group>
                 </div>
               </div>
@@ -119,18 +119,18 @@
               <span>同一物料多供应商成交明细</span>
               <div class="chart-toolbar">
                 <el-select
-                  v-model="filterSupplier"
+                  v-model="filterSupplierCode"
                   placeholder="所有供应商"
                   clearable
                   size="small"
-                  style="width: 160px"
-                  @change="filterTableData"
+                  style="width: 180px"
+                  @change="handleHistoryFilterChange"
                 >
                   <el-option
-                    v-for="supplier in supplierOptions"
-                    :key="supplier"
-                    :label="supplier"
-                    :value="supplier"
+                    v-for="supplier in historySupplierOptions"
+                    :key="supplier.code || supplier.name"
+                    :label="supplier.name"
+                    :value="supplier.code"
                   />
                 </el-select>
                 <el-date-picker
@@ -142,14 +142,23 @@
                   value-format="YYYY-MM-DD"
                   size="small"
                   :shortcuts="dateShortcuts"
-                  style="width: 220px"
-                  @change="filterTableData"
+                  style="width: 240px"
+                  @change="handleHistoryFilterChange"
                 />
               </div>
             </div>
           </template>
           <div class="table-inner">
-            <el-table :data="filteredTableData" style="width: 100%" height="100%" stripe size="small" border>
+            <el-table
+              class="history-table"
+              v-loading="historyLoading"
+              :data="historyRows"
+              style="width: 100%"
+              :height="HISTORY_TABLE_HEIGHT"
+              stripe
+              size="small"
+              border
+            >
               <el-table-column prop="date" label="订单日期" width="120" sortable />
               <el-table-column prop="bill_no" label="采购单号" width="160" show-overflow-tooltip />
               <el-table-column prop="supplier_name" label="供应商名称" min-width="180" show-overflow-tooltip />
@@ -161,17 +170,34 @@
                 </template>
               </el-table-column>
               <el-table-column prop="qty" label="采购数量" align="right" width="100" />
-              <el-table-column prop="price" label="单价(不含税)" align="right" width="120">
+              <el-table-column prop="price" label="单价(不含税)" align="right" width="140">
                 <template #default="{ row }">
                   <span class="money-text">￥{{ Number(row.price || 0).toLocaleString() }}</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="tax_net_price" label="含税净价" align="right" width="120">
+              <el-table-column prop="tax_net_price" label="含税净价" align="right" width="140">
                 <template #default="{ row }">
                   <span class="money-text emphasis">￥{{ Number(row.tax_net_price || 0).toLocaleString() }}</span>
                 </template>
               </el-table-column>
+              <el-table-column prop="project_number" label="项目编号" min-width="140" show-overflow-tooltip />
             </el-table>
+          </div>
+          <div class="table-pagination">
+            <div class="table-pagination__meta">
+              当前第 {{ historyPage }} 页
+              <span v-if="historyRows.length">，本页 {{ historyRows.length }} 条</span>
+            </div>
+            <div class="table-pagination__actions">
+              <el-pagination
+                small
+                background
+                layout="prev, pager, next"
+                :current-page="historyPage"
+                :page-count="historyPageCount"
+                @current-change="handleHistoryPageChange"
+              />
+            </div>
           </div>
         </el-card>
       </div>
@@ -184,7 +210,7 @@ import * as echarts from 'echarts'
 import { computed, markRaw, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Money, RefreshRight, ShoppingCart, TrendCharts, User } from '@element-plus/icons-vue'
-import { getMaterialAnalysis, getMaterialList } from '../../api/material'
+import { getMaterialAnalysis, getMaterialAnalysisHistory, getMaterialList } from '../../api/material'
 
 const MATERIAL_ANALYSIS_SESSION_PREFIX = 'material_analysis_cache:'
 const MATERIAL_LIST_SESSION_KEY = 'material_analysis_material_list'
@@ -192,10 +218,13 @@ const MATERIAL_SELECTED_SESSION_KEY = 'material_analysis_selected_material'
 const MATERIAL_SELECTED_META_SESSION_KEY = 'material_analysis_selected_material_meta'
 const PAGE_CONTEXT_SESSION_KEY = 'procurement_agent_page_context'
 const MATERIAL_LIST_LIMIT = 1200
+const HISTORY_PAGE_SIZE = 20
+const HISTORY_TABLE_HEIGHT = 420
 
 const materialList = ref([])
 const selectedMaterial = ref('')
 const loadingData = ref(false)
+const historyLoading = ref(false)
 const loadingMaterials = ref(false)
 const materialsLoaded = ref(false)
 const selectedChartSuppliers = ref([])
@@ -209,13 +238,16 @@ let pieChart = null
 const analysisData = ref({
   trend: [],
   supplier_share: [],
-  history: [],
   all_suppliers: [],
+  history_suppliers: [],
 })
 
 const tableDateRange = ref([])
-const filterSupplier = ref('')
-const filteredTableData = ref([])
+const filterSupplierCode = ref('')
+const historyRows = ref([])
+const historyPage = ref(1)
+const historyHasMore = ref(false)
+const historyPageCount = computed(() => (historyHasMore.value ? historyPage.value + 1 : historyPage.value))
 
 const kpiCards = ref([
   { title: '历史采购总额', value: '0.00', prefix: '￥', type: 'primary', icon: markRaw(Money), desc: '' },
@@ -225,6 +257,7 @@ const kpiCards = ref([
 ])
 
 const supplierOptions = computed(() => analysisData.value.all_suppliers || [])
+const historySupplierOptions = computed(() => analysisData.value.history_suppliers || [])
 
 const dateShortcuts = [
   {
@@ -352,19 +385,69 @@ const saveMaterialPageContext = () => {
   })
 }
 
-const filterTableData = () => {
-  let result = Array.isArray(analysisData.value.history) ? [...analysisData.value.history] : []
-
-  if (filterSupplier.value) {
-    result = result.filter((row) => row.supplier_name === filterSupplier.value)
+const loadHistoryPage = async (forceRefresh = false) => {
+  if (!selectedMaterial.value) {
+    historyRows.value = []
+    historyHasMore.value = false
+    return
   }
 
-  if (tableDateRange.value && tableDateRange.value.length === 2) {
-    const [start, end] = tableDateRange.value
-    result = result.filter((row) => row.date >= start && row.date <= end)
-  }
+  historyLoading.value = true
+  try {
+    const params = {
+      page: historyPage.value,
+      page_size: HISTORY_PAGE_SIZE,
+      supplier_code: filterSupplierCode.value || undefined,
+      force_refresh: forceRefresh,
+    }
 
-  filteredTableData.value = result
+    if (tableDateRange.value && tableDateRange.value.length === 2) {
+      params.start_date = tableDateRange.value[0]
+      params.end_date = tableDateRange.value[1]
+    }
+
+    const res = await getMaterialAnalysisHistory(selectedMaterial.value, params)
+    const payload = res.data || {}
+    historyRows.value = Array.isArray(payload.items) ? payload.items : []
+    historyHasMore.value = Boolean(payload.has_more)
+  } catch (error) {
+    historyRows.value = []
+    historyHasMore.value = false
+    ElMessage.error('获取物料成交明细失败')
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+const handleHistoryFilterChange = async () => {
+  historyPage.value = 1
+  await loadHistoryPage(false)
+}
+
+const handleHistoryPrevPage = async () => {
+  if (historyPage.value <= 1) return
+  historyPage.value -= 1
+  await loadHistoryPage(false)
+}
+
+const handleHistoryNextPage = async () => {
+  if (!historyHasMore.value) return
+  historyPage.value += 1
+  await loadHistoryPage(false)
+}
+
+const handleHistoryPageChange = async (page) => {
+  const nextPage = Number(page || 1)
+  if (nextPage === historyPage.value) return
+  if (nextPage < historyPage.value) {
+    historyPage.value = nextPage
+    await loadHistoryPage(false)
+    return
+  }
+  if (nextPage === historyPage.value + 1 && historyHasMore.value) {
+    historyPage.value = nextPage
+    await loadHistoryPage(false)
+  }
 }
 
 const applyMaterialAnalysisData = async (data = {}) => {
@@ -373,20 +456,22 @@ const applyMaterialAnalysisData = async (data = {}) => {
   kpiCards.value[1].value = Number(kpi.total_qty || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
   kpiCards.value[2].value = kpi.supplier_count || 0
   kpiCards.value[3].value = Number(kpi.avg_price || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  kpiCards.value[3].desc = kpi.lowest_price ? `最低价: ￥${Number(kpi.lowest_price).toFixed(2)} (${kpi.lowest_supplier || '-'})` : ''
+  kpiCards.value[3].desc = kpi.lowest_price
+    ? `最低价: ￥${Number(kpi.lowest_price).toFixed(2)} (${kpi.lowest_supplier || '-'})`
+    : ''
 
   analysisData.value = {
     trend: data.trend || [],
     supplier_share: data.supplier_share || [],
-    history: data.history || [],
     all_suppliers: data.all_suppliers || [],
+    history_suppliers: data.history_suppliers || [],
   }
 
   const topSupplier = analysisData.value.supplier_share?.[0]?.name
   selectedChartSuppliers.value = topSupplier && topSupplier !== '其他' ? [topSupplier] : []
   tableDateRange.value = []
-  filterSupplier.value = ''
-  filterTableData()
+  filterSupplierCode.value = ''
+  historyPage.value = 1
 
   await nextTick()
   renderLineChart()
@@ -410,7 +495,7 @@ const fetchMaterials = async (forceRefresh = false) => {
     saveMaterialListCache(materialList.value)
     materialsLoaded.value = true
     restoreSelectedMaterial()
-  } catch (error) {
+  } catch {
     if (materialList.value.length === 0) {
       ElMessage.error('获取物料列表失败')
     }
@@ -442,6 +527,7 @@ const handleSelectMaterial = async (forceRefresh = false) => {
   const cachedData = !forceRefresh ? loadMaterialAnalysisCache(selectedMaterial.value) : null
   if (cachedData) {
     await applyMaterialAnalysisData(cachedData)
+    await loadHistoryPage(false)
   }
 
   loadingData.value = !cachedData
@@ -450,7 +536,8 @@ const handleSelectMaterial = async (forceRefresh = false) => {
     const data = res.data || {}
     saveMaterialAnalysisCache(selectedMaterial.value, data)
     await applyMaterialAnalysisData(data)
-  } catch (error) {
+    await loadHistoryPage(forceRefresh)
+  } catch {
     if (!cachedData) {
       ElMessage.error('获取物料分析数据失败')
     }
@@ -663,6 +750,7 @@ onUnmounted(() => {
   overflow-y: auto;
   gap: 16px;
   padding-right: 10px;
+  padding-bottom: 96px;
 }
 
 .kpi-row {
@@ -798,12 +886,11 @@ onUnmounted(() => {
 }
 
 .table-wrapper {
-  flex: 1;
-  min-height: 300px;
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .table-card {
-  height: 100%;
   display: flex;
   flex-direction: column;
   border: none;
@@ -811,14 +898,35 @@ onUnmounted(() => {
 }
 
 .table-card :deep(.el-card__body) {
-  flex: 1;
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
 }
 
 .table-inner {
-  height: 100%;
-  padding: 16px;
+  padding: 16px 16px 0;
+  box-sizing: border-box;
+}
+
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px 16px;
+  background: #fff;
+  border-top: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+}
+
+.table-pagination__actions {
+  display: flex;
+  gap: 8px;
 }
 
 .money-text {

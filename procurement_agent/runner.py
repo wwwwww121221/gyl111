@@ -151,11 +151,50 @@ class ProcurementAgentRunner:
         context_defaults = self._extract_context_defaults(message)
         keywords = extract_keywords(message)
         primary_keyword = keywords[0] if keywords else ""
+        possible_codes = self._dedupe(re.findall(r"[A-Za-z0-9][A-Za-z0-9._/-]{2,}", message or ""))
+        primary_code = possible_codes[0] if possible_codes else ""
 
         asks_price = self._has_any_keyword(message, ["价格", "趋势", "均价", "最低价", "最高价", "报价", "比价"])
         asks_supplier = self._has_any_keyword(message, ["供应商", "供货", "厂家", "厂商"])
         asks_purchase_order = self._has_any_keyword(message, ["采购订单", "订单", "下单"])
         asks_request = self._has_any_keyword(message, ["采购申请", "申请单", "需求池", "请购"])
+        asks_material = self._has_any_keyword(message, ["物料", "材料", "型号", "规格", "编码", "是什么"])
+
+        if primary_code:
+            actions.append((
+                "search_material",
+                {
+                    "keyword": primary_code,
+                    "limit": 5,
+                },
+            ))
+
+            if asks_price or asks_supplier or asks_material:
+                actions.append((
+                    "get_material_price_history",
+                    {
+                        "material_code": primary_code,
+                        "limit": 8,
+                    },
+                ))
+
+            if asks_purchase_order:
+                actions.append((
+                    "search_purchase_orders",
+                    {
+                        "material_code": primary_code,
+                        "limit": 10,
+                    },
+                ))
+
+            if asks_request:
+                actions.append((
+                    "search_purchase_requests",
+                    {
+                        "material_code": primary_code,
+                        "limit": 10,
+                    },
+                ))
 
         if asks_price:
             if context_defaults["material_code"] or context_defaults["material_name"]:

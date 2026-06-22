@@ -172,6 +172,7 @@ const SUPPLIER_ANALYSIS_SESSION_PREFIX = 'supplier_analysis_cache:'
 const SUPPLIER_LIST_SESSION_KEY = 'supplier_analysis_supplier_list'
 const SUPPLIER_SELECTED_SESSION_KEY = 'supplier_analysis_selected_supplier'
 const PAGE_CONTEXT_SESSION_KEY = 'procurement_agent_page_context'
+const SUPPLIER_LIST_CACHE_MAX_AGE = 5 * 60 * 1000
 
 const supplierList = ref([])
 const filteredSupplierList = ref([])
@@ -261,7 +262,10 @@ const saveSupplierAnalysisCache = (supplierId, data) => {
 
 const loadSupplierListCache = () => {
   const payload = loadSessionJson(SUPPLIER_LIST_SESSION_KEY, {})
-  return Array.isArray(payload?.list) ? payload.list : []
+  return {
+    list: Array.isArray(payload?.list) ? payload.list : [],
+    cachedAt: Number(payload?.cached_at || 0),
+  }
 }
 
 const saveSupplierListCache = (list) => {
@@ -269,6 +273,12 @@ const saveSupplierListCache = (list) => {
     list,
     cached_at: Date.now(),
   })
+}
+
+const hasFreshSupplierListCache = () => {
+  const { list, cachedAt } = loadSupplierListCache()
+  if (!list.length || !cachedAt) return false
+  return Date.now() - cachedAt < SUPPLIER_LIST_CACHE_MAX_AGE
 }
 
 const filterSupplierMethod = (query) => {
@@ -479,12 +489,14 @@ const updateChart = () => {
 }
 
 const fetchAllSuppliersForAnalysis = async (forceRefresh = false) => {
-  const cachedList = !forceRefresh ? loadSupplierListCache() : []
+  const { list: cachedList } = !forceRefresh ? loadSupplierListCache() : { list: [] }
   if (cachedList.length > 0) {
     supplierList.value = cachedList
     filteredSupplierList.value = cachedList
     restoreSelectedSupplier()
   }
+
+  if (loadingSuppliers.value) return
 
   loadingSuppliers.value = cachedList.length === 0
   try {
@@ -535,7 +547,7 @@ const handleResize = () => {
 }
 
 onMounted(async () => {
-  const cachedList = loadSupplierListCache()
+  const { list: cachedList } = loadSupplierListCache()
   if (cachedList.length > 0) {
     supplierList.value = cachedList
     filteredSupplierList.value = cachedList
@@ -547,7 +559,14 @@ onMounted(async () => {
     await refreshData(false)
   }
 
-  await fetchAllSuppliersForAnalysis(false)
+  if (cachedList.length === 0) {
+    await fetchAllSuppliersForAnalysis(false)
+  } else if (!hasFreshSupplierListCache()) {
+    setTimeout(() => {
+      fetchAllSuppliersForAnalysis(false)
+    }, 0)
+  }
+
   window.addEventListener('resize', handleResize)
 })
 

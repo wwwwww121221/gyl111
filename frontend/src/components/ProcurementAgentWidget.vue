@@ -85,6 +85,24 @@
               <div class="message-bubble">
                 <div class="message-role">{{ item.role === 'user' ? '你' : '采购助手' }}</div>
                 <div class="message-text">{{ item.content }}</div>
+                <div v-if="item.role === 'assistant' && getPendingActionCards(item).length" class="pending-actions">
+                  <div
+                    v-for="action in getPendingActionCards(item)"
+                    :key="action.pending_action_id"
+                    class="pending-action-card"
+                  >
+                    <div class="pending-action-title">{{ action.preview?.title || action.preview?.task_title || 'AI 待确认动作' }}</div>
+                    <div class="pending-action-desc">{{ action.message || '该动作需要人工确认后才会执行。' }}</div>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="confirmingActionIds.includes(action.pending_action_id)"
+                      @click="confirmAction(action.pending_action_id)"
+                    >
+                      确认执行
+                    </el-button>
+                  </div>
+                </div>
               </div>
             </article>
 
@@ -138,6 +156,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   clearProcurementAgentMemory,
+  confirmProcurementAgentAction,
   createProcurementAgentSession,
   getProcurementAgentSessionMessages,
   getProcurementAgentSessions,
@@ -147,7 +166,8 @@ import {
 
 const role = computed(() => localStorage.getItem('role') || '')
 const token = computed(() => localStorage.getItem('token') || '')
-const visible = computed(() => ['admin', 'buyer', 'buyer_manager'].includes(role.value) && Boolean(token.value))
+const department = computed(() => localStorage.getItem('department') || '')
+const visible = computed(() => role.value !== 'supplier' && department.value === '采购部' && Boolean(token.value))
 const route = useRoute()
 
 const expanded = ref(false)
@@ -161,6 +181,9 @@ const currentSessionId = ref('')
 const pendingSessionId = ref('')
 const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
+const confirmingActionIds = ref([])
+const hasInitialized = ref(false)
+let ensureLoadedPromise = null
 
 const panelWidth = ref(920)
 const panelHeight = ref(720)
@@ -206,10 +229,17 @@ const currentPageContext = computed(() => {
 
   return {
     route_name: stored.route_name || route.path,
+    bill_no: stored.bill_no || '',
     material_code: stored.material_code || '',
     material_name: stored.material_name || '',
+    material_model: stored.material_model || '',
+    qty: stored.qty ?? '',
+    delivery_date: stored.delivery_date || '',
+    supplier_id: stored.supplier_id || '',
     supplier_code: stored.supplier_code || '',
     supplier_name: stored.supplier_name || '',
+    inquiry_id: stored.inquiry_id || '',
+    contract_id: stored.contract_id || '',
   }
 })
 
@@ -226,7 +256,15 @@ const normalizeMessages = (rows = []) =>
     role: item.role,
     content: item.content,
     created_at: item.created_at,
+    metadata: item.metadata || {},
   }))
+
+const getPendingActionCards = (message) => {
+  const toolResults = Array.isArray(message?.metadata?.tool_results) ? message.metadata.tool_results : []
+  return toolResults
+    .map((item) => item?.data || {})
+    .filter((item) => Number(item?.pending_action_id) > 0)
+}
 
 const clampPanelBounds = () => {
   const maxWidth = Math.max(minWidth, window.innerWidth - maxWidthPadding)
@@ -334,6 +372,30 @@ const fillPrompt = (text) => {
   draft.value = text
 }
 
+const confirmAction = async (actionId) => {
+  const normalizedId = Number(actionId)
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) return
+  if (confirmingActionIds.value.includes(normalizedId)) return
+
+  confirmingActionIds.value = [...confirmingActionIds.value, normalizedId]
+  try {
+    const { data } = await confirmProcurementAgentAction(normalizedId)
+    ElMessage.success('AI 待确认动作已执行')
+    messages.value.push({
+      id: `${Date.now()}_confirm`,
+      role: 'assistant',
+      content: `已完成确认动作：${data?.action_type || normalizedId}`,
+      created_at: Math.floor(Date.now() / 1000),
+      metadata: {},
+    })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '确认动作失败')
+  } finally {
+    confirmingActionIds.value = confirmingActionIds.value.filter((id) => id !== normalizedId)
+    scrollToBottom()
+  }
+}
+
 const sendMessage = async () => {
   const message = draft.value.trim()
   if (!message || loading.value) return
@@ -363,6 +425,9 @@ const sendMessage = async () => {
       role: 'assistant',
       content: data?.answer || '采购助手暂时没有返回内容。',
       created_at: Math.floor(Date.now() / 1000),
+      metadata: {
+        tool_results: Array.isArray(data?.tool_results) ? data.tool_results : [],
+      },
     })
     await refreshSessions(newSessionId)
   } catch (error) {
@@ -371,6 +436,7 @@ const sendMessage = async () => {
       role: 'assistant',
       content: error.response?.data?.detail || '采购助手暂时不可用，请稍后重试。',
       created_at: Math.floor(Date.now() / 1000),
+      metadata: {},
     })
   } finally {
     loading.value = false
@@ -387,6 +453,9 @@ const handleKeydown = (event) => {
 
 const ensureLoaded = async () => {
   if (!visible.value) return
+  if (hasInitialized.value) return
+  if (ensureLoadedPromise) return ensureLoadedPromise
+  ensureLoadedPromise = (async () => {
   pageLoading.value = true
   try {
     const [statusRes] = await Promise.all([
@@ -399,11 +468,15 @@ const ensureLoaded = async () => {
     if (currentSessionId.value) {
       await openSession(currentSessionId.value)
     }
+    hasInitialized.value = true
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '初始化采购助手失败')
   } finally {
     pageLoading.value = false
+    ensureLoadedPromise = null
   }
+  })()
+  return ensureLoadedPromise
 }
 
 const handlePointerMove = (event) => {
@@ -447,17 +520,13 @@ const toggleExpanded = async () => {
   expanded.value = !expanded.value
   if (expanded.value) {
     clampPanelBounds()
-    if (sessions.value.length === 0 && !currentSessionId.value) {
-      await ensureLoaded()
-    } else {
-      scrollToBottom()
-    }
+    await ensureLoaded()
+    scrollToBottom()
   }
 }
 
 onMounted(() => {
   resetPanelPosition()
-  ensureLoaded()
   window.addEventListener('resize', resetPanelPosition)
   window.addEventListener('pointermove', handlePointerMove)
   window.addEventListener('pointerup', stopInteractions)
@@ -695,6 +764,32 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   line-height: 1.7;
   font-size: 14px;
+}
+
+.pending-actions {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.pending-action-card {
+  padding: 12px;
+  border-radius: 14px;
+  background: #f2f7ff;
+  border: 1px solid #d7e4fb;
+}
+
+.pending-action-title {
+  margin-bottom: 6px;
+  font-weight: 700;
+  color: #1f2a44;
+}
+
+.pending-action-desc {
+  margin-bottom: 10px;
+  line-height: 1.6;
+  font-size: 13px;
+  color: #5b6b82;
 }
 
 .loading-bubble {

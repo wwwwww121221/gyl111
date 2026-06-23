@@ -58,6 +58,12 @@ const isScoringOnlyUser = () => {
   return role === 'scorer'
 }
 
+const canUseProcurementAgent = () => {
+  const role = localStorage.getItem('role') || ''
+  const department = localStorage.getItem('department') || ''
+  return role !== 'supplier' && department === '采购部'
+}
+
 const routes = [
   {
     path: '/',
@@ -227,7 +233,7 @@ const routes = [
         path: 'workspace',
         name: 'ProcurementAgentWorkspace',
         component: () => import('../views/agent/ProcurementAgentWorkspace.vue'),
-        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager'] }
+        meta: { requiresRole: ['admin', 'buyer', 'buyer_manager', 'scorer'] }
       }
     ]
   },
@@ -346,6 +352,13 @@ router.beforeEach((to, from) => {
         return '/dashboard'
       }
     }
+  }
+
+  if (to.path.startsWith('/agent') && !canUseProcurementAgent()) {
+    if (role === 'supplier') {
+      return getSupplierHomePath()
+    }
+    return '/dashboard'
   }
 
   if (isScoringOnlyUser() && to.path !== '/suppliers/assessment-scoring') {

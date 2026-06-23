@@ -69,13 +69,20 @@ def list_sessions(user_id: int | str, limit: int = 30) -> list[AgentSessionSumma
     return [AgentSessionSummary(**row) for row in rows[:limit]]
 
 
-def append_message(user_id: int | str, session_id: str, role: str, content: str) -> None:
+def append_message(
+    user_id: int | str,
+    session_id: str,
+    role: str,
+    content: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
     key = _key(user_id, session_id)
     now = int(time.time())
     message = {
         "role": role,
         "content": content,
         "created_at": now,
+        "metadata": metadata or {},
     }
     try:
         redis = _get_memory_redis()

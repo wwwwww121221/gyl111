@@ -477,6 +477,7 @@ marked.setOptions({
 
 const route = useRoute()
 const router = useRouter()
+const AGENT_CONTEXT_SESSION_KEY = 'procurement_agent_page_context'
 
 // State
 const materialsData = ref([])
@@ -770,6 +771,19 @@ const loadWorkspaceDataByRoute = async () => {
         compare_ready: taskRes.data.compare_ready,
         strategy_config: taskRes.data.strategy_config
       }
+      try {
+        const firstItem = items[0] || {}
+        sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify({
+          route_name: '智能比价',
+          material_code: firstItem.material_code || '',
+          material_name: firstItem.material_name || '',
+          supplier_id: '',
+          supplier_code: '',
+          supplier_name: '',
+          inquiry_id: taskRes.data.id || route.query.taskId || '',
+          contract_id: '',
+        }))
+      } catch {}
 
       const resolveQuoteRound = (link) => {
         const quoteRounds = Object.keys(link.quotes || {})

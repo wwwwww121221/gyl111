@@ -9,6 +9,16 @@ from sqlalchemy.orm import Session
 
 from kingdee_erp_tool.services.purchase import get_historical_purchase_prices
 from models import InquiryRequest, Material, PurchaseOrderMonthlyStat, PurchaseOrderSummary, Supplier
+from procurement_agent.risk_checker import (
+    analyze_quotation_compare,
+    check_contract_risks,
+    recommend_suppliers_for_inquiry,
+)
+from procurement_agent.write_tools import (
+    create_contract_draft_from_award,
+    create_inquiry_draft,
+    generate_inquiry_message,
+)
 
 
 class StructuredTool:
@@ -66,6 +76,49 @@ class PurchaseOrderSearchInput(BaseModel):
     start_date: str | None = Field(default=None, description="Start date in YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss.")
     end_date: str | None = Field(default=None, description="End date in YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss.")
     limit: int = Field(default=10, ge=1, le=50, description="Maximum purchase order rows to return.")
+
+
+class RecommendSuppliersForInquiryInput(BaseModel):
+    material_code: str = Field(..., description="Exact material code.")
+    qty: float = Field(..., gt=0, description="Requested quantity.")
+    delivery_date: str | None = Field(default=None, description="Expected delivery date in YYYY-MM-DD.")
+    limit: int = Field(default=3, ge=1, le=10, description="Maximum recommended suppliers.")
+
+
+class CreateInquiryDraftInput(BaseModel):
+    material_code: str = Field(..., description="Exact material code.")
+    qty: float = Field(..., gt=0, description="Requested quantity.")
+    delivery_date: str = Field(..., description="Expected delivery date in YYYY-MM-DD.")
+    limit: int = Field(default=3, ge=1, le=10, description="Maximum recommended suppliers.")
+
+
+class GenerateInquiryMessageInput(BaseModel):
+    material_code: str = Field(..., description="Exact material code.")
+    qty: float = Field(..., gt=0, description="Requested quantity.")
+    delivery_date: str = Field(..., description="Expected delivery date in YYYY-MM-DD.")
+    supplier_names: list[str] | None = Field(default=None, description="Optional supplier names for the generated text.")
+
+
+class AnalyzeQuotationCompareInput(BaseModel):
+    inquiry_id: int = Field(..., gt=0, description="Inquiry task id.")
+    limit: int = Field(default=5, ge=1, le=10, description="Maximum supplier rows to analyze.")
+
+
+class CreateContractDraftFromAwardInput(BaseModel):
+    inquiry_id: int = Field(..., gt=0, description="Inquiry task id.")
+    supplier_id: int = Field(..., gt=0, description="Winning supplier id.")
+    template_id: int | None = Field(default=None, gt=0, description="Optional contract template id.")
+
+
+class CheckContractRisksInput(BaseModel):
+    contract_id: int | None = Field(default=None, gt=0, description="Existing contract id.")
+    supplier_name: str | None = Field(default=None, description="Supplier name.")
+    total_amount: float | None = Field(default=None, description="Contract total amount.")
+    material_items: list[dict[str, Any]] | None = Field(default=None, description="Material rows.")
+    delivery_date: str | None = Field(default=None, description="Delivery date.")
+    payment_terms: str | None = Field(default=None, description="Payment terms.")
+    quality_terms: str | None = Field(default=None, description="Quality terms.")
+    breach_terms: str | None = Field(default=None, description="Breach liability terms.")
 
 
 def _like(value: str) -> str:
@@ -417,7 +470,7 @@ def get_supplier_purchase_profile(db: Session, args: dict[str, Any]) -> dict[str
     }
 
 
-def create_langchain_tools(db: Session) -> dict[str, StructuredTool]:
+def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
     """Create request-scoped LangChain tools.
 
     The SQLAlchemy session is injected by closure, so the model never receives
@@ -482,6 +535,66 @@ def create_langchain_tools(db: Session) -> dict[str, StructuredTool]:
             "limit": limit,
         })
 
+    def _recommend_suppliers_for_inquiry(
+        material_code: str,
+        qty: float,
+        delivery_date: str | None = None,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        return recommend_suppliers_for_inquiry(db, user, material_code, qty, delivery_date, limit)
+
+    def _create_inquiry_draft(
+        material_code: str,
+        qty: float,
+        delivery_date: str,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        return create_inquiry_draft(db, user, material_code, qty, delivery_date, limit)
+
+    def _generate_inquiry_message(
+        material_code: str,
+        qty: float,
+        delivery_date: str,
+        supplier_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return generate_inquiry_message(db, user, material_code, qty, delivery_date, supplier_names)
+
+    def _analyze_quotation_compare(
+        inquiry_id: int,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        return analyze_quotation_compare(db, user, inquiry_id, limit)
+
+    def _create_contract_draft_from_award(
+        inquiry_id: int,
+        supplier_id: int,
+        template_id: int | None = None,
+    ) -> dict[str, Any]:
+        return create_contract_draft_from_award(db, user, inquiry_id, supplier_id, template_id)
+
+    def _check_contract_risks(
+        contract_id: int | None = None,
+        supplier_name: str | None = None,
+        total_amount: float | None = None,
+        material_items: list[dict[str, Any]] | None = None,
+        delivery_date: str | None = None,
+        payment_terms: str | None = None,
+        quality_terms: str | None = None,
+        breach_terms: str | None = None,
+    ) -> dict[str, Any]:
+        return check_contract_risks(
+            db,
+            user,
+            contract_id,
+            supplier_name,
+            total_amount,
+            material_items,
+            delivery_date,
+            payment_terms,
+            quality_terms,
+            breach_terms,
+        )
+
     tools = [
         StructuredTool.from_function(
             func=_search_purchase_orders,
@@ -518,6 +631,42 @@ def create_langchain_tools(db: Session) -> dict[str, StructuredTool]:
             name="get_supplier_purchase_profile",
             description="查询供应商档案及其历史供货物料概况。适合评估供应商供货范围和历史合作。",
             args_schema=SupplierPurchaseProfileInput,
+        ),
+        StructuredTool.from_function(
+            func=_recommend_suppliers_for_inquiry,
+            name="recommend_suppliers_for_inquiry",
+            description="基于真实历史价格、历史供货记录、供应商评分和状态推荐询价供应商，只输出建议，不会自动发送询价。",
+            args_schema=RecommendSuppliersForInquiryInput,
+        ),
+        StructuredTool.from_function(
+            func=_create_inquiry_draft,
+            name="create_inquiry_draft",
+            description="生成待确认的询价草稿动作。只有人工确认后才会创建 ai_draft 询价单，不会直接发送给供应商。",
+            args_schema=CreateInquiryDraftInput,
+        ),
+        StructuredTool.from_function(
+            func=_generate_inquiry_message,
+            name="generate_inquiry_message",
+            description="根据物料、数量、交期和供应商生成询价文本草稿，仅返回文本，不会直接发送。",
+            args_schema=GenerateInquiryMessageInput,
+        ),
+        StructuredTool.from_function(
+            func=_analyze_quotation_compare,
+            name="analyze_quotation_compare",
+            description="分析询价单下各供应商报价、交期、历史均价和评分，输出中标建议，并生成待确认动作；不会自动中标。",
+            args_schema=AnalyzeQuotationCompareInput,
+        ),
+        StructuredTool.from_function(
+            func=_create_contract_draft_from_award,
+            name="create_contract_draft_from_award",
+            description="根据建议中标供应商、报价明细和合同模板生成待确认的合同草稿动作，确认后只创建合同草稿。",
+            args_schema=CreateContractDraftFromAwardInput,
+        ),
+        StructuredTool.from_function(
+            func=_check_contract_risks,
+            name="check_contract_risks",
+            description="检查合同金额、供应商名称、物料明细、交期、付款方式、质量条款和违约责任是否缺失或异常。",
+            args_schema=CheckContractRisksInput,
         ),
     ]
     return {tool.name: tool for tool in tools}

@@ -887,6 +887,7 @@ const detailsVisible = ref(false)
 const detailsActiveTab = ref('suppliers')
 const currentTask = ref(null)
 const currentTaskDetails = ref(null)
+const AGENT_CONTEXT_SESSION_KEY = 'procurement_agent_page_context'
 const attachmentPreviewVisible = ref(false)
 const previewingAttachment = ref(null)
 const loadingDetails = ref(false)
@@ -946,6 +947,19 @@ const viewTaskDetails = async (task, preferredTab = 'suppliers') => {
   try {
     const res = await getTaskDetails(task.id)
     currentTaskDetails.value = res.data
+    try {
+      const firstItem = currentTaskDetails.value?.items?.[0] || {}
+      sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify({
+        route_name: '询价任务',
+        material_code: firstItem.material_code || '',
+        material_name: firstItem.material_name || '',
+        supplier_id: '',
+        supplier_code: '',
+        supplier_name: '',
+        inquiry_id: currentTaskDetails.value?.id || task.id,
+        contract_id: '',
+      }))
+    } catch {}
     if (currentTaskDetails.value?.type === 'auto') {
       await loadTopHistoricalSuppliers(currentTaskDetails.value)
     } else {
@@ -1273,6 +1287,7 @@ const canSubmitAutoAllocations = computed(() => {
 const getTaskStatusType = (status) => {
   const map = {
     'draft': 'info',
+    'ai_draft': 'info',
     'pending_approval': 'warning',
     'approval_rejected': 'danger',
     'active': 'success',

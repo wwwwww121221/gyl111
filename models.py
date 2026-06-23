@@ -138,6 +138,23 @@ def ensure_runtime_schema_columns():
             """
         ])
 
+    if "agent_pending_actions" not in table_names:
+        alter_statements.extend([
+            """
+            CREATE TABLE IF NOT EXISTS agent_pending_actions (
+                id SERIAL PRIMARY KEY,
+                action_type VARCHAR NOT NULL,
+                payload JSON NOT NULL,
+                preview JSON,
+                status VARCHAR DEFAULT 'pending',
+                created_by INTEGER REFERENCES users (id),
+                confirmed_by INTEGER REFERENCES users (id),
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                confirmed_at TIMESTAMP WITHOUT TIME ZONE
+            )
+            """
+        ])
+
     if "purchase_order_summary" not in table_names:
         alter_statements.extend([
             """
@@ -213,6 +230,7 @@ class InquiryStatus(str, enum.Enum):
 
 class TaskStatus(str, enum.Enum):
     DRAFT = "draft"
+    AI_DRAFT = "ai_draft"
     PENDING_APPROVAL = "pending_approval"
     APPROVAL_REJECTED = "approval_rejected"
     ACTIVE = "active"
@@ -517,6 +535,23 @@ class CompareDraft(Base):
 
     task = relationship("InquiryTask")
     buyer = relationship("User")
+
+
+class AgentPendingAction(Base):
+    __tablename__ = "agent_pending_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+    preview = Column(JSON, nullable=True)
+    status = Column(String, default="pending", nullable=False, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    confirmed_at = Column(DateTime, nullable=True)
+
+    creator = relationship("User", foreign_keys=[created_by])
+    confirmer = relationship("User", foreign_keys=[confirmed_by])
 
 class OperationLog(Base):
     """

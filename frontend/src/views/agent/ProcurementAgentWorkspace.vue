@@ -72,6 +72,24 @@
             <div class="message-bubble">
               <div class="message-role">{{ item.role === 'user' ? '你' : '采购助手' }}</div>
               <div class="message-text">{{ item.content }}</div>
+              <div v-if="item.role === 'assistant' && getPendingActionCards(item).length" class="pending-actions">
+                <div
+                  v-for="action in getPendingActionCards(item)"
+                  :key="action.pending_action_id"
+                  class="pending-action-card"
+                >
+                  <div class="pending-action-title">{{ action.preview?.title || action.preview?.task_title || 'AI 待确认动作' }}</div>
+                  <div class="pending-action-desc">{{ action.message || '该动作需要人工确认后才会执行。' }}</div>
+                  <el-button
+                    type="primary"
+                    size="small"
+                    :loading="confirmingActionIds.includes(action.pending_action_id)"
+                    @click="confirmAction(action.pending_action_id)"
+                  >
+                    确认执行
+                  </el-button>
+                </div>
+              </div>
             </div>
           </article>
 
@@ -111,6 +129,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   clearProcurementAgentMemory,
+  confirmProcurementAgentAction,
   createProcurementAgentSession,
   getProcurementAgentSessionMessages,
   getProcurementAgentSessions,
@@ -127,6 +146,7 @@ const currentSessionId = ref('')
 const pendingSessionId = ref('')
 const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
+const confirmingActionIds = ref([])
 
 const canSend = computed(() => draft.value.trim().length > 0)
 const currentSessionTitle = computed(() => {
@@ -142,7 +162,38 @@ const normalizeMessages = (rows = []) =>
     role: item.role,
     content: item.content,
     created_at: item.created_at,
+    metadata: item.metadata || {},
   }))
+
+const getPendingActionCards = (message) => {
+  const toolResults = Array.isArray(message?.metadata?.tool_results) ? message.metadata.tool_results : []
+  return toolResults
+    .map((item) => item?.data || {})
+    .filter((item) => Number(item?.pending_action_id) > 0)
+}
+
+const currentPageContext = computed(() => {
+  let stored = {}
+  try {
+    stored = JSON.parse(sessionStorage.getItem('procurement_agent_page_context') || '{}')
+  } catch {
+    stored = {}
+  }
+  return {
+    route_name: stored.route_name || '/agent/workspace',
+    bill_no: stored.bill_no || '',
+    material_code: stored.material_code || '',
+    material_name: stored.material_name || '',
+    material_model: stored.material_model || '',
+    qty: stored.qty ?? '',
+    delivery_date: stored.delivery_date || '',
+    supplier_id: stored.supplier_id || '',
+    supplier_code: stored.supplier_code || '',
+    supplier_name: stored.supplier_name || '',
+    inquiry_id: stored.inquiry_id || '',
+    contract_id: stored.contract_id || '',
+  }
+})
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -229,6 +280,30 @@ const fillPrompt = (text) => {
   draft.value = text
 }
 
+const confirmAction = async (actionId) => {
+  const normalizedId = Number(actionId)
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) return
+  if (confirmingActionIds.value.includes(normalizedId)) return
+
+  confirmingActionIds.value = [...confirmingActionIds.value, normalizedId]
+  try {
+    const { data } = await confirmProcurementAgentAction(normalizedId)
+    ElMessage.success('AI 待确认动作已执行')
+    messages.value.push({
+      id: `${Date.now()}_confirm`,
+      role: 'assistant',
+      content: `已完成确认动作：${data?.action_type || normalizedId}`,
+      created_at: Math.floor(Date.now() / 1000),
+      metadata: {},
+    })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '确认动作失败')
+  } finally {
+    confirmingActionIds.value = confirmingActionIds.value.filter((id) => id !== normalizedId)
+    scrollToBottom()
+  }
+}
+
 const sendMessage = async () => {
   const message = draft.value.trim()
   if (!message || loading.value) return
@@ -250,6 +325,7 @@ const sendMessage = async () => {
     const { data } = await sendProcurementAgentMessage({
       message,
       session_id: targetSessionId || null,
+      context: currentPageContext.value,
     })
 
     const newSessionId = data?.session_id || targetSessionId
@@ -260,6 +336,9 @@ const sendMessage = async () => {
       role: 'assistant',
       content: data?.answer || '采购助手暂时没有返回内容。',
       created_at: Math.floor(Date.now() / 1000),
+      metadata: {
+        tool_results: Array.isArray(data?.tool_results) ? data.tool_results : [],
+      },
     })
     await refreshSessions(newSessionId)
     scrollToBottom()
@@ -269,6 +348,7 @@ const sendMessage = async () => {
       role: 'assistant',
       content: error.response?.data?.detail || '采购助手暂时不可用，请稍后重试。',
       created_at: Math.floor(Date.now() / 1000),
+      metadata: {},
     })
   } finally {
     loading.value = false
@@ -528,6 +608,32 @@ onMounted(async () => {
 .message-text {
   white-space: pre-wrap;
   line-height: 1.7;
+}
+
+.pending-actions {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.pending-action-card {
+  padding: 12px;
+  border-radius: 14px;
+  background: #f2f7ff;
+  border: 1px solid #d7e4fb;
+}
+
+.pending-action-title {
+  margin-bottom: 6px;
+  font-weight: 700;
+  color: #1f2a44;
+}
+
+.pending-action-desc {
+  margin-bottom: 10px;
+  line-height: 1.6;
+  font-size: 13px;
+  color: #5b6b82;
 }
 
 .loading-bubble {

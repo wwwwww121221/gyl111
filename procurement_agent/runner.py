@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -34,7 +35,7 @@ class ProcurementAgentRunner:
     def __init__(self, db: Session, user: User):
         self.db = db
         self.user = user
-        self.tools = create_langchain_tools(db)
+        self.tools = create_langchain_tools(db, user)
 
     async def chat(
         self,
@@ -51,7 +52,7 @@ class ProcurementAgentRunner:
         if guardrail_reason:
             answer = build_guardrail_response(guardrail_reason)
             append_message(user_id, session_id, "user", message)
-            append_message(user_id, session_id, "assistant", answer)
+            append_message(user_id, session_id, "assistant", answer, metadata={"tool_results": []})
             return AgentChatResponse(
                 session_id=session_id,
                 answer=answer,
@@ -85,7 +86,13 @@ class ProcurementAgentRunner:
         response = await llm.chat_completion(llm_messages)
 
         append_message(user_id, session_id, "user", message)
-        append_message(user_id, session_id, "assistant", response.content)
+        append_message(
+            user_id,
+            session_id,
+            "assistant",
+            response.content,
+            metadata={"tool_results": [item.model_dump() for item in tool_results]},
+        )
         self._save_long_term_memory(user_id, session_id, message, response.content, tool_results)
 
         return AgentChatResponse(
@@ -110,10 +117,35 @@ class ProcurementAgentRunner:
         if material_name or material_code:
             parts.append(f"当前物料: {material_name or '-'} / {material_code or '-'}")
 
+        material_model = str(context.get("material_model") or "").strip()
+        if material_model:
+            parts.append(f"CURRENT_MATERIAL_MODEL: {material_model}")
+        bill_no = str(context.get("bill_no") or "").strip()
+        if bill_no:
+            parts.append(f"CURRENT_BILL_NO: {bill_no}")
+        qty = str(context.get("qty") or "").strip()
+        if qty:
+            parts.append(f"CURRENT_QTY: {qty}")
+        delivery_date = str(context.get("delivery_date") or "").strip()
+        if delivery_date:
+            parts.append(f"CURRENT_DELIVERY_DATE: {delivery_date}")
+
         supplier_name = str(context.get("supplier_name") or "").strip()
         supplier_code = str(context.get("supplier_code") or "").strip()
         if supplier_name or supplier_code:
             parts.append(f"当前供应商: {supplier_name or '-'} / {supplier_code or '-'}")
+
+        supplier_id = str(context.get("supplier_id") or "").strip()
+        if supplier_id:
+            parts.append(f"当前供应商ID: {supplier_id}")
+
+        inquiry_id = str(context.get("inquiry_id") or "").strip()
+        if inquiry_id:
+            parts.append(f"当前询价单ID: {inquiry_id}")
+
+        contract_id = str(context.get("contract_id") or "").strip()
+        if contract_id:
+            parts.append(f"当前合同ID: {contract_id}")
 
         if not parts:
             return message
@@ -123,10 +155,17 @@ class ProcurementAgentRunner:
     @staticmethod
     def _extract_context_defaults(message: str) -> dict[str, str]:
         defaults = {
+            "bill_no": "",
             "material_name": "",
             "material_code": "",
+            "material_model": "",
+            "qty": "",
+            "delivery_date": "",
             "supplier_name": "",
             "supplier_code": "",
+            "supplier_id": "",
+            "inquiry_id": "",
+            "contract_id": "",
         }
 
         material_match = re.search(r"当前物料:\s*(.*?)\s*/\s*(.*)", message or "")
@@ -138,6 +177,18 @@ class ProcurementAgentRunner:
         if supplier_match:
             defaults["supplier_name"] = supplier_match.group(1).strip().strip("-")
             defaults["supplier_code"] = supplier_match.group(2).strip().strip("-")
+
+        supplier_id_match = re.search(r"褰撳墠渚涘簲鍟咺D:\s*(.*)", message or "")
+        if supplier_id_match:
+            defaults["supplier_id"] = supplier_id_match.group(1).strip()
+
+        inquiry_id_match = re.search(r"褰撳墠璇环鍗旾D:\s*(.*)", message or "")
+        if inquiry_id_match:
+            defaults["inquiry_id"] = inquiry_id_match.group(1).strip()
+
+        contract_id_match = re.search(r"褰撳墠鍚堝悓ID:\s*(.*)", message or "")
+        if contract_id_match:
+            defaults["contract_id"] = contract_id_match.group(1).strip()
 
         return defaults
 
@@ -492,6 +543,38 @@ class ProcurementAgentRunner:
             if not args.get("supplier_code") and not args.get("supplier_name"):
                 args["supplier_name"] = context_defaults["supplier_name"] or (keywords[0] if keywords else message[:40])
             args["limit"] = int(args.get("limit") or 8)
+        elif tool_name in {"recommend_suppliers_for_inquiry", "create_inquiry_draft", "generate_inquiry_message"}:
+            current_material_code = str(args.get("material_code") or "").strip()
+            if context_defaults["material_code"] and (not current_material_code or current_material_code not in material_codes):
+                args["material_code"] = context_defaults["material_code"]
+            if not args.get("material_code") and material_codes:
+                args["material_code"] = material_codes[0]
+            if not args.get("material_code"):
+                args["material_code"] = context_defaults["material_code"] or (keywords[0] if keywords else "")
+            context_qty_match = re.search(r"CURRENT_QTY:\s*(.*)", message or "")
+            context_qty = context_qty_match.group(1).strip() if context_qty_match else ""
+            args["qty"] = float(args.get("qty") or context_qty or 1)
+            if tool_name != "recommend_suppliers_for_inquiry":
+                context_delivery_date_match = re.search(r"CURRENT_DELIVERY_DATE:\s*(.*)", message or "")
+                context_delivery_date = context_delivery_date_match.group(1).strip() if context_delivery_date_match else ""
+                args["delivery_date"] = str(
+                    args.get("delivery_date")
+                    or context_delivery_date
+                    or datetime.now().strftime("%Y-%m-%d")
+                )
+            args["limit"] = int(args.get("limit") or 3) if "limit" in args or tool_name != "generate_inquiry_message" else 3
+        elif tool_name == "analyze_quotation_compare":
+            if not args.get("inquiry_id") and context_defaults.get("inquiry_id"):
+                args["inquiry_id"] = int(context_defaults["inquiry_id"])
+            args["limit"] = int(args.get("limit") or 5)
+        elif tool_name == "create_contract_draft_from_award":
+            if not args.get("inquiry_id") and context_defaults.get("inquiry_id"):
+                args["inquiry_id"] = int(context_defaults["inquiry_id"])
+            if not args.get("supplier_id") and context_defaults.get("supplier_id"):
+                args["supplier_id"] = int(context_defaults["supplier_id"])
+        elif tool_name == "check_contract_risks":
+            if not args.get("contract_id") and context_defaults.get("contract_id"):
+                args["contract_id"] = int(context_defaults["contract_id"])
         return args
 
     @staticmethod

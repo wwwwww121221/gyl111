@@ -84,6 +84,7 @@ import { deleteContract, getContractList, getContractPdfBlob, regenerateContract
 import { MoreFilled } from '@element-plus/icons-vue'
 
 const route = useRoute()
+const AGENT_CONTEXT_SESSION_KEY = 'procurement_agent_page_context'
 
 const loading = ref(false)
 const contracts = ref([])
@@ -193,6 +194,18 @@ const openBlobInNewTab = (blob) => {
 }
 
 const handlePreview = async (row) => {
+  try {
+    sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify({
+      route_name: '合同管理',
+      material_code: '',
+      material_name: '',
+      supplier_id: '',
+      supplier_code: '',
+      supplier_name: row?.supplier_name || '',
+      inquiry_id: route.query.taskId || '',
+      contract_id: row?.id || '',
+    }))
+  } catch {}
   if (!canPreviewOrDownload(row)) {
     if (isGeneratingStatus(row?.status)) {
       ElMessage.warning('合同正在生成中，请稍后刷新再试')

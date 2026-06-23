@@ -478,6 +478,7 @@ const requestList = ref([])
 const selectedRequests = ref([])
 const selectedRequestsForTask = ref([])
 const REQUISITION_SESSION_CACHE_PREFIX = 'purchase_requisition_cache:'
+const AGENT_CONTEXT_SESSION_KEY = 'procurement_agent_page_context'
 const cartVisible = ref(false)
 const userRole = computed(() => localStorage.getItem('role') || '')
 const isApprovalRequired = computed(() => userRole.value === 'buyer')
@@ -534,6 +535,29 @@ const saveRequisitionSessionCache = (params, rows) => {
     // ignore browser storage failures
   }
 }
+
+const syncAgentPageContext = (rows = []) => {
+  const firstRow = Array.isArray(rows) ? rows[0] || {} : {}
+  try {
+    sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify({
+      route_name: '采购申请列表',
+      bill_no: firstRow.bill_no || '',
+      material_code: firstRow.material_code || '',
+      material_name: firstRow.material_name || '',
+      material_model: firstRow.material_model || '',
+      qty: firstRow.qty ?? '',
+      delivery_date: firstRow.delivery_date || '',
+      supplier_id: '',
+      supplier_code: '',
+      supplier_name: '',
+      inquiry_id: '',
+      contract_id: '',
+    }))
+  } catch {
+    // ignore browser storage failures
+  }
+}
+
 const attachmentUploadRef = ref(null)
 const REQUEST_TABLE_WIDTHS_STORAGE_KEY = 'purchaseRequestsTableWidths'
 const requestTableColumnWidths = ref({})
@@ -1143,6 +1167,7 @@ const handleSyncErp = async (forceRefresh = false, options = {}) => {
 
 const handleSelectionChange = (val) => {
   selectedRequests.value = val
+  syncAgentPageContext(val)
 }
 
 const isJumpToCompare = ref(false)

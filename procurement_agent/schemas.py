@@ -38,6 +38,7 @@ class AgentMessageRecord(BaseModel):
     role: str
     content: str
     created_at: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentMemoryRecord(BaseModel):

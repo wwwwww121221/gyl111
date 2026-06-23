@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from core.config import settings
@@ -25,13 +25,14 @@ from procurement_agent.schemas import (
     AgentMemoryOverview,
     AgentSessionSummary,
 )
+from procurement_agent.write_tools import confirm_pending_action
 from routers.auth import get_current_user_auth
 
 router = APIRouter()
 
 
 def _require_procurement_roles(current_user: User) -> None:
-    if current_user.role not in ["admin", "buyer", "buyer_manager"]:
+    if current_user.role == "supplier" or str(current_user.department or "").strip() != "采购部":
         raise HTTPException(status_code=403, detail="Only procurement users can use the procurement assistant")
 
 
@@ -77,6 +78,17 @@ def get_agent_session_messages(
     _require_procurement_roles(current_user)
     rows = load_messages(current_user.id, session_id)
     return [AgentMessageRecord(**row) for row in rows]
+
+
+@router.post("/actions/{action_id}/confirm")
+def confirm_agent_action(
+    action_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+) -> dict[str, Any]:
+    _require_procurement_roles(current_user)
+    return confirm_pending_action(db=db, user=current_user, action_id=action_id, request=request)
 
 
 @router.get("/memory", response_model=AgentMemoryOverview)

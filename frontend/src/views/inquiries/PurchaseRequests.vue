@@ -53,13 +53,16 @@
         
         <div class="toolbar-bottom">
           <div class="toolbar-actions">
-            <el-badge :value="selectedRequests.length" :hidden="selectedRequests.length === 0" class="cart-badge">
+            <el-badge :value="aggregatedSelectedRequests.length" :hidden="aggregatedSelectedRequests.length === 0" class="cart-badge">
               <el-button @click="cartVisible = true">
                 查看已选清单
               </el-button>
             </el-badge>
             <el-button type="success" @click="handleIntelligentCompare" :disabled="selectedRequests.length === 0" style="margin-left: 15px;">
               发起智能比价
+            </el-button>
+            <el-button v-if="false" type="warning" @click="handleAgentCreateInquiry" :disabled="selectedRequests.length === 0" style="margin-left: 15px;">
+              把勾选物料发起询价
             </el-button>
             <el-button type="primary" @click="showCreateTaskDialog" :disabled="selectedRequests.length === 0" style="margin-left: 15px;">
               {{ isApprovalRequired ? '提交经理审核' : '发起询价任务' }}
@@ -401,10 +404,10 @@
 
     <!-- Drawer: Selected Requests Cart -->
     <el-drawer v-model="cartVisible" title="已选询价物料清单" size="40%">
-      <div v-if="selectedRequests.length === 0" style="text-align: center; color: #909399; margin-top: 50px;">
+      <div v-if="aggregatedSelectedRequests.length === 0" style="text-align: center; color: #909399; margin-top: 50px;">
         暂未选择任何物料
       </div>
-      <el-table v-else :data="selectedRequests" style="width: 100%" size="small" border>
+      <el-table v-else :data="aggregatedSelectedRequests" style="width: 100%" size="small" border>
         <el-table-column prop="material_name" label="物料名称" min-width="120" show-overflow-tooltip />
         <el-table-column prop="material_model" label="规格型号" min-width="140" show-overflow-tooltip />
         <el-table-column prop="qty" label="数量" width="80" align="right" />
@@ -425,7 +428,7 @@
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 10px;">
           <el-button @click="cartVisible = false">关闭</el-button>
-          <el-button type="primary" @click="showCreateTaskDialog" :disabled="selectedRequests.length === 0">{{ isApprovalRequired ? '去提交审核' : '去发起询价' }}</el-button>
+          <el-button type="primary" @click="showCreateTaskDialog" :disabled="aggregatedSelectedRequests.length === 0">{{ isApprovalRequired ? '去提交审核' : '去发起询价' }}</el-button>
         </div>
       </template>
     </el-drawer>
@@ -465,7 +468,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { createInquiryTask, syncErpRequisitions, uploadInquiryAttachment } from '../../api/inquiry'
 import api, { getApiOrigin, resolveAssetUrl } from '../../api/index'
 import { ElMessage } from 'element-plus'
@@ -506,7 +509,16 @@ const buildRequisitionCacheKey = (params) => {
 const applyRequestList = (rows = []) => {
   requestList.value = (Array.isArray(rows) ? rows : []).map((item, index) => ({
     ...item,
-    _uid: item._uid || item.erp_request_id || `sync_${index}_${Math.random().toString(36).substring(2, 9)}`
+    _uid: item._uid || [
+      item.id,
+      item.erp_request_id,
+      item.bill_no,
+      item.material_code,
+      item.material_model,
+      item.qty,
+      item.delivery_date,
+      index,
+    ].map((value) => String(value ?? '').trim()).join('__')
   }))
   currentPage.value = 1
 }
@@ -536,17 +548,87 @@ const saveRequisitionSessionCache = (params, rows) => {
   }
 }
 
+const normalizeSelectedRequestsForAgent = (rows = []) => (
+  Array.isArray(rows)
+    ? rows.map((row) => ({
+        id: row.id ?? null,
+        erp_request_id: row.erp_request_id || '',
+        bill_no: row.bill_no || '',
+        project_info: row.project_info || {},
+        material_code: row.material_code || '',
+        material_name: row.material_name || '',
+        material_model: row.material_model || '',
+        price_unit_name: row.price_unit_name || '',
+        qty: row.qty ?? '',
+        delivery_date: row.delivery_date || '',
+        target_price: row.target_price ?? null,
+      }))
+    : []
+)
+
+const buildSelectedRequestAggregateKey = (row = {}) => {
+  const projectInfo = row.project_info || {}
+  return [
+    row.bill_no || '',
+    row.material_code || '',
+    row.material_name || '',
+    row.material_model || '',
+    row.price_unit_name || '',
+    row.delivery_date ? String(row.delivery_date).substring(0, 10) : '',
+    projectInfo.number || '',
+    projectInfo.name || '',
+    row.remark || '',
+  ].map((value) => String(value ?? '').trim()).join('__')
+}
+
+const aggregateSelectedRequests = (rows = []) => {
+  const aggregatedMap = new Map()
+  ;(Array.isArray(rows) ? rows : []).forEach((row) => {
+    const key = buildSelectedRequestAggregateKey(row)
+    if (!key) return
+    if (!aggregatedMap.has(key)) {
+      aggregatedMap.set(key, {
+        ...JSON.parse(JSON.stringify(row)),
+        qty: Number(row.qty) || 0,
+        _aggregated_request_ids: [row.id].filter((value) => value !== null && value !== undefined),
+        _aggregated_erp_request_ids: [row.erp_request_id].filter(Boolean),
+        _aggregated_line_count: 1,
+      })
+      return
+    }
+
+    const existing = aggregatedMap.get(key)
+    existing.qty += Number(row.qty) || 0
+    existing._aggregated_line_count += 1
+    if (row.id !== null && row.id !== undefined && !existing._aggregated_request_ids.includes(row.id)) {
+      existing._aggregated_request_ids.push(row.id)
+    }
+    if (row.erp_request_id && !existing._aggregated_erp_request_ids.includes(row.erp_request_id)) {
+      existing._aggregated_erp_request_ids.push(row.erp_request_id)
+    }
+  })
+  return Array.from(aggregatedMap.values())
+}
+
+const aggregatedSelectedRequests = computed(() => aggregateSelectedRequests(selectedRequests.value))
+
 const syncAgentPageContext = (rows = []) => {
-  const firstRow = Array.isArray(rows) ? rows[0] || {} : {}
+  const normalizedRows = normalizeSelectedRequestsForAgent(aggregateSelectedRequests(rows))
+  const activeRow = normalizedRows.length ? normalizedRows[normalizedRows.length - 1] : {}
   try {
     sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify({
       route_name: '采购申请列表',
-      bill_no: firstRow.bill_no || '',
-      material_code: firstRow.material_code || '',
-      material_name: firstRow.material_name || '',
-      material_model: firstRow.material_model || '',
-      qty: firstRow.qty ?? '',
-      delivery_date: firstRow.delivery_date || '',
+      selected_request_ids: normalizedRows
+        .map((row) => row.id || row.erp_request_id)
+        .filter((value) => value !== null && value !== undefined && String(value).trim() !== ''),
+      selected_requests: normalizedRows,
+      bill_no: activeRow.bill_no || '',
+      material_code: activeRow.material_code || '',
+      material_name: activeRow.material_name || '',
+      material_model: activeRow.material_model || '',
+      qty: activeRow.qty ?? '',
+      delivery_date: activeRow.delivery_date || '',
+      target_price: activeRow.target_price ?? null,
       supplier_id: '',
       supplier_code: '',
       supplier_name: '',
@@ -556,6 +638,10 @@ const syncAgentPageContext = (rows = []) => {
   } catch {
     // ignore browser storage failures
   }
+}
+
+const handleAgentActionConfirmed = async () => {
+  await handleSyncErp(true, { silent: true })
 }
 
 const attachmentUploadRef = ref(null)
@@ -604,10 +690,13 @@ const handleHeaderDragend = (newWidth, _oldWidth, column) => {
 }
 
 const removeFromCart = (row) => {
+  const targetKey = buildSelectedRequestAggregateKey(row)
   if (tableRef.value) {
-    tableRef.value.toggleRowSelection(row, false)
+    selectedRequests.value
+      .filter((item) => buildSelectedRequestAggregateKey(item) === targetKey)
+      .forEach((item) => tableRef.value.toggleRowSelection(item, false))
   } else {
-    selectedRequests.value = selectedRequests.value.filter(item => item._uid !== row._uid)
+    selectedRequests.value = selectedRequests.value.filter(item => buildSelectedRequestAggregateKey(item) !== targetKey)
   }
 }
 
@@ -1181,6 +1270,19 @@ const handleIntelligentCompare = async () => {
   showCreateTaskDialog(true)
 }
 
+const handleAgentCreateInquiry = () => {
+  if (selectedRequests.value.length === 0) {
+    ElMessage.warning('请先勾选采购申请明细')
+    return
+  }
+  syncAgentPageContext(selectedRequests.value)
+  window.dispatchEvent(new CustomEvent('procurement-agent-open', {
+    detail: {
+      prompt: '把勾选物料发起询价',
+    },
+  }))
+}
+
 const showCreateTaskDialog = async (isJump = false) => {
   isJumpToCompare.value = isJump === true
   lockedTaskType.value = isJump === true ? 'manual' : 'auto'
@@ -1482,6 +1584,11 @@ const getRemarkLines = (row) => buildUniqueLines([
 onMounted(() => {
   loadRequestTableColumnWidths()
   handleSyncErp(false, { silent: true })
+  window.addEventListener('procurement-agent-action-confirmed', handleAgentActionConfirmed)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('procurement-agent-action-confirmed', handleAgentActionConfirmed)
 })
 </script>
 

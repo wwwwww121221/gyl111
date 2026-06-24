@@ -17,6 +17,7 @@ from procurement_agent.memory import (
 )
 from procurement_agent.runner import ProcurementAgentRunner
 from procurement_agent.schemas import (
+    AgentActionConfirmRequest,
     AgentChatRequest,
     AgentChatResponse,
     AgentMemoryClearRequest,
@@ -84,11 +85,18 @@ def get_agent_session_messages(
 def confirm_agent_action(
     action_id: int,
     request: Request,
+    payload: AgentActionConfirmRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_auth),
 ) -> dict[str, Any]:
     _require_procurement_roles(current_user)
-    return confirm_pending_action(db=db, user=current_user, action_id=action_id, request=request)
+    return confirm_pending_action(
+        db=db,
+        user=current_user,
+        action_id=action_id,
+        request=request,
+        payload_overrides=(payload.payload_overrides if payload else None),
+    )
 
 
 @router.get("/memory", response_model=AgentMemoryOverview)

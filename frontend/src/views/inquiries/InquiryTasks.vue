@@ -939,6 +939,10 @@ const fetchTasks = async () => {
   }
 }
 
+const handleAgentActionConfirmed = async () => {
+  await fetchTasks()
+}
+
 const viewTaskDetails = async (task, preferredTab = 'suppliers') => {
   currentTask.value = task
   detailsActiveTab.value = preferredTab
@@ -1589,9 +1593,11 @@ onMounted(() => {
   timerId = window.setInterval(() => {
     nowTs.value = Date.now()
   }, 1000)
+  window.addEventListener('procurement-agent-action-confirmed', handleAgentActionConfirmed)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('procurement-agent-action-confirmed', handleAgentActionConfirmed)
   if (timerId) {
     window.clearInterval(timerId)
   }

@@ -66,3 +66,7 @@ class AgentMemoryClearResponse(BaseModel):
     scope: str
     cleared_short_term: int = 0
     cleared_long_term: int = 0
+
+
+class AgentActionConfirmRequest(BaseModel):
+    payload_overrides: dict[str, Any] = Field(default_factory=dict)

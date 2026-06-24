@@ -26,6 +26,8 @@ export const clearProcurementAgentMemory = (payload) => {
   return api.post(`${AGENT_BASE}/memory/clear`, payload)
 }
 
-export const confirmProcurementAgentAction = (actionId) => {
-  return api.post(`${AGENT_BASE}/actions/${actionId}/confirm`)
+export const confirmProcurementAgentAction = (actionId, payloadOverrides = {}) => {
+  return api.post(`${AGENT_BASE}/actions/${actionId}/confirm`, {
+    payload_overrides: payloadOverrides || {},
+  })
 }

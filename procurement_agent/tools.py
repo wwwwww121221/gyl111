@@ -16,8 +16,10 @@ from procurement_agent.risk_checker import (
 )
 from procurement_agent.write_tools import (
     create_contract_draft_from_award,
+    create_inquiry_from_selected_requests,
     create_inquiry_draft,
     generate_inquiry_message,
+    publish_inquiry_task,
 )
 
 
@@ -92,6 +94,14 @@ class CreateInquiryDraftInput(BaseModel):
     limit: int = Field(default=3, ge=1, le=10, description="Maximum recommended suppliers.")
 
 
+class CreateInquiryFromSelectedRequestsInput(BaseModel):
+    request_ids: list[str | int] = Field(..., min_length=1, description="Selected purchase request ids or ERP request ids.")
+    deadline: str | None = Field(default=None, description="Optional inquiry deadline in YYYY-MM-DD.")
+    supplier_ids: list[int] | None = Field(default=None, description="Optional supplier ids.")
+    title: str | None = Field(default=None, description="Optional inquiry draft title.")
+    selected_requests: list[dict[str, Any]] | None = Field(default=None, description="Optional selected request rows from page context.")
+
+
 class GenerateInquiryMessageInput(BaseModel):
     material_code: str = Field(..., description="Exact material code.")
     qty: float = Field(..., gt=0, description="Requested quantity.")
@@ -102,6 +112,10 @@ class GenerateInquiryMessageInput(BaseModel):
 class AnalyzeQuotationCompareInput(BaseModel):
     inquiry_id: int = Field(..., gt=0, description="Inquiry task id.")
     limit: int = Field(default=5, ge=1, le=10, description="Maximum supplier rows to analyze.")
+
+
+class PublishInquiryTaskInput(BaseModel):
+    inquiry_id: int = Field(..., gt=0, description="AI draft inquiry task id.")
 
 
 class CreateContractDraftFromAwardInput(BaseModel):
@@ -551,6 +565,23 @@ def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
     ) -> dict[str, Any]:
         return create_inquiry_draft(db, user, material_code, qty, delivery_date, limit)
 
+    def _create_inquiry_from_selected_requests(
+        request_ids: list[str | int],
+        deadline: str | None = None,
+        supplier_ids: list[int] | None = None,
+        title: str | None = None,
+        selected_requests: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return create_inquiry_from_selected_requests(
+            db,
+            user,
+            request_ids,
+            deadline,
+            supplier_ids,
+            title,
+            selected_requests,
+        )
+
     def _generate_inquiry_message(
         material_code: str,
         qty: float,
@@ -564,6 +595,11 @@ def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
         limit: int = 5,
     ) -> dict[str, Any]:
         return analyze_quotation_compare(db, user, inquiry_id, limit)
+
+    def _publish_inquiry_task(
+        inquiry_id: int,
+    ) -> dict[str, Any]:
+        return publish_inquiry_task(db, user, inquiry_id)
 
     def _create_contract_draft_from_award(
         inquiry_id: int,
@@ -645,6 +681,12 @@ def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
             args_schema=CreateInquiryDraftInput,
         ),
         StructuredTool.from_function(
+            func=_create_inquiry_from_selected_requests,
+            name="create_inquiry_from_selected_requests",
+            description="基于当前勾选的采购申请生成待确认的询价任务草稿。确认后只会创建 ai_draft 询价任务，不会直接发布询价。",
+            args_schema=CreateInquiryFromSelectedRequestsInput,
+        ),
+        StructuredTool.from_function(
             func=_generate_inquiry_message,
             name="generate_inquiry_message",
             description="根据物料、数量、交期和供应商生成询价文本草稿，仅返回文本，不会直接发送。",
@@ -655,6 +697,12 @@ def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
             name="analyze_quotation_compare",
             description="分析询价单下各供应商报价、交期、历史均价和评分，输出中标建议，并生成待确认动作；不会自动中标。",
             args_schema=AnalyzeQuotationCompareInput,
+        ),
+        StructuredTool.from_function(
+            func=_publish_inquiry_task,
+            name="publish_inquiry_task",
+            description="Confirm-ready publish action for an ai_draft inquiry task. After manual confirmation it reuses the existing supplier invitation and quotation flow.",
+            args_schema=PublishInquiryTaskInput,
         ),
         StructuredTool.from_function(
             func=_create_contract_draft_from_award,

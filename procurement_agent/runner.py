@@ -129,6 +129,32 @@ class ProcurementAgentRunner:
         delivery_date = str(context.get("delivery_date") or "").strip()
         if delivery_date:
             parts.append(f"CURRENT_DELIVERY_DATE: {delivery_date}")
+        selected_request_ids = context.get("selected_request_ids") or []
+        if isinstance(selected_request_ids, list) and selected_request_ids:
+            parts.append(f"SELECTED_REQUEST_IDS_JSON: {json.dumps(selected_request_ids[:50], ensure_ascii=False, default=str)}")
+        selected_requests = context.get("selected_requests") or []
+        if isinstance(selected_requests, list) and selected_requests:
+            normalized_selected_requests = []
+            for row in selected_requests[:20]:
+                if not isinstance(row, dict):
+                    continue
+                normalized_selected_requests.append({
+                    "id": row.get("id"),
+                    "erp_request_id": row.get("erp_request_id"),
+                    "bill_no": row.get("bill_no"),
+                    "project_info": row.get("project_info"),
+                    "material_code": row.get("material_code"),
+                    "material_name": row.get("material_name"),
+                    "material_model": row.get("material_model"),
+                    "price_unit_name": row.get("price_unit_name"),
+                    "qty": row.get("qty"),
+                    "delivery_date": row.get("delivery_date"),
+                    "target_price": row.get("target_price"),
+                })
+            if normalized_selected_requests:
+                parts.append("SELECTED_REQUESTS_JSON_BEGIN")
+                parts.append(json.dumps(normalized_selected_requests, ensure_ascii=False, default=str))
+                parts.append("SELECTED_REQUESTS_JSON_END")
 
         supplier_name = str(context.get("supplier_name") or "").strip()
         supplier_code = str(context.get("supplier_code") or "").strip()
@@ -197,9 +223,36 @@ class ProcurementAgentRunner:
         text = str(message or "")
         return any(word in text for word in words)
 
+    @staticmethod
+    def _extract_selected_request_ids(message: str) -> list[str]:
+        match = re.search(r"SELECTED_REQUEST_IDS_JSON:\s*(\[[\s\S]*?\])", message or "")
+        if not match:
+            return []
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [str(item).strip() for item in payload if str(item).strip()][:50]
+
+    @staticmethod
+    def _extract_selected_requests(message: str) -> list[dict[str, Any]]:
+        match = re.search(r"SELECTED_REQUESTS_JSON_BEGIN\s*([\s\S]*?)\s*SELECTED_REQUESTS_JSON_END", message or "")
+        if not match:
+            return []
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)][:20]
+
     def _build_seed_actions(self, message: str) -> list[tuple[str, dict[str, Any]]]:
         actions: list[tuple[str, dict[str, Any]]] = []
         context_defaults = self._extract_context_defaults(message)
+        selected_request_ids = self._extract_selected_request_ids(message)
         keywords = extract_keywords(message)
         primary_keyword = keywords[0] if keywords else ""
         possible_codes = self._dedupe(re.findall(r"[A-Za-z0-9][A-Za-z0-9._/-]{2,}", message or ""))
@@ -210,6 +263,19 @@ class ProcurementAgentRunner:
         asks_purchase_order = self._has_any_keyword(message, ["采购订单", "订单", "下单"])
         asks_request = self._has_any_keyword(message, ["采购申请", "申请单", "需求池", "请购"])
         asks_material = self._has_any_keyword(message, ["物料", "材料", "型号", "规格", "编码", "是什么"])
+
+        asks_inquiry = self._has_any_keyword(message, ["询价", "询价单", "发起询价", "生成询价", "比价"])
+        asks_draft_inquiry = self._has_any_keyword(
+            message,
+            ["草稿", "询价草稿", "报价草稿", "报价单", "草稿报价单", "生成草稿报价单", "生成草稿"],
+        )
+        if (asks_inquiry or asks_draft_inquiry) and selected_request_ids:
+            actions.append((
+                "create_inquiry_from_selected_requests",
+                {
+                    "request_ids": selected_request_ids,
+                },
+            ))
 
         if primary_code:
             actions.append((
@@ -543,6 +609,17 @@ class ProcurementAgentRunner:
             if not args.get("supplier_code") and not args.get("supplier_name"):
                 args["supplier_name"] = context_defaults["supplier_name"] or (keywords[0] if keywords else message[:40])
             args["limit"] = int(args.get("limit") or 8)
+        elif tool_name == "create_inquiry_from_selected_requests":
+            selected_request_ids = self._extract_selected_request_ids(message)
+            selected_requests = self._extract_selected_requests(message)
+            if not args.get("request_ids") and selected_request_ids:
+                args["request_ids"] = selected_request_ids
+            if not args.get("selected_requests") and selected_requests:
+                args["selected_requests"] = selected_requests
+            if not args.get("title") and selected_requests:
+                first_row = selected_requests[0]
+                material_name = str(first_row.get("material_name") or "").strip() or "勾选物料"
+                args["title"] = f"AI询价任务-{material_name}-{datetime.now().strftime('%m%d%H%M')}"
         elif tool_name in {"recommend_suppliers_for_inquiry", "create_inquiry_draft", "generate_inquiry_message"}:
             current_material_code = str(args.get("material_code") or "").strip()
             if context_defaults["material_code"] and (not current_material_code or current_material_code not in material_codes):

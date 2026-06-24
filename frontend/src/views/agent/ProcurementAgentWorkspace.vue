@@ -80,13 +80,104 @@
                 >
                   <div class="pending-action-title">{{ action.preview?.title || action.preview?.task_title || 'AI 待确认动作' }}</div>
                   <div class="pending-action-desc">{{ action.message || '该动作需要人工确认后才会执行。' }}</div>
+                  <div v-if="action.action_type === 'create_inquiry_draft'" class="pending-action-form">
+                    <el-input v-model="getActionDraft(action).title" size="small" placeholder="询价草稿标题" />
+                    <div class="pending-action-grid">
+                      <el-input v-model="getActionDraft(action).material_code" size="small" placeholder="物料编码" disabled />
+                      <el-input v-model="getActionDraft(action).material_name" size="small" placeholder="物料名称" disabled />
+                    </div>
+                    <div class="pending-action-grid">
+                      <el-input-number v-model="getActionDraft(action).qty" size="small" :min="0" :precision="4" :controls="false" placeholder="数量" />
+                      <el-input v-model="getActionDraft(action).target_price" size="small" placeholder="目标价建议" />
+                    </div>
+                    <el-select
+                      v-model="getActionDraft(action).supplier_ids"
+                      multiple
+                      collapse-tags
+                      collapse-tags-tooltip
+                      size="small"
+                      placeholder="建议供应商"
+                    >
+                      <el-option
+                        v-for="supplier in getActionDraft(action).supplier_options"
+                        :key="supplier.value"
+                        :label="supplier.label"
+                        :value="supplier.value"
+                      />
+                    </el-select>
+                    <el-date-picker
+                      v-model="getActionDraft(action).delivery_date"
+                      type="date"
+                      value-format="YYYY-MM-DD"
+                      size="small"
+                      placeholder="期望交期"
+                      style="width: 100%;"
+                    />
+                    <div v-if="getActionDraft(action).supplier_names" class="pending-action-hint">
+                      建议供应商：{{ getActionDraft(action).supplier_names }}
+                    </div>
+                  </div>
+                  <div v-else-if="action.action_type === 'create_inquiry_from_selected_requests'" class="pending-action-form">
+                    <el-input v-model="getActionDraft(action).title" size="small" placeholder="询价任务标题" />
+                    <div class="pending-action-grid">
+                      <el-input v-model="getActionDraft(action).material_codes" size="small" placeholder="物料编码" disabled />
+                      <el-input v-model="getActionDraft(action).material_names" size="small" placeholder="物料名称" disabled />
+                    </div>
+                    <el-input v-model="getActionDraft(action).material_models" size="small" placeholder="规格型号" disabled />
+                    <div class="pending-action-grid">
+                      <el-input v-model="getActionDraft(action).qty_total" size="small" placeholder="合计数量" disabled />
+                      <el-input v-model="getActionDraft(action).delivery_dates" size="small" placeholder="需求交期" disabled />
+                    </div>
+                    <div class="pending-action-grid">
+                      <el-select
+                        v-model="getActionDraft(action).supplier_ids"
+                        multiple
+                        collapse-tags
+                        collapse-tags-tooltip
+                        size="small"
+                        placeholder="建议供应商"
+                      >
+                        <el-option
+                          v-for="supplier in getActionDraft(action).supplier_options"
+                          :key="supplier.value"
+                          :label="supplier.label"
+                          :value="supplier.value"
+                        />
+                      </el-select>
+                      <el-input v-model="getActionDraft(action).target_price" size="small" placeholder="目标价建议" />
+                    </div>
+                    <div v-if="getActionDraft(action).supplier_names" class="pending-action-hint">
+                      建议供应商：{{ getActionDraft(action).supplier_names }}
+                    </div>
+                    <div v-if="getActionDraft(action).price_reference_text" class="pending-action-hint">
+                      历史参考价：{{ getActionDraft(action).price_reference_text }}
+                    </div>
+                    <div v-if="getActionDraft(action).risk_notes" class="pending-action-hint">
+                      风险提示：{{ getActionDraft(action).risk_notes }}
+                    </div>
+                    <el-date-picker
+                      v-model="getActionDraft(action).deadline"
+                      type="date"
+                      value-format="YYYY-MM-DD"
+                      size="small"
+                      placeholder="报价截止日期"
+                      style="width: 100%;"
+                    />
+                    <div class="pending-action-hint">
+                      已勾选明细：{{ getActionDraft(action).selected_line_count }} 条，物料项：{{ getActionDraft(action).material_item_count }} 项
+                    </div>
+                    <div v-if="getActionDraft(action).bill_nos" class="pending-action-hint">
+                      关联单号：{{ getActionDraft(action).bill_nos }}
+                    </div>
+                  </div>
                   <el-button
+                    class="pending-action-confirm-btn"
                     type="primary"
                     size="small"
                     :loading="confirmingActionIds.includes(action.pending_action_id)"
-                    @click="confirmAction(action.pending_action_id)"
+                    @click="confirmAction(action)"
                   >
-                    确认执行
+                    {{ getPendingActionButtonLabel(action) }}
                   </el-button>
                 </div>
               </div>
@@ -147,6 +238,7 @@ const pendingSessionId = ref('')
 const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
 const confirmingActionIds = ref([])
+const pendingActionDrafts = ref({})
 
 const canSend = computed(() => draft.value.trim().length > 0)
 const currentSessionTitle = computed(() => {
@@ -168,8 +260,111 @@ const normalizeMessages = (rows = []) =>
 const getPendingActionCards = (message) => {
   const toolResults = Array.isArray(message?.metadata?.tool_results) ? message.metadata.tool_results : []
   return toolResults
-    .map((item) => item?.data || {})
-    .filter((item) => Number(item?.pending_action_id) > 0)
+    .flatMap((item) => {
+      const data = item?.data || {}
+      if (Number(data?.pending_action_id) > 0) {
+        return [{
+          ...data,
+          action_type: data?.action_type || item?.name || '',
+        }]
+      }
+      if (Number(data?.award_suggestion?.pending_action_id) > 0) {
+        return [{
+          pending_action_id: data.award_suggestion.pending_action_id,
+          action_type: 'confirm_award',
+          preview: {
+            task_title: data?.inquiry?.title || '',
+            supplier_name: data?.award_suggestion?.recommended_supplier?.supplier_name || '',
+            quote_total_amount: data?.award_suggestion?.recommended_supplier?.quote_total_amount,
+          },
+          message: data?.award_suggestion?.note || '',
+        }]
+      }
+      return []
+    })
+}
+
+const getPendingActionButtonLabel = (action) => {
+  const actionType = String(action?.action_type || '').trim()
+  if (actionType === 'create_inquiry_draft') return '确认创建询价草稿'
+  if (actionType === 'create_inquiry_from_selected_requests') return '确认创建询价任务'
+  if (actionType === 'confirm_award') return '确认中标'
+  if (actionType === 'create_contract_draft') return '确认生成合同草稿'
+  return '确认执行'
+}
+
+const getActionDraft = (action) => {
+  const actionId = Number(action?.pending_action_id)
+  if (!Number.isFinite(actionId) || actionId <= 0) return {}
+  if (!pendingActionDrafts.value[actionId]) {
+    const preview = action?.preview || {}
+    const recommendedSuppliers = Array.isArray(preview.recommended_suppliers) ? preview.recommended_suppliers : []
+    pendingActionDrafts.value[actionId] = {
+      title: preview.title || preview.task_title || '',
+      material_code: preview.material_code || '',
+      material_name: preview.material_name || '',
+      qty: preview.qty ?? null,
+      delivery_date: preview.delivery_date || '',
+      target_price: preview.target_price_suggestion ?? '',
+      supplier_ids: Array.isArray(preview.supplier_ids) ? preview.supplier_ids.filter((item) => Number(item) > 0) : [],
+      supplier_names: Array.isArray(preview.supplier_names) ? preview.supplier_names.filter(Boolean).join('、') : '',
+      supplier_options: recommendedSuppliers
+        .filter((item) => Number(item?.supplier_id) > 0)
+        .map((item) => ({ value: Number(item.supplier_id), label: item.supplier_name || `供应商${item.supplier_id}` })),
+      deadline: preview.deadline || '',
+      request_count: preview.request_count ?? '',
+      selected_line_count: preview.selected_line_count ?? preview.request_count ?? '',
+      material_item_count: preview.material_item_count ?? '',
+      bill_nos: Array.isArray(preview.bill_nos) ? preview.bill_nos.filter(Boolean).join('、') : '',
+      material_codes: Array.isArray(preview.material_codes) ? preview.material_codes.filter(Boolean).join('、') : '',
+      material_names: Array.isArray(preview.material_names) ? preview.material_names.filter(Boolean).join('、') : '',
+      material_models: Array.isArray(preview.material_models) ? preview.material_models.filter(Boolean).join('、') : '',
+      delivery_dates: Array.isArray(preview.delivery_dates) ? preview.delivery_dates.filter(Boolean).join('、') : '',
+      qty_total: preview.qty_total ?? '',
+      price_reference_text: formatPriceReference(preview.price_reference),
+      risk_notes: Array.isArray(preview.risk_notes) ? preview.risk_notes.filter(Boolean).join('；') : '',
+    }
+  }
+  return pendingActionDrafts.value[actionId]
+}
+
+const formatPriceReference = (priceReference) => {
+  if (!priceReference || typeof priceReference !== 'object') return ''
+  const minPrice = priceReference.min_price
+  const maxPrice = priceReference.max_price
+  const avgPrice = priceReference.avg_price
+  const rangeText = (minPrice !== null && minPrice !== undefined && maxPrice !== null && maxPrice !== undefined)
+    ? `${minPrice} ~ ${maxPrice}`
+    : ''
+  if (rangeText && avgPrice !== null && avgPrice !== undefined) {
+    return `${rangeText}，均价 ${avgPrice}`
+  }
+  if (rangeText) return rangeText
+  if (avgPrice !== null && avgPrice !== undefined) return `均价 ${avgPrice}`
+  return ''
+}
+
+const buildActionOverrides = (action) => {
+  const actionType = String(action?.action_type || '').trim()
+  const draftModel = getActionDraft(action)
+  if (actionType === 'create_inquiry_draft') {
+    return {
+      title: String(draftModel.title || '').trim(),
+      qty: draftModel.qty,
+      delivery_date: draftModel.delivery_date || null,
+      target_price: draftModel.target_price === '' ? null : draftModel.target_price,
+      supplier_ids: Array.isArray(draftModel.supplier_ids) ? draftModel.supplier_ids : [],
+    }
+  }
+  if (actionType === 'create_inquiry_from_selected_requests') {
+    return {
+      title: String(draftModel.title || '').trim(),
+      deadline: draftModel.deadline || null,
+      supplier_ids: Array.isArray(draftModel.supplier_ids) ? draftModel.supplier_ids : [],
+      target_price: draftModel.target_price === '' ? null : draftModel.target_price,
+    }
+  }
+  return {}
 }
 
 const currentPageContext = computed(() => {
@@ -181,12 +376,15 @@ const currentPageContext = computed(() => {
   }
   return {
     route_name: stored.route_name || '/agent/workspace',
+    selected_request_ids: Array.isArray(stored.selected_request_ids) ? stored.selected_request_ids : [],
+    selected_requests: Array.isArray(stored.selected_requests) ? stored.selected_requests : [],
     bill_no: stored.bill_no || '',
     material_code: stored.material_code || '',
     material_name: stored.material_name || '',
     material_model: stored.material_model || '',
     qty: stored.qty ?? '',
     delivery_date: stored.delivery_date || '',
+    target_price: stored.target_price ?? null,
     supplier_id: stored.supplier_id || '',
     supplier_code: stored.supplier_code || '',
     supplier_name: stored.supplier_name || '',
@@ -280,15 +478,17 @@ const fillPrompt = (text) => {
   draft.value = text
 }
 
-const confirmAction = async (actionId) => {
-  const normalizedId = Number(actionId)
+const confirmAction = async (action) => {
+  const normalizedId = Number(action?.pending_action_id)
   if (!Number.isFinite(normalizedId) || normalizedId <= 0) return
   if (confirmingActionIds.value.includes(normalizedId)) return
 
   confirmingActionIds.value = [...confirmingActionIds.value, normalizedId]
   try {
-    const { data } = await confirmProcurementAgentAction(normalizedId)
+    const { data } = await confirmProcurementAgentAction(normalizedId, buildActionOverrides(action))
     ElMessage.success('AI 待确认动作已执行')
+    window.dispatchEvent(new CustomEvent('procurement-agent-action-confirmed', { detail: data }))
+    delete pendingActionDrafts.value[normalizedId]
     messages.value.push({
       id: `${Date.now()}_confirm`,
       role: 'assistant',
@@ -621,6 +821,28 @@ onMounted(async () => {
   border-radius: 14px;
   background: #f2f7ff;
   border: 1px solid #d7e4fb;
+}
+
+.pending-action-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pending-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pending-action-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #5f6b7a;
+}
+
+:deep(.pending-action-confirm-btn) {
+  min-width: auto;
 }
 
 .pending-action-title {

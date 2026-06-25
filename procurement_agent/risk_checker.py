@@ -6,15 +6,17 @@ from statistics import mean
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from models import (
     AgentPendingAction,
     Contract,
     ContractTemplate,
+    InquiryRequest,
     InquirySupplier,
     InquiryTask,
+    InquiryTaskItem,
     Material,
     PurchaseOrderMonthlyStat,
     PurchaseOrderSummary,
@@ -229,39 +231,185 @@ def recommend_suppliers_for_inquiry(
     }
 
 
+def _normalize_selected_request_rows(selected_requests: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized_rows: list[dict[str, Any]] = []
+    for row in selected_requests or []:
+        if not isinstance(row, dict):
+            continue
+        normalized_rows.append({
+            "id": row.get("id"),
+            "erp_request_id": str(row.get("erp_request_id") or "").strip(),
+        })
+    return normalized_rows
+
+
+def _resolve_analysis_task(
+    db: Session,
+    inquiry_id: int | None,
+    request_ids: list[str | int] | None,
+    selected_requests: list[dict[str, Any]] | None,
+) -> InquiryTask | None:
+    if inquiry_id:
+        return db.query(InquiryTask).filter(InquiryTask.id == inquiry_id).first()
+
+    normalized_rows = _normalize_selected_request_rows(selected_requests)
+    normalized_request_ids = [str(item).strip() for item in (request_ids or []) if str(item).strip()]
+    numeric_ids = [int(item) for item in normalized_request_ids if item.isdigit()]
+    erp_request_ids = [item for item in normalized_request_ids if not item.isdigit()]
+    for row in normalized_rows:
+        row_id = row.get("id")
+        erp_request_id = row.get("erp_request_id")
+        if row_id not in (None, ""):
+            try:
+                numeric_ids.append(int(row_id))
+            except (TypeError, ValueError):
+                pass
+        if erp_request_id:
+            erp_request_ids.append(erp_request_id)
+
+    numeric_ids = sorted({item for item in numeric_ids if item > 0})
+    erp_request_ids = sorted({item for item in erp_request_ids if item})
+    if not numeric_ids and not erp_request_ids:
+        return None
+
+    query = (
+        db.query(InquiryTask)
+        .join(InquiryTaskItem, InquiryTaskItem.task_id == InquiryTask.id)
+        .join(InquiryRequest, InquiryRequest.id == InquiryTaskItem.request_id)
+    )
+    filters = []
+    if numeric_ids:
+        filters.append(InquiryRequest.id.in_(numeric_ids))
+    if erp_request_ids:
+        filters.append(InquiryRequest.erp_request_id.in_(erp_request_ids))
+    if len(filters) == 1:
+        tasks = query.filter(filters[0]).all()
+    else:
+        tasks = query.filter(or_(*filters)).all()
+
+    best_task = None
+    best_sort_key: tuple[int, int, int] | None = None
+    for task in tasks:
+        quote_count = (
+            db.query(Quotation)
+            .join(InquirySupplier, InquirySupplier.id == Quotation.inquiry_supplier_id)
+            .filter(InquirySupplier.task_id == task.id)
+            .count()
+        )
+        match_count = len(task.items or [])
+        sort_key = (
+            1 if str(task.type or "").strip() == "manual" else 0,
+            quote_count,
+            match_count,
+        )
+        if best_sort_key is None or sort_key > best_sort_key:
+            best_sort_key = sort_key
+            best_task = task
+    return best_task
+
+
+def _load_latest_effective_quotes(db: Session, inquiry_supplier_id: int) -> list[Quotation]:
+    quotes = (
+        db.query(Quotation)
+        .filter(Quotation.inquiry_supplier_id == inquiry_supplier_id)
+        .order_by(Quotation.round.desc(), Quotation.created_at.desc())
+        .all()
+    )
+    latest_by_item: dict[int, Quotation] = {}
+    for quote in quotes:
+        latest_by_item.setdefault(int(quote.item_id), quote)
+    return list(latest_by_item.values())
+
+
+def _build_manual_compare_allocations(analysis_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not analysis_rows:
+        return []
+    if len(analysis_rows) == 1:
+        row = analysis_rows[0]
+        return [{
+            "link_id": row["link_id"],
+            "supplier_id": row["supplier_id"],
+            "supplier_name": row["supplier_name"],
+            "allocated_ratio": 100.0,
+            "quote_total_amount": row["quote_total_amount"],
+        }]
+
+    top_row = analysis_rows[0]
+    second_row = analysis_rows[1]
+    second_is_competitive = float(second_row["quote_total_amount"] or 0) <= float(top_row["quote_total_amount"] or 0) * 1.08
+    if second_is_competitive:
+        return [
+            {
+                "link_id": top_row["link_id"],
+                "supplier_id": top_row["supplier_id"],
+                "supplier_name": top_row["supplier_name"],
+                "allocated_ratio": 70.0,
+                "quote_total_amount": top_row["quote_total_amount"],
+            },
+            {
+                "link_id": second_row["link_id"],
+                "supplier_id": second_row["supplier_id"],
+                "supplier_name": second_row["supplier_name"],
+                "allocated_ratio": 30.0,
+                "quote_total_amount": second_row["quote_total_amount"],
+            },
+        ]
+    return [{
+        "link_id": top_row["link_id"],
+        "supplier_id": top_row["supplier_id"],
+        "supplier_name": top_row["supplier_name"],
+        "allocated_ratio": 100.0,
+        "quote_total_amount": top_row["quote_total_amount"],
+    }]
+
+
+def _collect_task_counts(task: InquiryTask) -> tuple[int, int]:
+    request_count = len(task.items or [])
+    material_keys = set()
+    for item in task.items or []:
+        request = item.request
+        if not request:
+            continue
+        material_keys.add((
+            str(request.material_code or "").strip(),
+            str(request.material_model or "").strip(),
+            request.delivery_date.strftime("%Y-%m-%d") if request.delivery_date else "",
+        ))
+    return request_count, len(material_keys)
+
+
 def analyze_quotation_compare(
     db: Session,
     user: User,
-    inquiry_id: int,
+    inquiry_id: int | None = None,
+    request_ids: list[str | int] | None = None,
+    selected_requests: list[dict[str, Any]] | None = None,
     limit: int = 5,
 ) -> dict[str, Any]:
     _require_procurement_roles(user)
-    task = db.query(InquiryTask).filter(InquiryTask.id == inquiry_id).first()
+    task = _resolve_analysis_task(db, inquiry_id, request_ids, selected_requests)
     if not task:
-        raise HTTPException(status_code=404, detail="Inquiry task not found")
+        return {
+            "status": "quote_required",
+            "message": "当前未找到可用于手动比价的询价任务，请先录入供应商报价。",
+            "comparisons": [],
+        }
 
-    supplier_links = (
-        db.query(InquirySupplier)
-        .filter(InquirySupplier.task_id == task.id)
-        .all()
-    )
+    supplier_links = db.query(InquirySupplier).filter(InquirySupplier.task_id == task.id).all()
     if not supplier_links:
-        raise HTTPException(status_code=400, detail="No supplier quotations found for this inquiry")
+        return {
+            "inquiry": {"id": task.id, "title": task.title, "status": task.status},
+            "status": "quote_required",
+            "message": "当前还没有供应商报价，请先录入供应商报价。",
+            "comparisons": [],
+        }
 
-    analysis_rows = []
+    analysis_rows: list[dict[str, Any]] = []
     for link in supplier_links:
-        quotes = (
-            db.query(Quotation)
-            .filter(Quotation.inquiry_supplier_id == link.id)
-            .order_by(Quotation.round.desc(), Quotation.created_at.desc())
-            .all()
-        )
-        if not quotes:
+        effective_quotes = _load_latest_effective_quotes(db, link.id)
+        if not effective_quotes:
             continue
-        latest_by_item: dict[int, Quotation] = {}
-        for quote in quotes:
-            latest_by_item.setdefault(int(quote.item_id), quote)
-        effective_quotes = list(latest_by_item.values())
+
         prices = [float(item.price or 0) for item in effective_quotes if item.price is not None]
         deliveries = [item.delivery_date for item in effective_quotes if item.delivery_date]
         quote_total = sum(float(item.qty or 0) * float(item.price or 0) for item in effective_quotes)
@@ -296,24 +444,49 @@ def analyze_quotation_compare(
             "recommendation_reason": "综合报价较优、供应商评分较高" if score >= 80 else "报价有优势，建议人工复核交期与条款",
         })
 
+    if not analysis_rows:
+        return {
+            "inquiry": {"id": task.id, "title": task.title, "status": task.status},
+            "status": "quote_required",
+            "message": "当前还没有有效报价，请先录入供应商报价。",
+            "comparisons": [],
+        }
+
     analysis_rows.sort(key=lambda item: (item["quote_total_amount"], -item["supplier_rating_score"]))
     analysis_rows = analysis_rows[: max(1, min(int(limit or 5), 10))]
     recommended = analysis_rows[0] if analysis_rows else None
+    allocation_rows = _build_manual_compare_allocations(analysis_rows)
+    request_count, material_item_count = _collect_task_counts(task)
+    quote_source = "手动录入" if str(task.type or "").strip() == "manual" else "已有报价"
+    share_summary = "，".join(
+        f"{row['supplier_name']} {int(row['allocated_ratio']) if float(row['allocated_ratio']).is_integer() else row['allocated_ratio']}%"
+        for row in allocation_rows
+    )
 
     pending_action = None
-    if recommended:
+    if recommended and allocation_rows:
         pending_action = AgentPendingAction(
             action_type="confirm_award",
             payload={
                 "task_id": task.id,
-                "selected_link_id": recommended["link_id"],
+                "allocations": [
+                    {"link_id": row["link_id"], "allocated_ratio": row["allocated_ratio"]}
+                    for row in allocation_rows
+                ],
+                "source_mode": "manual_compare",
             },
             preview={
                 "task_id": task.id,
                 "task_title": task.title,
-                "supplier_name": recommended["supplier_name"],
-                "quote_total_amount": recommended["quote_total_amount"],
-                "latest_delivery_date": recommended["latest_delivery_date"],
+                "plan_mode": "manual_compare",
+                "quote_source": quote_source,
+                "request_count": request_count,
+                "selected_line_count": request_count,
+                "material_item_count": material_item_count,
+                "recommended_supplier_count": len(allocation_rows),
+                "share_summary": share_summary,
+                "expected_operation": "确认后将保存份额分配结果，并生成合同草稿",
+                "allocations": allocation_rows,
             },
             status="pending",
             created_by=user.id,
@@ -337,9 +510,14 @@ def analyze_quotation_compare(
     return {
         "inquiry": {"id": task.id, "title": task.title, "status": task.status},
         "comparisons": analysis_rows,
+        "pending_action_id": pending_action.id if pending_action else None,
+        "action_type": "confirm_award" if pending_action else None,
+        "preview": pending_action.preview if pending_action else None,
+        "message": "手动比价方案已生成，确认后将保存份额分配结果，并生成合同草稿。" if pending_action else "当前还没有有效报价，请先录入供应商报价。",
         "award_suggestion": {
             "recommended_supplier": recommended,
-            "note": "仅提供中标建议，不会自动确认中标。请人工确认。",
+            "recommended_suppliers": allocation_rows,
+            "note": "仅提供手动比价与份额分配建议，不会自动确认中标。请人工确认。",
             "pending_action_id": pending_action.id if pending_action else None,
         },
     }

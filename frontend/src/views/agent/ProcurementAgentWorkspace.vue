@@ -170,6 +170,63 @@
                       关联单号：{{ getActionDraft(action).bill_nos }}
                     </div>
                   </div>
+                  <div v-else-if="action.action_type === 'save_manual_quotes'" class="pending-action-form">
+                    <el-input v-model="getActionDraft(action).title" size="small" placeholder="手动比价任务标题" />
+                    <div class="pending-action-hint">
+                      已勾选明细：{{ getActionDraft(action).selected_line_count }} 条，物料项：{{ getActionDraft(action).material_item_count }} 项
+                    </div>
+                    <div v-if="getActionDraft(action).bill_nos" class="pending-action-hint">
+                      关联单号：{{ getActionDraft(action).bill_nos }}
+                    </div>
+                    <div v-if="getActionDraft(action).price_reference_text" class="pending-action-hint">
+                      历史参考价：{{ getActionDraft(action).price_reference_text }}
+                    </div>
+                    <div v-if="getActionDraft(action).risk_notes" class="pending-action-hint">
+                      风险提示：{{ getActionDraft(action).risk_notes }}
+                    </div>
+                    <div v-if="getActionDraft(action).material_lines.length" class="manual-quote-section">
+                      <div class="manual-quote-section-title">物料明细（确认后将创建手动比价任务）</div>
+                      <div class="manual-quote-table">
+                        <div class="manual-quote-table-header">
+                          <span>物料编码</span>
+                          <span>物料名称</span>
+                          <span>规格型号</span>
+                          <span>数量</span>
+                          <span>需求交期</span>
+                        </div>
+                        <div
+                          v-for="(line, lineIdx) in getActionDraft(action).material_lines"
+                          :key="`material-line-${lineIdx}`"
+                          class="manual-quote-table-row"
+                        >
+                          <span>{{ line.material_code || '-' }}</span>
+                          <span>{{ line.material_name || '-' }}</span>
+                          <span>{{ line.material_model || '-' }}</span>
+                          <span>{{ line.qty ?? '-' }}</span>
+                          <span>{{ line.delivery_date || '-' }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-if="getActionDraft(action).manual_supplier_options.length" class="manual-quote-section">
+                      <div class="manual-quote-section-title">推荐供应商（参考，确认后可在任务详情中录入报价）</div>
+                      <div
+                        v-for="supplier in getActionDraft(action).manual_supplier_options"
+                        :key="`supplier-option-${supplier.value}`"
+                        class="manual-supplier-row"
+                      >
+                        <div class="manual-supplier-name">{{ supplier.label }}</div>
+                        <div class="manual-supplier-meta">
+                          <span v-if="supplier.avg_price !== null && supplier.avg_price !== undefined">历史均价：{{ supplier.avg_price }}</span>
+                          <span v-if="supplier.latest_price !== null && supplier.latest_price !== undefined">最新价：{{ supplier.latest_price }}</span>
+                          <span v-if="supplier.rating_score !== null && supplier.rating_score !== undefined">评分：{{ supplier.rating_score }}</span>
+                        </div>
+                        <div v-if="supplier.recommend_reason" class="manual-supplier-reason">{{ supplier.recommend_reason }}</div>
+                      </div>
+                    </div>
+                    <div class="pending-action-hint manual-quote-tip">
+                      确认后将创建手动比价任务（不发送询价单）。您可以在询价任务详情中录入供应商报价，再进行比价分析。
+                    </div>
+                  </div>
                   <el-button
                     class="pending-action-confirm-btn"
                     type="primary"
@@ -288,6 +345,7 @@ const getPendingActionButtonLabel = (action) => {
   const actionType = String(action?.action_type || '').trim()
   if (actionType === 'create_inquiry_draft') return '确认创建询价草稿'
   if (actionType === 'create_inquiry_from_selected_requests') return '确认创建询价任务'
+  if (actionType === 'save_manual_quotes') return '确认创建手动比价任务'
   if (actionType === 'confirm_award') return '确认中标'
   if (actionType === 'create_contract_draft') return '确认生成合同草稿'
   return '确认执行'
@@ -299,6 +357,7 @@ const getActionDraft = (action) => {
   if (!pendingActionDrafts.value[actionId]) {
     const preview = action?.preview || {}
     const recommendedSuppliers = Array.isArray(preview.recommended_suppliers) ? preview.recommended_suppliers : []
+    const supplierOptions = Array.isArray(preview.supplier_options) ? preview.supplier_options : []
     pendingActionDrafts.value[actionId] = {
       title: preview.title || preview.task_title || '',
       material_code: preview.material_code || '',
@@ -323,6 +382,18 @@ const getActionDraft = (action) => {
       qty_total: preview.qty_total ?? '',
       price_reference_text: formatPriceReference(preview.price_reference),
       risk_notes: Array.isArray(preview.risk_notes) ? preview.risk_notes.filter(Boolean).join('；') : '',
+      // 手动比价专用：物料明细和供应商候选
+      material_lines: Array.isArray(preview.material_lines) ? preview.material_lines : [],
+      manual_supplier_options: supplierOptions
+        .filter((item) => Number(item?.supplier_id) > 0)
+        .map((item) => ({
+          value: Number(item.supplier_id),
+          label: item.supplier_name || `供应商${item.supplier_id}`,
+          avg_price: item.avg_price,
+          latest_price: item.latest_price,
+          rating_score: item.rating_score,
+          recommend_reason: item.recommend_reason,
+        })),
     }
   }
   return pendingActionDrafts.value[actionId]
@@ -364,6 +435,11 @@ const buildActionOverrides = (action) => {
       target_price: draftModel.target_price === '' ? null : draftModel.target_price,
     }
   }
+  if (actionType === 'save_manual_quotes') {
+    return {
+      title: String(draftModel.title || '').trim(),
+    }
+  }
   return {}
 }
 
@@ -375,7 +451,9 @@ const currentPageContext = computed(() => {
     stored = {}
   }
   return {
+    page: stored.page || stored.route_name || '/agent/workspace',
     route_name: stored.route_name || '/agent/workspace',
+    flow_mode: stored.flow_mode ?? null,
     selected_request_ids: Array.isArray(stored.selected_request_ids) ? stored.selected_request_ids : [],
     selected_requests: Array.isArray(stored.selected_requests) ? stored.selected_requests : [],
     bill_no: stored.bill_no || '',
@@ -856,6 +934,92 @@ onMounted(async () => {
   line-height: 1.6;
   font-size: 13px;
   color: #5b6b82;
+}
+
+.manual-quote-section {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e3ecf7;
+}
+
+.manual-quote-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2b3a55;
+  margin-bottom: 8px;
+}
+
+.manual-quote-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.manual-quote-table-header,
+.manual-quote-table-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.4fr 1.2fr 0.8fr 1fr;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.manual-quote-table-header {
+  color: #6b7a90;
+  font-weight: 600;
+  padding: 4px 6px;
+  background: #f4f8fc;
+  border-radius: 6px;
+}
+
+.manual-quote-table-row {
+  padding: 4px 6px;
+  color: #3a4a63;
+  border-bottom: 1px dashed #e6eef7;
+}
+
+.manual-quote-table-row:last-child {
+  border-bottom: none;
+}
+
+.manual-supplier-row {
+  padding: 8px 6px;
+  border-bottom: 1px dashed #e6eef7;
+}
+
+.manual-supplier-row:last-child {
+  border-bottom: none;
+}
+
+.manual-supplier-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2b3a55;
+}
+
+.manual-supplier-meta {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: #6b7a90;
+}
+
+.manual-supplier-reason {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8a97aa;
+}
+
+.manual-quote-tip {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fff8e6;
+  border: 1px solid #f3e2b3;
+  border-radius: 8px;
+  color: #8a6d2b;
 }
 
 .loading-bubble {

@@ -23,13 +23,14 @@ from models import (
     TaskStatus,
     User,
 )
-from procurement_agent.risk_checker import recommend_suppliers_for_inquiry
+from procurement_agent.risk_checker import analyze_quotation_compare, recommend_suppliers_for_inquiry
 from routers.inquiry import (
     _get_task_activated_status,
     _send_task_invitation_notifications_background,
     close_inquiry_task,
 )
 from routers.system import log_operation
+from schemas import TaskCloseAllocation, TaskClosePayload
 
 
 def _require_procurement_roles(user: User) -> None:
@@ -100,6 +101,82 @@ def _coerce_optional_float(value: Any) -> float | None:
         raise HTTPException(status_code=400, detail="Invalid numeric value in payload overrides")
 
 
+def _normalize_award_allocations(raw_allocations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen_link_ids: set[int] = set()
+    ratio_total = 0.0
+    for row in raw_allocations or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            link_id = int(row.get("link_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if link_id <= 0 or link_id in seen_link_ids:
+            continue
+        ratio = _coerce_optional_float(row.get("allocated_ratio"))
+        if ratio is None:
+            raise HTTPException(status_code=400, detail="allocated_ratio is required for manual compare allocations")
+        if ratio <= 0:
+            raise HTTPException(status_code=400, detail="allocated_ratio must be greater than 0")
+        seen_link_ids.add(link_id)
+        ratio_total += float(ratio)
+        normalized.append({
+            "link_id": link_id,
+            "allocated_ratio": float(ratio),
+        })
+    if not normalized:
+        raise HTTPException(status_code=400, detail="allocations is required")
+    if abs(ratio_total - 100.0) > 1e-6:
+        raise HTTPException(status_code=400, detail="份额比例合计必须等于 100%")
+    return normalized
+
+
+def _normalize_manual_quote_entries(raw_entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized_entries: list[dict[str, Any]] = []
+    for row in raw_entries or []:
+        if not isinstance(row, dict):
+            continue
+
+        material_code = str(row.get("material_code") or "").strip()
+        request_id = row.get("request_id")
+        erp_request_id = str(row.get("erp_request_id") or "").strip()
+        suppliers_payload = row.get("suppliers") or []
+        if not material_code and request_id in (None, "") and not erp_request_id:
+            continue
+
+        normalized_suppliers: list[dict[str, Any]] = []
+        for supplier_row in suppliers_payload:
+            if not isinstance(supplier_row, dict):
+                continue
+            supplier_name = str(supplier_row.get("supplier_name") or "").strip()
+            supplier_code = str(supplier_row.get("supplier_code") or "").strip()
+            supplier_id = supplier_row.get("supplier_id")
+            price = _coerce_optional_float(supplier_row.get("price"))
+            qty = _coerce_optional_float(supplier_row.get("qty"))
+            if price is None or price <= 0 or qty is None or qty <= 0:
+                continue
+            normalized_suppliers.append({
+                "supplier_id": int(supplier_id) if supplier_id not in (None, "") else None,
+                "supplier_code": supplier_code,
+                "supplier_name": supplier_name or supplier_code or "未命名供应商",
+                "price": float(price),
+                "qty": float(qty),
+                "delivery_date": str(supplier_row.get("delivery_date") or "").strip() or None,
+            })
+
+        if not normalized_suppliers:
+            continue
+
+        normalized_entries.append({
+            "request_id": int(request_id) if request_id not in (None, "") else None,
+            "erp_request_id": erp_request_id or None,
+            "material_code": material_code,
+            "suppliers": normalized_suppliers,
+        })
+    return normalized_entries
+
+
 def _apply_payload_overrides(action_type: str, payload: dict[str, Any], payload_overrides: dict[str, Any] | None) -> dict[str, Any]:
     if not payload_overrides:
         return payload
@@ -132,11 +209,28 @@ def _apply_payload_overrides(action_type: str, payload: dict[str, Any], payload_
             merged_payload["supplier_ids"] = _normalize_supplier_ids(overrides.get("supplier_ids"))
         if "target_price" in overrides:
             merged_payload["target_price"] = _coerce_optional_float(overrides.get("target_price"))
+        if "execution_mode" in overrides:
+            execution_mode = str(overrides.get("execution_mode") or "").strip()
+            if execution_mode not in {"send_now", "draft_only"}:
+                raise HTTPException(status_code=400, detail="execution_mode must be send_now or draft_only")
+            merged_payload["execution_mode"] = execution_mode
         return merged_payload
 
     if action_type == "create_contract_draft":
         if "template_id" in overrides:
             merged_payload["template_id"] = int(overrides.get("template_id")) if overrides.get("template_id") not in (None, "") else None
+        return merged_payload
+
+    if action_type == "save_manual_quotes":
+        if "title" in overrides:
+            merged_payload["title"] = str(overrides.get("title") or "").strip() or merged_payload.get("title")
+        if "manual_quote_entries" in overrides:
+            merged_payload["manual_quote_entries"] = _normalize_manual_quote_entries(overrides.get("manual_quote_entries"))
+        return merged_payload
+
+    if action_type == "confirm_award":
+        if "allocations" in overrides:
+            merged_payload["allocations"] = _normalize_award_allocations(overrides.get("allocations"))
         return merged_payload
 
     return merged_payload
@@ -298,6 +392,7 @@ def create_inquiry_from_selected_requests(
         "selected_requests": normalized_rows,
         "deadline": str(deadline or "").strip() or None,
         "supplier_ids": supplier_ids,
+        "execution_mode": "send_now",
         "title": draft_title,
         "type": "auto",
         "price_reference": (recommendation or {}).get("price_reference") or {},
@@ -310,6 +405,7 @@ def create_inquiry_from_selected_requests(
         "request_count": request_count,
         "selected_line_count": len(normalized_rows),
         "material_item_count": material_item_count,
+        "recommended_supplier_count": len(supplier_ids),
         "bill_nos": [row.get("bill_no") for row in normalized_rows[:5] if row.get("bill_no")],
         "material_names": [row.get("material_name") for row in normalized_rows[:5] if row.get("material_name")],
         "material_codes": [
@@ -332,6 +428,8 @@ def create_inquiry_from_selected_requests(
         "recommendation_material_code": recommendation_material_code or None,
         "status": "ai_draft",
         "existing_request_count": len(existing_requests),
+        "plan_mode": "auto_inquiry",
+        "expected_operation": "确认后将创建询价任务，并给供应商发送询价单",
     }
     pending_action = _create_pending_action(db, user, "create_inquiry_from_selected_requests", payload, preview)
 
@@ -355,7 +453,145 @@ def create_inquiry_from_selected_requests(
         "action_type": "create_inquiry_from_selected_requests",
         "status": "pending_confirmation",
         "preview": preview,
-        "message": "已生成基于勾选采购申请的询价草稿，确认后将创建 ai_draft 询价任务。",
+        "message": "自动询价方案已生成，您可以确认发送询价单，或仅保存为草稿。",
+    }
+
+
+def save_manual_quotes(
+    db: Session,
+    user: User,
+    request_ids: list[Any],
+    selected_requests: list[dict[str, Any]] | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """手动比价模式：基于勾选采购申请生成手动询价任务草稿，并创建待确认的报价录入动作。
+
+    与 auto_inquiry 的区别：
+    - 不发送询价单给供应商
+    - type=manual，status=ai_draft
+    - 待确认动作类型为 save_manual_quotes，前端展示报价录入卡片
+    - 确认后创建 InquirySupplier 链接（status=draft），等待采购员录入 Quotation
+    """
+    _require_procurement_roles(user)
+    normalized_rows = _normalize_selected_request_rows(selected_requests)
+    normalized_request_ids = [str(item).strip() for item in (request_ids or []) if str(item).strip()]
+    if not normalized_request_ids and not normalized_rows:
+        raise HTTPException(status_code=400, detail="request_ids is required")
+
+    existing_requests, _request_map = _find_existing_requests(db, normalized_request_ids, normalized_rows)
+
+    # 推荐供应商（仅作为参考，不发送询价单）
+    recommendation = None
+    recommendation_material_code, recommendation_qty, recommendation_delivery_date = _pick_recommendation_basis(normalized_rows)
+    if recommendation_material_code and recommendation_qty > 0:
+        try:
+            recommendation = recommend_suppliers_for_inquiry(
+                db=db,
+                user=user,
+                material_code=recommendation_material_code,
+                qty=recommendation_qty,
+                delivery_date=recommendation_delivery_date,
+                limit=5,
+            )
+        except HTTPException:
+            recommendation = None
+
+    preview_source = existing_requests[0] if existing_requests else None
+    preview_material_name = (
+        (preview_source.material_name if preview_source else "")
+        or str((normalized_rows[0] or {}).get("material_name") if normalized_rows else "")
+        or "已勾选采购申请"
+    )
+    request_count = len(normalized_rows)
+    material_item_count = _count_unique_material_items(normalized_rows)
+    draft_title = str(title or f"手动比价任务-{preview_material_name}-{datetime.now().strftime('%m%d%H%M')}").strip()
+    target_price = ((recommendation or {}).get("price_reference") or {}).get("avg_price")
+
+    # 构造物料明细（供前端报价录入卡片展示）
+    material_lines: list[dict[str, Any]] = []
+    for row in normalized_rows:
+        material_lines.append({
+            "erp_request_id": row.get("erp_request_id"),
+            "bill_no": row.get("bill_no"),
+            "material_code": row.get("material_code"),
+            "material_name": row.get("material_name"),
+            "material_model": row.get("material_model"),
+            "qty": row.get("qty"),
+            "delivery_date": row.get("delivery_date"),
+            "target_price": row.get("target_price"),
+        })
+
+    # 推荐供应商列表（供前端选择）
+    recommended_suppliers = (recommendation or {}).get("recommended_suppliers") or []
+    supplier_options = [
+        {
+            "supplier_id": item.get("supplier_id"),
+            "supplier_name": item.get("supplier_name"),
+            "supplier_code": item.get("supplier_code"),
+            "avg_price": item.get("avg_price"),
+            "latest_price": item.get("latest_price"),
+            "rating_score": item.get("rating_score"),
+            "recommend_reason": item.get("recommend_reason"),
+        }
+        for item in recommended_suppliers
+        if item.get("supplier_id")
+    ]
+
+    payload = {
+        "request_ids": normalized_request_ids,
+        "selected_requests": normalized_rows,
+        "title": draft_title,
+        "type": "manual",
+        "price_reference": (recommendation or {}).get("price_reference") or {},
+        "recommended_suppliers": recommended_suppliers,
+        "recommendation_material_code": recommendation_material_code or None,
+        "target_price": target_price,
+    }
+    preview = {
+        "title": draft_title,
+        "request_count": request_count,
+        "selected_line_count": len(normalized_rows),
+        "material_item_count": material_item_count,
+        "bill_nos": [row.get("bill_no") for row in normalized_rows[:5] if row.get("bill_no")],
+        "material_names": [row.get("material_name") for row in normalized_rows[:5] if row.get("material_name")],
+        "material_codes": [
+            row.material_code for row in existing_requests[:5] if getattr(row, "material_code", None)
+        ] or [row.get("material_code") for row in normalized_rows[:5] if row.get("material_code")],
+        "material_models": [row.get("material_model") for row in normalized_rows[:5] if row.get("material_model")],
+        "qty_total": round(sum(float(row.get("qty") or 0) for row in normalized_rows), 4) if normalized_rows else None,
+        "delivery_dates": [row.get("delivery_date") for row in normalized_rows[:5] if row.get("delivery_date")],
+        "material_lines": material_lines,
+        "supplier_options": supplier_options,
+        "price_reference": (recommendation or {}).get("price_reference") or {},
+        "target_price_suggestion": target_price,
+        "risk_notes": (recommendation or {}).get("risk_notes") or [],
+        "status": "ai_draft",
+        "plan_mode": "manual_compare",
+        "expected_operation": "确认后将创建手动比价任务，您可以录入供应商报价后进行比价分析",
+    }
+    pending_action = _create_pending_action(db, user, "save_manual_quotes", payload, preview)
+
+    log_operation(
+        db,
+        user.id,
+        "AGENT_SAVE_MANUAL_QUOTES",
+        f"AI 生成手动比价任务待确认: {draft_title}",
+        module="采购智能体",
+        target_type="手动比价任务",
+        target_name=draft_title,
+        result="success",
+        extra_data={
+            "pending_action_id": pending_action.id,
+            "request_ids": normalized_request_ids,
+            "selected_request_count": len(normalized_rows),
+        },
+    )
+    return {
+        "pending_action_id": pending_action.id,
+        "action_type": "save_manual_quotes",
+        "status": "pending_confirmation",
+        "preview": preview,
+        "message": "手动比价方案已生成，确认后创建手动比价任务，您可以录入供应商报价。",
     }
 
 
@@ -530,6 +766,8 @@ def create_contract_draft_from_award(
     for quote in quotes:
         latest_by_item.setdefault(int(quote.item_id), quote)
     effective_quotes = list(latest_by_item.values())
+    if task.type == "auto" and not effective_quotes:
+        raise HTTPException(status_code=400, detail="Automatic inquiry has no supplier quotations yet, contract draft cannot be generated")
     total_amount = round(sum(float(item.qty or 0) * float(item.price or 0) for item in effective_quotes), 2)
     payload = {
         "task_id": task.id,
@@ -691,6 +929,9 @@ def _confirm_create_inquiry_draft(db: Session, user: User, payload: dict[str, An
 
 def _confirm_create_inquiry_from_selected_requests(db: Session, user: User, payload: dict[str, Any]) -> dict[str, Any]:
     supplier_ids = _normalize_supplier_ids(payload.get("supplier_ids"))
+    execution_mode = str(payload.get("execution_mode") or "draft_only").strip() or "draft_only"
+    if execution_mode not in {"send_now", "draft_only"}:
+        raise HTTPException(status_code=400, detail="Invalid execution_mode")
     deadline_dt = _parse_delivery_date(payload.get("deadline"))
     selected_rows = _normalize_selected_request_rows(payload.get("selected_requests"))
     _existing_rows, request_map = _find_existing_requests(db, payload.get("request_ids"), selected_rows)
@@ -793,13 +1034,371 @@ def _confirm_create_inquiry_from_selected_requests(db: Session, user: User, payl
 
     db.commit()
     db.refresh(task)
-    return {
+    result = {
         "task_id": task.id,
         "status": task.status,
         "title": task.title,
         "request_count": len(request_records),
         "supplier_count": len(supplier_ids),
     }
+    if execution_mode == "send_now":
+        publish_result = _publish_inquiry_task_core(db, task, supplier_ids)
+        result.update({
+            "status": publish_result.get("status"),
+            "published": True,
+            "publish_result": publish_result,
+        })
+    else:
+        result["published"] = False
+    return result
+
+
+def _resolve_task_item_for_manual_quote(
+    task_items: list[InquiryTaskItem],
+    entry: dict[str, Any],
+) -> InquiryTaskItem | None:
+    request_id = entry.get("request_id")
+    erp_request_id = str(entry.get("erp_request_id") or "").strip()
+    material_code = str(entry.get("material_code") or "").strip()
+
+    for item in task_items:
+        request = item.request
+        if not request:
+            continue
+        if request_id not in (None, "") and int(request.id) == int(request_id):
+            return item
+        if erp_request_id and str(request.erp_request_id or "").strip() == erp_request_id:
+            return item
+    for item in task_items:
+        request = item.request
+        if request and material_code and str(request.material_code or "").strip() == material_code:
+            return item
+    return None
+
+
+def _upsert_manual_quotes_for_task(
+    db: Session,
+    task: InquiryTask,
+    quote_entries: list[dict[str, Any]],
+) -> int:
+    if not quote_entries:
+        return 0
+
+    task_items = list(task.items or [])
+    saved_quote_count = 0
+    for entry in quote_entries:
+        item = _resolve_task_item_for_manual_quote(task_items, entry)
+        if not item:
+            continue
+
+        for supplier_row in entry.get("suppliers") or []:
+            supplier = None
+            supplier_id = supplier_row.get("supplier_id")
+            if supplier_id not in (None, ""):
+                supplier = db.query(Supplier).filter(Supplier.id == int(supplier_id)).first()
+            if supplier is None and supplier_row.get("supplier_code"):
+                supplier = db.query(Supplier).filter(Supplier.code == supplier_row["supplier_code"]).first()
+            if supplier is None and supplier_row.get("supplier_name"):
+                supplier = db.query(Supplier).filter(Supplier.name == supplier_row["supplier_name"]).first()
+            if supplier is None:
+                supplier = Supplier(
+                    code=str(supplier_row.get("supplier_code") or "").strip() or None,
+                    name=str(supplier_row.get("supplier_name") or "").strip() or "未命名供应商",
+                )
+                db.add(supplier)
+                db.flush()
+
+            link = db.query(InquirySupplier).filter(
+                InquirySupplier.task_id == task.id,
+                InquirySupplier.supplier_id == supplier.id,
+            ).first()
+            if not link:
+                link = InquirySupplier(task_id=task.id, supplier_id=supplier.id, status=LinkStatus.QUOTED)
+                db.add(link)
+                db.flush()
+            else:
+                link.status = LinkStatus.QUOTED
+
+            target_round = int(link.current_round or 1)
+            quote = db.query(Quotation).filter(
+                Quotation.inquiry_supplier_id == link.id,
+                Quotation.item_id == item.id,
+                Quotation.round == target_round,
+            ).first()
+            if not quote:
+                quote = Quotation(
+                    inquiry_supplier_id=link.id,
+                    item_id=item.id,
+                    round=target_round,
+                    price=float(supplier_row["price"]),
+                    qty=float(supplier_row["qty"]),
+                )
+                db.add(quote)
+            else:
+                quote.price = float(supplier_row["price"])
+                quote.qty = float(supplier_row["qty"])
+
+            delivery_date = supplier_row.get("delivery_date")
+            if delivery_date:
+                quote.delivery_date = _parse_delivery_date(delivery_date)
+            saved_quote_count += 1
+    return saved_quote_count
+
+
+def _confirm_save_manual_quotes(db: Session, user: User, payload: dict[str, Any]) -> dict[str, Any]:
+    """确认手动比价任务：创建 type=manual 的 InquiryTask（不发送询价单）。
+
+    与 auto_inquiry 的区别：
+    - execution_mode 始终为 draft_only，不调用 _publish_inquiry_task_core
+    - 不创建 InquirySupplier 链接（等待采购员录入报价时再创建）
+    - 任务状态为 ai_draft，等待采购员录入报价后调用 analyze_quotation_compare
+    """
+    selected_rows = _normalize_selected_request_rows(payload.get("selected_requests"))
+    _existing_rows, request_map = _find_existing_requests(db, payload.get("request_ids"), selected_rows)
+
+    request_records: list[InquiryRequest] = []
+    seen_request_ids: set[int] = set()
+
+    for row in selected_rows:
+        request = None
+        row_id = row.get("id")
+        if row_id is not None:
+            request = request_map.get(str(row_id))
+        if request is None:
+            request = request_map.get(str(row.get("erp_request_id") or "").strip())
+
+        delivery_dt = _parse_delivery_date(row.get("delivery_date"))
+        if request is None:
+            request = InquiryRequest(
+                erp_request_id=str(row.get("erp_request_id") or "").strip(),
+                bill_no=str(row.get("bill_no") or "").strip() or None,
+                project_info=row.get("project_info") or {},
+                material_code=str(row.get("material_code") or "").strip(),
+                material_name=str(row.get("material_name") or "").strip(),
+                material_model=str(row.get("material_model") or "").strip() or None,
+                price_unit_name=str(row.get("price_unit_name") or "").strip() or None,
+                qty=float(row.get("qty") or 0),
+                target_price=row.get("target_price"),
+                delivery_date=delivery_dt,
+                status=InquiryStatus.IN_PROCESS,
+            )
+            db.add(request)
+            db.flush()
+            request_map[str(request.id)] = request
+            if request.erp_request_id:
+                request_map[str(request.erp_request_id)] = request
+        else:
+            request.status = InquiryStatus.IN_PROCESS
+            effective_target_price = row.get("target_price")
+            if effective_target_price is None:
+                effective_target_price = payload.get("target_price")
+            if effective_target_price is not None:
+                request.target_price = effective_target_price
+            if row.get("qty") is not None:
+                request.qty = float(row.get("qty") or 0)
+            if row.get("material_model"):
+                request.material_model = str(row.get("material_model") or "").strip()
+            if row.get("price_unit_name"):
+                request.price_unit_name = str(row.get("price_unit_name") or "").strip()
+            if delivery_dt:
+                request.delivery_date = delivery_dt
+
+        if request.id not in seen_request_ids:
+            seen_request_ids.add(request.id)
+            request_records.append(request)
+
+    for raw_request_id in payload.get("request_ids") or []:
+        request = request_map.get(str(raw_request_id).strip())
+        if not request:
+            continue
+        request.status = InquiryStatus.IN_PROCESS
+        if request.target_price is None and payload.get("target_price") is not None:
+            request.target_price = payload.get("target_price")
+        if request.id not in seen_request_ids:
+            seen_request_ids.add(request.id)
+            request_records.append(request)
+
+    if not request_records:
+        raise HTTPException(status_code=400, detail="No valid selected requests were found")
+
+    title = str(payload.get("title") or f"手动比价任务-{datetime.now().strftime('%m%d%H%M')}").strip()
+    strategy_config = {
+        "source": "procurement_agent",
+        "plan_mode": "manual_compare",
+        "selected_request_ids": [request.id for request in request_records],
+        "selected_erp_request_ids": [request.erp_request_id for request in request_records if request.erp_request_id],
+        "price_reference": payload.get("price_reference") or {},
+        "recommended_suppliers": payload.get("recommended_suppliers") or [],
+        "recommendation_material_code": payload.get("recommendation_material_code"),
+    }
+    task = InquiryTask(
+        title=title,
+        type="manual",
+        strategy_config=strategy_config,
+        deadline=None,
+        status=TaskStatus.AI_DRAFT,
+        buyer_id=user.id,
+        created_by=user.id,
+    )
+    db.add(task)
+    db.flush()
+
+    for request in request_records:
+        db.add(InquiryTaskItem(task_id=task.id, request_id=request.id))
+
+    db.commit()
+    db.refresh(task)
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "title": task.title,
+        "type": task.type,
+        "request_count": len(request_records),
+        "published": False,
+        "message": "手动比价任务已创建，请录入供应商报价后进行比价分析。",
+    }
+
+
+def _confirm_save_manual_quotes_v2(db: Session, user: User, payload: dict[str, Any]) -> dict[str, Any]:
+    selected_rows = _normalize_selected_request_rows(payload.get("selected_requests"))
+    _existing_rows, request_map = _find_existing_requests(db, payload.get("request_ids"), selected_rows)
+
+    request_records: list[InquiryRequest] = []
+    seen_request_ids: set[int] = set()
+
+    for row in selected_rows:
+        request = None
+        row_id = row.get("id")
+        if row_id is not None:
+            request = request_map.get(str(row_id))
+        if request is None:
+            request = request_map.get(str(row.get("erp_request_id") or "").strip())
+
+        delivery_dt = _parse_delivery_date(row.get("delivery_date"))
+        if request is None:
+            request = InquiryRequest(
+                erp_request_id=str(row.get("erp_request_id") or "").strip(),
+                bill_no=str(row.get("bill_no") or "").strip() or None,
+                project_info=row.get("project_info") or {},
+                material_code=str(row.get("material_code") or "").strip(),
+                material_name=str(row.get("material_name") or "").strip(),
+                material_model=str(row.get("material_model") or "").strip() or None,
+                price_unit_name=str(row.get("price_unit_name") or "").strip() or None,
+                qty=float(row.get("qty") or 0),
+                target_price=row.get("target_price"),
+                delivery_date=delivery_dt,
+                status=InquiryStatus.IN_PROCESS,
+            )
+            db.add(request)
+            db.flush()
+            request_map[str(request.id)] = request
+            if request.erp_request_id:
+                request_map[str(request.erp_request_id)] = request
+        else:
+            request.status = InquiryStatus.IN_PROCESS
+            effective_target_price = row.get("target_price")
+            if effective_target_price is None:
+                effective_target_price = payload.get("target_price")
+            if effective_target_price is not None:
+                request.target_price = effective_target_price
+            if row.get("qty") is not None:
+                request.qty = float(row.get("qty") or 0)
+            if row.get("material_model"):
+                request.material_model = str(row.get("material_model") or "").strip()
+            if row.get("price_unit_name"):
+                request.price_unit_name = str(row.get("price_unit_name") or "").strip()
+            if delivery_dt:
+                request.delivery_date = delivery_dt
+
+        if request.id not in seen_request_ids:
+            seen_request_ids.add(request.id)
+            request_records.append(request)
+
+    for raw_request_id in payload.get("request_ids") or []:
+        request = request_map.get(str(raw_request_id).strip())
+        if not request:
+            continue
+        request.status = InquiryStatus.IN_PROCESS
+        if request.target_price is None and payload.get("target_price") is not None:
+            request.target_price = payload.get("target_price")
+        if request.id not in seen_request_ids:
+            seen_request_ids.add(request.id)
+            request_records.append(request)
+
+    if not request_records:
+        raise HTTPException(status_code=400, detail="No valid selected requests were found")
+
+    title = str(payload.get("title") or f"手动比价任务-{datetime.now().strftime('%m%d%H%M')}").strip()
+    strategy_config = {
+        "source": "procurement_agent",
+        "plan_mode": "manual_compare",
+        "selected_request_ids": [request.id for request in request_records],
+        "selected_erp_request_ids": [request.erp_request_id for request in request_records if request.erp_request_id],
+        "price_reference": payload.get("price_reference") or {},
+        "recommended_suppliers": payload.get("recommended_suppliers") or [],
+        "recommendation_material_code": payload.get("recommendation_material_code"),
+    }
+    task = InquiryTask(
+        title=title,
+        type="manual",
+        strategy_config=strategy_config,
+        deadline=None,
+        status=TaskStatus.AI_DRAFT,
+        buyer_id=user.id,
+        created_by=user.id,
+    )
+    db.add(task)
+    db.flush()
+
+    for request in request_records:
+        db.add(InquiryTaskItem(task_id=task.id, request_id=request.id))
+
+    quote_entries = _normalize_manual_quote_entries(payload.get("manual_quote_entries"))
+    db.commit()
+    db.refresh(task)
+
+    result = {
+        "task_id": task.id,
+        "status": task.status,
+        "title": task.title,
+        "type": task.type,
+        "request_count": len(request_records),
+        "published": False,
+        "message": "手动比价任务已创建，请录入供应商报价后进行比价分析。",
+    }
+    if not quote_entries:
+        return result
+
+    saved_quote_count = _upsert_manual_quotes_for_task(db, task, quote_entries)
+    db.commit()
+    db.refresh(task)
+
+    compare_result = analyze_quotation_compare(
+        db=db,
+        user=user,
+        inquiry_id=task.id,
+        request_ids=None,
+        selected_requests=None,
+        limit=5,
+    )
+    result.update({
+        "saved_quote_count": saved_quote_count,
+        "quote_entry_count": len(quote_entries),
+        "compare_result": compare_result,
+        "message": (
+            "已创建手动比价任务并保存报价，系统已生成份额分配建议。"
+            if compare_result.get("pending_action_id")
+            else (compare_result.get("message") or "已创建手动比价任务并保存报价。")
+        ),
+    })
+    if compare_result.get("pending_action_id"):
+        result["next_pending_action"] = {
+            "pending_action_id": compare_result.get("pending_action_id"),
+            "action_type": compare_result.get("action_type"),
+            "preview": compare_result.get("preview"),
+            "message": compare_result.get("message"),
+        }
+    return result
 
 
 def _confirm_create_contract_draft(db: Session, user: User, payload: dict[str, Any]) -> dict[str, Any]:
@@ -825,6 +1424,51 @@ def _confirm_create_contract_draft(db: Session, user: User, payload: dict[str, A
     return {"contract_id": contract.id, "status": contract.status, "task_id": task.id}
 
 
+def _publish_inquiry_task_core(db: Session, task: InquiryTask, supplier_ids: list[int]) -> dict[str, Any]:
+    normalized_supplier_ids = _normalize_supplier_ids(supplier_ids)
+    if not normalized_supplier_ids:
+        normalized_supplier_ids = _normalize_supplier_ids([
+            link.supplier_id
+            for link in db.query(InquirySupplier).filter(InquirySupplier.task_id == task.id).all()
+        ])
+    if not normalized_supplier_ids:
+        raise HTTPException(status_code=400, detail="No suppliers are associated with this inquiry task")
+
+    existing_links = {
+        int(link.supplier_id): link
+        for link in db.query(InquirySupplier).filter(InquirySupplier.task_id == task.id).all()
+        if link.supplier_id is not None
+    }
+    for supplier_id in normalized_supplier_ids:
+        if supplier_id in existing_links:
+            existing_links[supplier_id].status = LinkStatus.SENT
+            continue
+        supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+        if not supplier:
+            continue
+        db.add(InquirySupplier(task_id=task.id, supplier_id=supplier.id, status=LinkStatus.SENT))
+
+    strategy_config = dict(task.strategy_config or {})
+    strategy_config["pending_supplier_ids"] = normalized_supplier_ids
+    strategy_config["published_via_agent"] = True
+    strategy_config["published_at"] = datetime.now().isoformat()
+    task.strategy_config = strategy_config
+    task.status = _get_task_activated_status(task)
+
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    _send_task_invitation_notifications_background(task.id, normalized_supplier_ids)
+    return {
+        "task_id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "supplier_count": len(normalized_supplier_ids),
+        "notified_supplier_ids": normalized_supplier_ids,
+    }
+
+
 def _confirm_publish_inquiry_task(db: Session, user: User, payload: dict[str, Any]) -> dict[str, Any]:
     task_id = int(payload.get("task_id") or 0)
     task = db.query(InquiryTask).filter(InquiryTask.id == task_id).first()
@@ -835,49 +1479,7 @@ def _confirm_publish_inquiry_task(db: Session, user: User, payload: dict[str, An
     if task.status != TaskStatus.AI_DRAFT:
         raise HTTPException(status_code=400, detail="Only ai_draft inquiry tasks can be published")
 
-    supplier_ids = _normalize_supplier_ids(payload.get("supplier_ids"))
-    if not supplier_ids:
-        supplier_ids = _normalize_supplier_ids([
-            link.supplier_id
-            for link in db.query(InquirySupplier).filter(InquirySupplier.task_id == task.id).all()
-        ])
-    if not supplier_ids:
-        raise HTTPException(status_code=400, detail="No suppliers are associated with this inquiry task")
-
-    existing_links = {
-        int(link.supplier_id): link
-        for link in db.query(InquirySupplier).filter(InquirySupplier.task_id == task.id).all()
-        if link.supplier_id is not None
-    }
-    for supplier_id in supplier_ids:
-        if supplier_id in existing_links:
-            existing_links[supplier_id].status = LinkStatus.SENT
-            continue
-        supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
-        if not supplier:
-            continue
-        db.add(InquirySupplier(task_id=task.id, supplier_id=supplier.id, status=LinkStatus.SENT))
-
-    strategy_config = dict(task.strategy_config or {})
-    strategy_config["pending_supplier_ids"] = supplier_ids
-    strategy_config["published_via_agent"] = True
-    strategy_config["published_at"] = datetime.now().isoformat()
-    task.strategy_config = strategy_config
-    task.status = _get_task_activated_status(task)
-
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-
-    _send_task_invitation_notifications_background(task.id, supplier_ids)
-
-    return {
-        "task_id": task.id,
-        "title": task.title,
-        "status": task.status,
-        "supplier_count": len(supplier_ids),
-        "notified_supplier_ids": supplier_ids,
-    }
+    return _publish_inquiry_task_core(db, task, _normalize_supplier_ids(payload.get("supplier_ids")))
 
 
 def confirm_pending_action(
@@ -903,16 +1505,48 @@ def confirm_pending_action(
         result = _confirm_create_inquiry_draft(db, user, payload)
     elif action.action_type == "create_inquiry_from_selected_requests":
         result = _confirm_create_inquiry_from_selected_requests(db, user, payload)
+    elif action.action_type == "save_manual_quotes":
+        result = _confirm_save_manual_quotes_v2(db, user, payload)
     elif action.action_type == "publish_inquiry_task":
         result = _confirm_publish_inquiry_task(db, user, payload)
     elif action.action_type == "confirm_award":
+        allocations = payload.get("allocations") or []
+        close_payload = None
+        selected_link_id = payload.get("selected_link_id")
+        normalized_allocations = []
+        if allocations:
+            normalized_allocations = _normalize_award_allocations(allocations)
+            close_payload = TaskClosePayload(
+                allocations=[
+                    TaskCloseAllocation(
+                        link_id=int(row["link_id"]),
+                        allocated_ratio=float(row["allocated_ratio"]),
+                        allocated_qty=None,
+                        item_allocations=None,
+                    )
+                    for row in normalized_allocations
+                ]
+            )
+            selected_link_id = None
         result = close_inquiry_task(
             task_id=int(payload.get("task_id")),
-            payload=None,
-            selected_link_id=int(payload.get("selected_link_id")),
+            payload=close_payload,
+            selected_link_id=int(selected_link_id) if selected_link_id not in (None, "") else None,
             db=db,
             current_user=user,
         )
+        if normalized_allocations:
+            contract_rows = (
+                db.query(Contract)
+                .join(InquirySupplier, InquirySupplier.id == Contract.inquiry_supplier_id)
+                .filter(
+                    Contract.task_id == int(payload.get("task_id")),
+                    InquirySupplier.id.in_([row["link_id"] for row in normalized_allocations]),
+                )
+                .all()
+            )
+            result["contract_count"] = len(contract_rows)
+            result["contract_ids"] = [row.id for row in contract_rows]
     elif action.action_type == "create_contract_draft":
         result = _confirm_create_contract_draft(db, user, payload)
     else:

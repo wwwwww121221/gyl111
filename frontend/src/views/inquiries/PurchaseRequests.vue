@@ -612,11 +612,22 @@ const aggregateSelectedRequests = (rows = []) => {
 
 const aggregatedSelectedRequests = computed(() => aggregateSelectedRequests(selectedRequests.value))
 
+const readStoredAgentPageContext = () => {
+  try {
+    return JSON.parse(sessionStorage.getItem(AGENT_CONTEXT_SESSION_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
 const syncAgentPageContext = (rows = []) => {
   const normalizedRows = normalizeSelectedRequestsForAgent(aggregateSelectedRequests(rows))
   const activeRow = normalizedRows.length ? normalizedRows[normalizedRows.length - 1] : {}
+  const existingContext = readStoredAgentPageContext()
   try {
-    sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify({
+    const nextContext = {
+      page: '采购申请列表',
+      flow_mode: existingContext.flow_mode ?? null,
       route_name: '采购申请列表',
       selected_request_ids: normalizedRows
         .map((row) => row.id || row.erp_request_id)
@@ -634,7 +645,9 @@ const syncAgentPageContext = (rows = []) => {
       supplier_name: '',
       inquiry_id: '',
       contract_id: '',
-    }))
+    }
+    sessionStorage.setItem(AGENT_CONTEXT_SESSION_KEY, JSON.stringify(nextContext))
+    window.dispatchEvent(new CustomEvent('procurement-agent-context-updated', { detail: nextContext }))
   } catch {
     // ignore browser storage failures
   }
@@ -1583,6 +1596,7 @@ const getRemarkLines = (row) => buildUniqueLines([
 
 onMounted(() => {
   loadRequestTableColumnWidths()
+  syncAgentPageContext(selectedRequests.value)
   handleSyncErp(false, { silent: true })
   window.addEventListener('procurement-agent-action-confirmed', handleAgentActionConfirmed)
 })

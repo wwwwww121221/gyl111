@@ -20,6 +20,7 @@ from procurement_agent.write_tools import (
     create_inquiry_draft,
     generate_inquiry_message,
     publish_inquiry_task,
+    save_manual_quotes,
 )
 
 
@@ -102,6 +103,12 @@ class CreateInquiryFromSelectedRequestsInput(BaseModel):
     selected_requests: list[dict[str, Any]] | None = Field(default=None, description="Optional selected request rows from page context.")
 
 
+class SaveManualQuotesInput(BaseModel):
+    request_ids: list[str | int] = Field(..., min_length=1, description="Selected purchase request ids or ERP request ids.")
+    selected_requests: list[dict[str, Any]] | None = Field(default=None, description="Optional selected request rows from page context.")
+    title: str | None = Field(default=None, description="Optional manual compare task title.")
+
+
 class GenerateInquiryMessageInput(BaseModel):
     material_code: str = Field(..., description="Exact material code.")
     qty: float = Field(..., gt=0, description="Requested quantity.")
@@ -110,7 +117,9 @@ class GenerateInquiryMessageInput(BaseModel):
 
 
 class AnalyzeQuotationCompareInput(BaseModel):
-    inquiry_id: int = Field(..., gt=0, description="Inquiry task id.")
+    inquiry_id: int | None = Field(default=None, gt=0, description="Inquiry task id.")
+    request_ids: list[str | int] | None = Field(default=None, description="Selected purchase request ids or ERP request ids.")
+    selected_requests: list[dict[str, Any]] | None = Field(default=None, description="Optional selected request rows from page context.")
     limit: int = Field(default=5, ge=1, le=10, description="Maximum supplier rows to analyze.")
 
 
@@ -590,11 +599,20 @@ def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
     ) -> dict[str, Any]:
         return generate_inquiry_message(db, user, material_code, qty, delivery_date, supplier_names)
 
+    def _save_manual_quotes(
+        request_ids: list[str | int],
+        selected_requests: list[dict[str, Any]] | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        return save_manual_quotes(db, user, request_ids, selected_requests, title)
+
     def _analyze_quotation_compare(
-        inquiry_id: int,
+        inquiry_id: int | None = None,
+        request_ids: list[str | int] | None = None,
+        selected_requests: list[dict[str, Any]] | None = None,
         limit: int = 5,
     ) -> dict[str, Any]:
-        return analyze_quotation_compare(db, user, inquiry_id, limit)
+        return analyze_quotation_compare(db, user, inquiry_id, request_ids, selected_requests, limit)
 
     def _publish_inquiry_task(
         inquiry_id: int,
@@ -691,6 +709,12 @@ def create_langchain_tools(db: Session, user=None) -> dict[str, StructuredTool]:
             name="generate_inquiry_message",
             description="根据物料、数量、交期和供应商生成询价文本草稿，仅返回文本，不会直接发送。",
             args_schema=GenerateInquiryMessageInput,
+        ),
+        StructuredTool.from_function(
+            func=_save_manual_quotes,
+            name="save_manual_quotes",
+            description="手动比价模式专用：基于勾选采购申请生成手动比价任务草稿（不发送询价单），并创建待确认的报价录入动作。确认后创建 type=manual 的询价任务，等待采购员录入供应商报价。",
+            args_schema=SaveManualQuotesInput,
         ),
         StructuredTool.from_function(
             func=_analyze_quotation_compare,

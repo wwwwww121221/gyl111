@@ -58,6 +58,38 @@
             </div>
           </header>
 
+          <div class="flow-mode-bar">
+            <div class="flow-mode-summary">
+              <span class="flow-mode-label">当前流程：{{ currentFlowModeLabel }}</span>
+              <span class="flow-mode-count">已选 {{ selectedRequestCount }} 条采购申请</span>
+            </div>
+            <div class="flow-mode-actions">
+              <button
+                type="button"
+                class="mode-chip"
+                :class="{ active: currentPageContext.flow_mode === 'auto_inquiry' }"
+                @click="setFlowMode('auto_inquiry')"
+              >
+                自动询价
+              </button>
+              <button
+                type="button"
+                class="mode-chip"
+                :class="{ active: currentPageContext.flow_mode === 'manual_compare' }"
+                @click="setFlowMode('manual_compare')"
+              >
+                手动比价
+              </button>
+              <button
+                type="button"
+                class="mode-chip mode-chip-clear"
+                @click="clearFlowMode"
+              >
+                清除流程
+              </button>
+            </div>
+          </div>
+
           <div ref="messagesRef" class="messages-area">
             <div v-if="messages.length === 0" class="empty-state">
               <div class="empty-card">
@@ -131,6 +163,16 @@
                       </div>
                     </div>
                     <div v-else-if="action.action_type === 'create_inquiry_from_selected_requests'" class="pending-action-form">
+                      <template v-if="action.preview?.plan_mode === 'auto_inquiry'">
+                        <div class="pending-action-summary">
+                          <div>自动询价方案已生成</div>
+                          <div>已选采购申请：{{ getActionDraft(action).selected_line_count }} 条</div>
+                          <div>涉及物料：{{ getActionDraft(action).material_item_count }} 个</div>
+                          <div>推荐供应商：{{ getActionDraft(action).recommended_supplier_count }} 家</div>
+                          <div>预计操作：{{ action.preview?.expected_operation || '确认后将创建询价任务，并给供应商发送询价单' }}</div>
+                        </div>
+                      </template>
+                      <template v-else>
                       <el-input v-model="getActionDraft(action).title" size="small" placeholder="询价任务标题" />
                       <div class="pending-action-grid">
                         <el-input v-model="getActionDraft(action).material_codes" size="small" placeholder="物料编码" disabled />
@@ -182,8 +224,140 @@
                       <div v-if="getActionDraft(action).bill_nos" class="pending-action-hint">
                         关联单号：{{ getActionDraft(action).bill_nos }}
                       </div>
+                    </template>
+                    </div>
+                    <div v-else-if="action.action_type === 'save_manual_quotes'" class="pending-action-form">
+                      <div class="pending-action-summary">
+                        <div>手动比价报价卡</div>
+                        <div>已选采购申请：{{ getActionDraft(action).selected_line_count }} 条</div>
+                        <div>物料项：{{ getActionDraft(action).material_item_count }} 项</div>
+                        <div>说明：请直接补充供应商报价，确认后系统会创建手动比价任务并继续生成份额分配建议。</div>
+                      </div>
+                      <el-input v-model="getActionDraft(action).title" size="small" placeholder="手动比价任务标题" />
+                      <div v-if="getActionDraft(action).bill_nos" class="pending-action-hint">
+                        关联单号：{{ getActionDraft(action).bill_nos }}
+                      </div>
+                      <div
+                        v-for="(line, lineIndex) in getManualQuoteLines(action)"
+                        :key="`manual-line-${line.erp_request_id || line.id || lineIndex}`"
+                        class="manual-quote-block"
+                      >
+                        <div class="manual-quote-block-header">
+                          <div class="manual-quote-block-title">{{ line.material_name || '未命名物料' }}</div>
+                          <div class="manual-quote-block-meta">
+                            {{ line.material_code || '-' }} / {{ line.material_model || '-' }} / 数量 {{ line.qty || '-' }}
+                          </div>
+                        </div>
+                        <div v-if="line.delivery_date" class="pending-action-hint">
+                          需求交期：{{ line.delivery_date }}
+                        </div>
+                        <div v-if="line.target_price !== null && line.target_price !== undefined && line.target_price !== ''" class="pending-action-hint">
+                          目标价参考：{{ line.target_price }}
+                        </div>
+                        <div class="manual-quote-supplier-list">
+                          <div class="manual-quote-supplier-head">
+                            <span>供应商名称</span>
+                            <span>供应商编码</span>
+                            <span>报价单价</span>
+                            <span>报价数量</span>
+                          </div>
+                          <div
+                            v-for="(supplier, supplierIndex) in line.quote_suppliers"
+                            :key="`manual-supplier-${lineIndex}-${supplierIndex}`"
+                            class="manual-quote-supplier-row"
+                          >
+                            <el-autocomplete
+                              v-model="supplier.supplier_name"
+                              size="small"
+                              :trigger-on-focus="true"
+                              :fetch-suggestions="(queryString, cb) => querySearchManualSuppliers(action, lineIndex, supplierIndex, queryString, cb)"
+                              placeholder="供应商名称"
+                              @select="(item) => applyManualSupplierSelection(supplier, item)"
+                              @input="() => handleManualSupplierNameInput(supplier)"
+                            >
+                              <template #default="{ item }">
+                                <div class="manual-supplier-option">
+                                  <span class="manual-supplier-option-name">{{ item.name || item.value }}</span>
+                                  <span v-if="item.code" class="manual-supplier-option-code">{{ item.code }}</span>
+                                </div>
+                              </template>
+                            </el-autocomplete>
+                            <el-input v-model="supplier.supplier_code" size="small" placeholder="供应商编码" />
+                            <el-input-number
+                              v-model="supplier.price"
+                              size="small"
+                              :min="0"
+                              :precision="4"
+                              :controls="false"
+                              placeholder="报价单价"
+                            />
+                            <el-input-number
+                              v-model="supplier.qty"
+                              size="small"
+                              :min="0"
+                              :precision="4"
+                              :controls="false"
+                              placeholder="报价数量"
+                            />
+                            <el-button plain size="small" @click="removeManualQuoteSupplier(action, lineIndex, supplierIndex)">删除</el-button>
+                            <div v-if="supplier.recommend_reason || supplier.suggested_price" class="manual-quote-supplier-hint">
+                              <span v-if="supplier.suggested_price !== null && supplier.suggested_price !== undefined">建议价：{{ supplier.suggested_price }}</span>
+                              <span v-if="supplier.recommend_reason">{{ supplier.recommend_reason }}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <el-button plain size="small" @click="addManualQuoteSupplier(action, lineIndex)">新增供应商报价</el-button>
+                      </div>
+                      <div class="pending-action-button-row">
+                        <el-button
+                          class="pending-action-confirm-btn"
+                          type="primary"
+                          size="small"
+                          :loading="confirmingActionIds.includes(action.pending_action_id)"
+                          @click="confirmAction(action)"
+                        >
+                          {{ getActionConfirmLabel(action) }}
+                        </el-button>
+                        <el-button
+                          class="pending-action-confirm-btn"
+                          plain
+                          size="small"
+                          @click="dismissPendingAction(action)"
+                        >
+                          取消
+                        </el-button>
+                      </div>
+                    </div>
+                    <div v-if="action.action_type === 'create_inquiry_from_selected_requests' && action.preview?.plan_mode === 'auto_inquiry'" class="pending-action-button-row">
+                      <el-button
+                        class="pending-action-confirm-btn"
+                        type="primary"
+                        size="small"
+                        :loading="confirmingActionIds.includes(action.pending_action_id)"
+                        @click="confirmAction(action, { execution_mode: 'send_now' })"
+                      >
+                        确认发送询价单
+                      </el-button>
+                      <el-button
+                        class="pending-action-confirm-btn"
+                        type="warning"
+                        size="small"
+                        :loading="confirmingActionIds.includes(action.pending_action_id)"
+                        @click="confirmAction(action, { execution_mode: 'draft_only' })"
+                      >
+                        只保存草稿
+                      </el-button>
+                      <el-button
+                        class="pending-action-confirm-btn"
+                        plain
+                        size="small"
+                        @click="dismissPendingAction(action)"
+                      >
+                        取消
+                      </el-button>
                     </div>
                     <el-button
+                      v-else-if="!(action.action_type === 'confirm_award' && action.preview?.plan_mode === 'manual_compare') && action.action_type !== 'save_manual_quotes'"
                       class="pending-action-confirm-btn"
                       type="primary"
                       size="small"
@@ -192,6 +366,64 @@
                     >
                       {{ getPendingActionButtonLabel(action) }}
                     </el-button>
+                    <div v-if="action.action_type === 'confirm_award' && action.preview?.plan_mode === 'manual_compare'" class="pending-action-form">
+                      <div class="pending-action-summary">
+                        <div>手动比价方案已生成</div>
+                        <div>已选采购申请：{{ getActionDraft(action).selected_line_count }} 条</div>
+                        <div>报价来源：{{ getActionDraft(action).quote_source || '已有报价' }}</div>
+                        <div>推荐中标供应商：{{ getActionDraft(action).recommended_supplier_count }} 家</div>
+                        <div>份额分配：{{ getActionDraft(action).share_summary || '待分配' }}</div>
+                        <div>预计操作：{{ action.preview?.expected_operation || '确认后将保存份额分配结果，并生成合同草稿' }}</div>
+                      </div>
+                      <div class="pending-action-allocation-list">
+                        <div
+                          v-for="allocation in getActionDraft(action).allocations"
+                          :key="allocation.link_id"
+                          class="pending-action-allocation-row"
+                        >
+                          <span class="pending-action-allocation-name">{{ allocation.supplier_name }}</span>
+                          <el-input-number
+                            v-model="allocation.allocated_ratio"
+                            size="small"
+                            :min="0"
+                            :max="100"
+                            :precision="2"
+                            :disabled="!getActionDraft(action).editing"
+                          />
+                          <span class="pending-action-allocation-suffix">%</span>
+                        </div>
+                      </div>
+                      <div class="pending-action-hint">
+                        当前合计：{{ getAllocationTotal(action) }}%
+                      </div>
+                      <div class="pending-action-button-row">
+                        <el-button
+                          class="pending-action-confirm-btn"
+                          type="primary"
+                          size="small"
+                          :loading="confirmingActionIds.includes(action.pending_action_id)"
+                          @click="confirmAction(action)"
+                        >
+                          确认分配份额并生成合同
+                        </el-button>
+                        <el-button
+                          class="pending-action-confirm-btn"
+                          type="warning"
+                          size="small"
+                          @click="toggleManualCompareEditing(action)"
+                        >
+                          修改份额
+                        </el-button>
+                        <el-button
+                          class="pending-action-confirm-btn"
+                          plain
+                          size="small"
+                          @click="dismissPendingAction(action)"
+                        >
+                          取消
+                        </el-button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -245,6 +477,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import api from '../api'
 import {
   clearProcurementAgentMemory,
   confirmProcurementAgentAction,
@@ -274,7 +507,9 @@ const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
 const confirmingActionIds = ref([])
 const pendingActionDrafts = ref({})
+const dismissedPendingActionIds = ref([])
 const hasInitialized = ref(false)
+const pageContextVersion = ref(0)
 let ensureLoadedPromise = null
 
 const panelWidth = ref(920)
@@ -311,16 +546,22 @@ const currentSessionTitle = computed(() => {
   return '采购助手'
 })
 
-const currentPageContext = computed(() => {
-  let stored = {}
+const readStoredAgentPageContext = () => {
   try {
-    stored = JSON.parse(sessionStorage.getItem('procurement_agent_page_context') || '{}')
+    return JSON.parse(sessionStorage.getItem('procurement_agent_page_context') || '{}')
   } catch {
-    stored = {}
+    return {}
   }
+}
+
+const currentPageContext = computed(() => {
+  pageContextVersion.value
+  const stored = readStoredAgentPageContext()
 
   return {
+    page: stored.page || stored.route_name || route.path,
     route_name: stored.route_name || route.path,
+    flow_mode: stored.flow_mode ?? null,
     selected_request_ids: Array.isArray(stored.selected_request_ids) ? stored.selected_request_ids : [],
     selected_requests: Array.isArray(stored.selected_requests) ? stored.selected_requests : [],
     bill_no: stored.bill_no || '',
@@ -337,6 +578,32 @@ const currentPageContext = computed(() => {
     contract_id: stored.contract_id || '',
   }
 })
+
+const selectedRequestCount = computed(() => currentPageContext.value.selected_request_ids.length)
+
+const currentFlowModeLabel = computed(() => {
+  if (currentPageContext.value.flow_mode === 'auto_inquiry') return '自动询价'
+  if (currentPageContext.value.flow_mode === 'manual_compare') return '手动比价'
+  return '仅查询'
+})
+
+const writeAgentPageContext = (patch = {}) => {
+  const nextContext = {
+    ...readStoredAgentPageContext(),
+    ...patch,
+  }
+  sessionStorage.setItem('procurement_agent_page_context', JSON.stringify(nextContext))
+  pageContextVersion.value += 1
+  window.dispatchEvent(new CustomEvent('procurement-agent-context-updated', { detail: nextContext }))
+}
+
+const setFlowMode = (flowMode) => {
+  writeAgentPageContext({ flow_mode: flowMode || null })
+}
+
+const clearFlowMode = () => {
+  writeAgentPageContext({ flow_mode: null })
+}
 
 const panelStyle = computed(() => ({
   width: `${panelWidth.value}px`,
@@ -379,12 +646,14 @@ const getPendingActionCards = (message) => {
       }
       return []
     })
+    .filter((item) => !dismissedPendingActionIds.value.includes(Number(item?.pending_action_id)))
 }
 
 const getPendingActionButtonLabel = (action) => {
   const actionType = String(action?.action_type || '').trim()
   if (actionType === 'create_inquiry_draft') return '确认创建询价草稿'
   if (actionType === 'create_inquiry_from_selected_requests') return '确认创建询价任务'
+  if (actionType === 'confirm_award' && action?.preview?.plan_mode === 'manual_compare') return '确认分配份额并生成合同'
   if (actionType === 'confirm_award') return '确认中标'
   if (actionType === 'create_contract_draft') return '确认生成合同草稿'
   return '确认执行'
@@ -412,6 +681,7 @@ const getActionDraft = (action) => {
       request_count: preview.request_count ?? '',
       selected_line_count: preview.selected_line_count ?? preview.request_count ?? '',
       material_item_count: preview.material_item_count ?? '',
+      recommended_supplier_count: preview.recommended_supplier_count ?? (Array.isArray(preview.supplier_ids) ? preview.supplier_ids.length : 0),
       bill_nos: Array.isArray(preview.bill_nos) ? preview.bill_nos.filter(Boolean).join('、') : '',
       material_codes: Array.isArray(preview.material_codes) ? preview.material_codes.filter(Boolean).join('、') : '',
       material_names: Array.isArray(preview.material_names) ? preview.material_names.filter(Boolean).join('、') : '',
@@ -420,6 +690,17 @@ const getActionDraft = (action) => {
       qty_total: preview.qty_total ?? '',
       price_reference_text: formatPriceReference(preview.price_reference),
       risk_notes: Array.isArray(preview.risk_notes) ? preview.risk_notes.filter(Boolean).join('；') : '',
+      quote_source: preview.quote_source || '',
+      share_summary: preview.share_summary || '',
+      editing: false,
+      allocations: Array.isArray(preview.allocations)
+        ? preview.allocations.map((item) => ({
+            link_id: Number(item?.link_id) || 0,
+            supplier_id: Number(item?.supplier_id) || 0,
+            supplier_name: item?.supplier_name || '',
+            allocated_ratio: Number(item?.allocated_ratio) || 0,
+          }))
+        : [],
     }
   }
   return pendingActionDrafts.value[actionId]
@@ -461,7 +742,214 @@ const buildActionOverrides = (action) => {
       target_price: draftModel.target_price === '' ? null : draftModel.target_price,
     }
   }
+  if (actionType === 'confirm_award' && action?.preview?.plan_mode === 'manual_compare') {
+    return {
+      allocations: Array.isArray(draftModel.allocations)
+        ? draftModel.allocations.map((item) => ({
+            link_id: Number(item?.link_id) || 0,
+            allocated_ratio: Number(item?.allocated_ratio) || 0,
+          }))
+        : [],
+    }
+  }
   return {}
+}
+
+const ensureManualQuoteDraft = (action) => {
+  const draftModel = getActionDraft(action)
+  if (String(action?.action_type || '').trim() !== 'save_manual_quotes') {
+    return draftModel
+  }
+  if (Array.isArray(draftModel.material_lines)) {
+    return draftModel
+  }
+  const preview = action?.preview || {}
+  const recommendedSuppliers = Array.isArray(preview.supplier_options) ? preview.supplier_options : []
+  const materialLines = Array.isArray(preview.material_lines) ? preview.material_lines : []
+  draftModel.material_lines = materialLines.map((line) => ({
+    id: line?.id ?? null,
+    erp_request_id: line?.erp_request_id || '',
+    bill_no: line?.bill_no || '',
+    material_code: line?.material_code || '',
+    material_name: line?.material_name || '',
+    material_model: line?.material_model || '',
+    qty: Number(line?.qty) || 0,
+    delivery_date: line?.delivery_date || '',
+    target_price: line?.target_price ?? preview.target_price_suggestion ?? '',
+    quote_suppliers: (recommendedSuppliers.length ? recommendedSuppliers : [{}]).map((supplier) => ({
+      supplier_id: Number(supplier?.supplier_id) || null,
+      supplier_code: supplier?.supplier_code || '',
+      supplier_name: supplier?.supplier_name || '',
+      price: supplier?.avg_price ?? '',
+      qty: Number(line?.qty) || 0,
+      delivery_date: line?.delivery_date || '',
+      suggested_price: supplier?.avg_price ?? null,
+      recommend_reason: supplier?.recommend_reason || '',
+    })),
+  }))
+  return draftModel
+}
+
+const getManualQuoteLines = (action) => {
+  const draftModel = ensureManualQuoteDraft(action)
+  return Array.isArray(draftModel.material_lines) ? draftModel.material_lines : []
+}
+
+const buildManualQuoteOverrides = (action) => {
+  if (String(action?.action_type || '').trim() !== 'save_manual_quotes') {
+    return {}
+  }
+  const draftModel = ensureManualQuoteDraft(action)
+  return {
+    title: String(draftModel.title || '').trim(),
+    manual_quote_entries: Array.isArray(draftModel.material_lines)
+      ? draftModel.material_lines
+        .map((line) => ({
+          request_id: line?.id || null,
+          erp_request_id: line?.erp_request_id || null,
+          material_code: line?.material_code || '',
+          suppliers: Array.isArray(line?.quote_suppliers)
+            ? line.quote_suppliers
+              .filter((supplier) => Number(supplier?.price || 0) > 0 && Number(supplier?.qty || 0) > 0 && (supplier?.supplier_name || supplier?.supplier_code))
+              .map((supplier) => ({
+                supplier_id: supplier?.supplier_id || null,
+                supplier_code: supplier?.supplier_code || '',
+                supplier_name: supplier?.supplier_name || '',
+                price: Number(supplier?.price || 0),
+                qty: Number(supplier?.qty || 0),
+                delivery_date: supplier?.delivery_date || null,
+              }))
+            : [],
+        }))
+        .filter((line) => line.material_code && Array.isArray(line.suppliers) && line.suppliers.length > 0)
+      : [],
+  }
+}
+
+const hasManualQuoteEntries = (action) => {
+  const overrides = buildManualQuoteOverrides(action)
+  return Array.isArray(overrides.manual_quote_entries) && overrides.manual_quote_entries.length > 0
+}
+
+const getActionConfirmLabel = (action) => {
+  if (String(action?.action_type || '').trim() === 'save_manual_quotes') {
+    return hasManualQuoteEntries(action) ? '确认录入报价并继续比价' : '确认创建手动比价任务'
+  }
+  return getPendingActionButtonLabel(action)
+}
+
+const addManualQuoteSupplier = (action, lineIndex) => {
+  const line = getManualQuoteLines(action)[lineIndex]
+  if (!line) return
+  if (!Array.isArray(line.quote_suppliers)) {
+    line.quote_suppliers = []
+  }
+  line.quote_suppliers.push({
+    supplier_id: null,
+    supplier_code: '',
+    supplier_name: '',
+    price: '',
+    qty: Number(line.qty) || 0,
+    delivery_date: line.delivery_date || '',
+    suggested_price: null,
+    recommend_reason: '',
+  })
+}
+
+const removeManualQuoteSupplier = (action, lineIndex, supplierIndex) => {
+  const line = getManualQuoteLines(action)[lineIndex]
+  if (!line || !Array.isArray(line.quote_suppliers)) return
+  line.quote_suppliers.splice(supplierIndex, 1)
+  if (!line.quote_suppliers.length) {
+    addManualQuoteSupplier(action, lineIndex)
+  }
+}
+
+const normalizeSupplierSearchOption = (supplier = {}) => ({
+  value: supplier?.name || supplier?.value || '',
+  id: Number(supplier?.id || supplier?.supplier_id) || null,
+  code: supplier?.code || supplier?.supplier_code || '',
+  name: supplier?.name || supplier?.supplier_name || supplier?.value || '',
+  grade: supplier?.grade || supplier?.supplier_grade || '',
+})
+
+const getManualSupplierBaseOptions = (action, lineIndex) => {
+  const line = getManualQuoteLines(action)[lineIndex]
+  const seen = new Map()
+  ;(Array.isArray(line?.quote_suppliers) ? line.quote_suppliers : []).forEach((supplier) => {
+    const option = normalizeSupplierSearchOption(supplier)
+    const key = `${option.id || ''}:${option.code}:${option.name}`.trim()
+    if (option.name && !seen.has(key)) {
+      seen.set(key, option)
+    }
+  })
+  return Array.from(seen.values())
+}
+
+const applyManualSupplierSelection = (supplier, item) => {
+  supplier.supplier_id = Number(item?.id) || null
+  supplier.supplier_name = item?.name || item?.value || ''
+  supplier.supplier_code = item?.code || supplier.supplier_code || ''
+}
+
+const handleManualSupplierNameInput = (supplier) => {
+  supplier.supplier_id = null
+  supplier.supplier_code = ''
+}
+
+const querySearchManualSuppliers = async (action, lineIndex, supplierIndex, queryString, cb) => {
+  const keyword = String(queryString || '').trim()
+  const localOptions = getManualSupplierBaseOptions(action, lineIndex)
+  const localMatched = keyword
+    ? localOptions.filter((item) => {
+        const name = String(item?.name || '').toLowerCase()
+        const code = String(item?.code || '').toLowerCase()
+        const search = keyword.toLowerCase()
+        return name.includes(search) || code.includes(search)
+      })
+    : localOptions
+
+  if (!keyword) {
+    cb(localMatched.slice(0, 12))
+    return
+  }
+
+  try {
+    const { data } = await api.get('/supplier/list', {
+      params: {
+        page: 1,
+        page_size: 20,
+        keyword,
+      },
+      silentError: true,
+    })
+    const remoteOptions = (Array.isArray(data?.list) ? data.list : [])
+      .map((item) => normalizeSupplierSearchOption(item))
+      .filter((item) => item.name)
+    const merged = new Map()
+    ;[...localMatched, ...remoteOptions].forEach((item) => {
+      const key = `${item.id || ''}:${item.code}:${item.name}`.trim()
+      if (item.name && !merged.has(key)) {
+        merged.set(key, item)
+      }
+    })
+    cb(Array.from(merged.values()).slice(0, 20))
+  } catch {
+    cb(localMatched.slice(0, 12))
+  }
+}
+
+const getAllocationTotal = (action) => {
+  const draftModel = getActionDraft(action)
+  const total = Array.isArray(draftModel.allocations)
+    ? draftModel.allocations.reduce((sum, item) => sum + (Number(item?.allocated_ratio) || 0), 0)
+    : 0
+  return Number(total.toFixed(2))
+}
+
+const toggleManualCompareEditing = (action) => {
+  const draftModel = getActionDraft(action)
+  draftModel.editing = !draftModel.editing
 }
 
 const clampPanelBounds = () => {
@@ -570,23 +1058,41 @@ const fillPrompt = (text) => {
   draft.value = text
 }
 
-const confirmAction = async (action) => {
+const dismissPendingAction = (action) => {
+  const normalizedId = Number(action?.pending_action_id)
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) return
+  if (!dismissedPendingActionIds.value.includes(normalizedId)) {
+    dismissedPendingActionIds.value = [...dismissedPendingActionIds.value, normalizedId]
+  }
+}
+
+const confirmAction = async (action, extraOverrides = {}) => {
   const normalizedId = Number(action?.pending_action_id)
   if (!Number.isFinite(normalizedId) || normalizedId <= 0) return
   if (confirmingActionIds.value.includes(normalizedId)) return
 
   confirmingActionIds.value = [...confirmingActionIds.value, normalizedId]
   try {
-    const { data } = await confirmProcurementAgentAction(normalizedId, buildActionOverrides(action))
+    const { data } = await confirmProcurementAgentAction(normalizedId, {
+      ...buildActionOverrides(action),
+      ...buildManualQuoteOverrides(action),
+      ...extraOverrides,
+    })
     ElMessage.success('AI 待确认动作已执行')
     window.dispatchEvent(new CustomEvent('procurement-agent-action-confirmed', { detail: data }))
     delete pendingActionDrafts.value[normalizedId]
+    const nextPendingAction = data?.result?.next_pending_action
     messages.value.push({
       id: `${Date.now()}_confirm`,
       role: 'assistant',
       content: `已完成确认动作：${data?.action_type || normalizedId}`,
       created_at: Math.floor(Date.now() / 1000),
-      metadata: {},
+      metadata: nextPendingAction ? {
+        tool_results: [{
+          name: nextPendingAction.action_type || 'next_pending_action',
+          data: nextPendingAction,
+        }],
+      } : {},
     })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '确认动作失败')
@@ -711,6 +1217,10 @@ const handleAgentOpen = async (event) => {
   scrollToBottom()
 }
 
+const handleAgentContextUpdated = () => {
+  pageContextVersion.value += 1
+}
+
 const startDrag = (event) => {
   if (window.innerWidth <= 768) return
   dragState.active = true
@@ -740,11 +1250,13 @@ const toggleExpanded = async () => {
 
 onMounted(() => {
   resetPanelPosition()
+  pageContextVersion.value += 1
   window.addEventListener('resize', resetPanelPosition)
   window.addEventListener('pointermove', handlePointerMove)
   window.addEventListener('pointerup', stopInteractions)
   window.addEventListener('pointercancel', stopInteractions)
   window.addEventListener('procurement-agent-open', handleAgentOpen)
+  window.addEventListener('procurement-agent-context-updated', handleAgentContextUpdated)
 })
 
 onBeforeUnmount(() => {
@@ -753,6 +1265,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', stopInteractions)
   window.removeEventListener('pointercancel', stopInteractions)
   window.removeEventListener('procurement-agent-open', handleAgentOpen)
+  window.removeEventListener('procurement-agent-context-updated', handleAgentContextUpdated)
 })
 </script>
 
@@ -794,7 +1307,7 @@ onBeforeUnmount(() => {
 
 .panel-main {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   background:
@@ -911,6 +1424,198 @@ onBeforeUnmount(() => {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.pending-action-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #345;
+  line-height: 1.5;
+}
+
+.pending-action-button-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pending-action-allocation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pending-action-allocation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.pending-action-allocation-name {
+  font-size: 13px;
+  color: #1f2b3d;
+}
+
+.pending-action-allocation-suffix {
+  font-size: 13px;
+  color: #607287;
+}
+
+.manual-quote-block {
+  padding: 10px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #dce6f2;
+}
+
+.manual-quote-block-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.manual-quote-block-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2b3d;
+}
+
+.manual-quote-block-meta {
+  font-size: 12px;
+  color: #607287;
+}
+
+.manual-quote-supplier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.manual-quote-supplier-head {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #607287;
+}
+
+.manual-quote-supplier-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border-radius: 10px;
+  background: #f8fbff;
+  border: 1px solid #e0e9f5;
+}
+
+.manual-quote-supplier-row :deep(.el-input),
+.manual-quote-supplier-row :deep(.el-input-number) {
+  width: 100%;
+  min-width: 0;
+}
+
+.manual-supplier-option {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.manual-supplier-option-name {
+  color: #1f2b3d;
+}
+
+.manual-supplier-option-code {
+  color: #7d8da3;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.manual-quote-supplier-row > :deep(.el-button) {
+  grid-column: 1 / -1;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.manual-quote-supplier-hint {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #6b7a90;
+  padding-top: 2px;
+}
+
+.flow-mode-bar {
+  padding: 14px 22px;
+  border-bottom: 1px solid #dde6f2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.flow-mode-summary {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.flow-mode-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2b3d;
+}
+
+.flow-mode-count {
+  font-size: 13px;
+  color: #607287;
+}
+
+.flow-mode-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mode-chip {
+  border: 1px solid #cfdced;
+  background: #fff;
+  color: #345;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mode-chip:hover {
+  border-color: #2c67d9;
+  color: #2c67d9;
+}
+
+.mode-chip.active {
+  border-color: #2c67d9;
+  background: #2c67d9;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(44, 103, 217, 0.18);
+}
+
+.mode-chip-clear {
+  background: #f7fafc;
 }
 
 .messages-area {
@@ -1250,6 +1955,11 @@ onBeforeUnmount(() => {
 
   .resize-handle {
     display: none;
+  }
+
+  .manual-quote-supplier-head,
+  .manual-quote-supplier-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

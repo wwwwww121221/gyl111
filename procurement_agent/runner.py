@@ -31,6 +31,30 @@ class ProcurementAgentRunner:
 
     MAX_TOOL_PLANNING_ROUNDS = 2
     MAX_TOOL_ACTIONS_PER_ROUND = 3
+    READ_ONLY_TOOL_NAMES = {
+        "search_material",
+        "search_suppliers",
+        "get_material_price_history",
+        "get_supplier_purchase_profile",
+        "search_purchase_requests",
+        "search_purchase_orders",
+        "recommend_suppliers_for_inquiry",
+        "check_contract_risks",
+    }
+    AUTO_INQUIRY_TOOL_NAMES = {
+        "create_inquiry_draft",
+        "create_inquiry_from_selected_requests",
+        "generate_inquiry_message",
+        "publish_inquiry_task",
+        "analyze_quotation_compare",
+        "create_contract_draft_from_award",
+    }
+    MANUAL_COMPARE_TOOL_NAMES = {
+        "generate_inquiry_message",
+        "analyze_quotation_compare",
+        "create_contract_draft_from_award",
+        "save_manual_quotes",
+    }
 
     def __init__(self, db: Session, user: User):
         self.db = db
@@ -45,8 +69,11 @@ class ProcurementAgentRunner:
     ) -> AgentChatResponse:
         session_id = session_id or new_session_id()
         user_id = self.user.id
+        context = context or {}
         history = load_messages(user_id, session_id)
-        effective_message = self._merge_context_into_message(message, context or {})
+        effective_message = self._merge_context_into_message(message, context)
+        intent_type = self._classify_user_intent(message)
+        flow_mode = self._normalize_flow_mode(context.get("flow_mode"))
 
         guardrail_reason = detect_prompt_injection(message)
         if guardrail_reason:
@@ -63,12 +90,64 @@ class ProcurementAgentRunner:
         memory_text = summarize_recent_messages(history)
         recalled_memories = recall_long_term_memories(user_id, effective_message, limit=3)
         recalled_memory_text = self._format_recalled_memories(recalled_memories)
+
+        if (
+            intent_type == "workflow_action"
+            and flow_mode in {"auto_inquiry", "manual_compare"}
+            and not (context.get("selected_request_ids") or [])
+            and not context.get("inquiry_id")
+        ):
+            answer = "请先在采购申请列表中勾选需要处理的物料。"
+            append_message(user_id, session_id, "user", message)
+            append_message(user_id, session_id, "assistant", answer, metadata={"tool_results": []})
+            return AgentChatResponse(
+                session_id=session_id,
+                answer=answer,
+                tool_results=[],
+                memory_count=len(load_messages(user_id, session_id)),
+            )
+
+        if (
+            intent_type == "workflow_action"
+            and flow_mode == "manual_compare"
+            and self._has_any_keyword(message, ["发布询价", "发送询价单", "推送供应商", "发询价"])
+        ):
+            answer = "当前为手动比价模式，不能给供应商发送询价单。请先在线下询价或手动录入报价后再进行比价分析。"
+            append_message(user_id, session_id, "user", message)
+            append_message(user_id, session_id, "assistant", answer, metadata={"tool_results": []})
+            return AgentChatResponse(
+                session_id=session_id,
+                answer=answer,
+                tool_results=[],
+                memory_count=len(load_messages(user_id, session_id)),
+            )
+
+        if intent_type == "workflow_action" and not flow_mode:
+            answer, tool_results = self._build_flow_mode_required_response()
+            append_message(user_id, session_id, "user", message)
+            append_message(
+                user_id,
+                session_id,
+                "assistant",
+                answer,
+                metadata={"tool_results": [item.model_dump() for item in tool_results]},
+            )
+            return AgentChatResponse(
+                session_id=session_id,
+                answer=answer,
+                tool_results=tool_results,
+                memory_count=len(load_messages(user_id, session_id)),
+            )
+
         llm = get_procurement_agent_llm_service()
         tool_results = await self._run_query_tools(
             llm=llm,
             message=effective_message,
             memory_text=memory_text,
             recalled_memory_text=recalled_memory_text,
+            context=context,
+            intent_type=intent_type,
+            flow_mode=flow_mode,
         )
         tool_text = self._format_tool_results(tool_results)
 
@@ -108,6 +187,13 @@ class ProcurementAgentRunner:
             return message
 
         parts = []
+        page = str(context.get("page") or "").strip()
+        if page:
+            parts.append(f"CURRENT_PAGE: {page}")
+
+        flow_mode = str(context.get("flow_mode") or "").strip()
+        if flow_mode:
+            parts.append(f"CURRENT_FLOW_MODE: {flow_mode}")
         route_name = str(context.get("route_name") or "").strip()
         if route_name:
             parts.append(f"当前页面: {route_name}")
@@ -181,6 +267,8 @@ class ProcurementAgentRunner:
     @staticmethod
     def _extract_context_defaults(message: str) -> dict[str, str]:
         defaults = {
+            "page": "",
+            "flow_mode": "",
             "bill_no": "",
             "material_name": "",
             "material_code": "",
@@ -249,7 +337,60 @@ class ProcurementAgentRunner:
             return []
         return [item for item in payload if isinstance(item, dict)][:20]
 
-    def _build_seed_actions(self, message: str) -> list[tuple[str, dict[str, Any]]]:
+    @staticmethod
+    def _normalize_flow_mode(value: Any) -> str | None:
+        flow_mode = str(value or "").strip()
+        return flow_mode if flow_mode in {"auto_inquiry", "manual_compare"} else None
+
+    def _classify_user_intent(self, message: str) -> str:
+        text = str(message or "")
+        workflow_keywords = [
+            "发起询价", "创建询价任务", "发送询价单", "自动询价", "手动比价",
+            "分配份额", "确认中标", "生成合同", "发布询价", "生成询价单",
+            "生成询价草稿", "生成合同草稿", "发询价", "推送供应商",
+        ]
+        if any(keyword in text for keyword in workflow_keywords):
+            return "workflow_action"
+        return "read_only_query"
+
+    @staticmethod
+    def _build_flow_mode_required_response() -> tuple[str, list[AgentToolResult]]:
+        answer = (
+            "这是业务动作请求，执行前需要先选择流程模式。\n\n"
+            "请在 AI 助手顶部选择 `自动询价` 或 `手动比价`，当前我不会创建任何询价、比价、定标或合同数据。"
+        )
+        tool_results = [
+            AgentToolResult(
+                name="flow_mode_required",
+                args={},
+                summary="业务动作需要先选择 flow_mode。",
+                data={
+                    "intent_type": "workflow_action",
+                    "flow_mode_required": True,
+                    "available_modes": ["auto_inquiry", "manual_compare"],
+                },
+            )
+        ]
+        return answer, tool_results
+
+    def _get_allowed_tools(self, intent_type: str, flow_mode: str | None) -> set[str]:
+        if intent_type == "read_only_query":
+            return set(self.READ_ONLY_TOOL_NAMES)
+        if flow_mode == "auto_inquiry":
+            return set(self.READ_ONLY_TOOL_NAMES | self.AUTO_INQUIRY_TOOL_NAMES)
+        if flow_mode == "manual_compare":
+            return set(self.READ_ONLY_TOOL_NAMES | self.MANUAL_COMPARE_TOOL_NAMES)
+        return set(self.READ_ONLY_TOOL_NAMES)
+
+    def _is_tool_allowed(self, tool_name: str, intent_type: str, flow_mode: str | None) -> bool:
+        return tool_name in self._get_allowed_tools(intent_type, flow_mode)
+
+    def _build_seed_actions(
+        self,
+        message: str,
+        intent_type: str,
+        flow_mode: str | None,
+    ) -> list[tuple[str, dict[str, Any]]]:
         actions: list[tuple[str, dict[str, Any]]] = []
         context_defaults = self._extract_context_defaults(message)
         selected_request_ids = self._extract_selected_request_ids(message)
@@ -269,9 +410,40 @@ class ProcurementAgentRunner:
             message,
             ["草稿", "询价草稿", "报价草稿", "报价单", "草稿报价单", "生成草稿报价单", "生成草稿"],
         )
-        if (asks_inquiry or asks_draft_inquiry) and selected_request_ids:
+        asks_publish = self._has_any_keyword(message, ["发布询价", "发送询价单", "推送供应商", "发询价"])
+        asks_award = self._has_any_keyword(message, ["确认中标", "中标建议", "定标"])
+        asks_contract = self._has_any_keyword(message, ["生成合同", "合同草稿"])
+        asks_manual_compare = self._has_any_keyword(message, ["手动比价", "报价分析", "比价分析"])
+        asks_manual_quote_entry = self._has_any_keyword(
+            message,
+            ["录入报价", "手动报价", "录入供应商报价", "填入报价", "填写报价", "手动比价任务", "创建手动比价"],
+        )
+        if intent_type == "workflow_action" and flow_mode == "auto_inquiry" and (asks_inquiry or asks_draft_inquiry) and selected_request_ids:
             actions.append((
                 "create_inquiry_from_selected_requests",
+                {
+                    "request_ids": selected_request_ids,
+                },
+            ))
+
+        # 手动比价模式：用户要发起询价/生成询价单/处理勾选物料/录入报价/分配份额/生成合同，
+        # 且当前没有 inquiry_id（即还没有手动比价任务），优先创建手动比价任务（save_manual_quotes）
+        if (
+            intent_type == "workflow_action"
+            and flow_mode == "manual_compare"
+            and selected_request_ids
+            and not context_defaults.get("inquiry_id")
+            and (
+                asks_inquiry
+                or asks_draft_inquiry
+                or asks_manual_quote_entry
+                or asks_manual_compare
+                or asks_award
+                or asks_contract
+            )
+        ):
+            actions.append((
+                "save_manual_quotes",
                 {
                     "request_ids": selected_request_ids,
                 },
@@ -365,6 +537,39 @@ class ProcurementAgentRunner:
                 },
             ))
 
+        if intent_type == "workflow_action" and asks_publish and context_defaults.get("inquiry_id"):
+            actions.append((
+                "publish_inquiry_task",
+                {
+                    "inquiry_id": int(context_defaults["inquiry_id"]),
+                },
+            ))
+
+        if intent_type == "workflow_action" and (asks_award or (flow_mode == "manual_compare" and asks_manual_compare)):
+            analyze_args: dict[str, Any] = {"limit": 5}
+            if context_defaults.get("inquiry_id"):
+                analyze_args["inquiry_id"] = int(context_defaults["inquiry_id"])
+            elif selected_request_ids:
+                analyze_args["request_ids"] = selected_request_ids
+            actions.append((
+                "analyze_quotation_compare",
+                analyze_args,
+            ))
+
+        if intent_type == "workflow_action" and asks_contract and context_defaults.get("inquiry_id") and context_defaults.get("supplier_id"):
+            actions.append((
+                "create_contract_draft_from_award",
+                {
+                    "inquiry_id": int(context_defaults["inquiry_id"]),
+                    "supplier_id": int(context_defaults["supplier_id"]),
+                },
+            ))
+
+        actions = [
+            (tool_name, args)
+            for tool_name, args in actions
+            if self._is_tool_allowed(tool_name, intent_type, flow_mode)
+        ]
         return actions[:3]
 
     async def _run_query_tools(
@@ -373,11 +578,14 @@ class ProcurementAgentRunner:
         message: str,
         memory_text: str,
         recalled_memory_text: str,
+        context: dict[str, Any],
+        intent_type: str,
+        flow_mode: str | None,
     ) -> list[AgentToolResult]:
         results: list[AgentToolResult] = []
         seen_signatures = set()
 
-        for tool_name, raw_args in self._build_seed_actions(message):
+        for tool_name, raw_args in self._build_seed_actions(message, intent_type, flow_mode):
             if tool_name not in self.tools:
                 continue
             args = self._normalize_tool_args(tool_name, raw_args, message, results)
@@ -403,6 +611,8 @@ class ProcurementAgentRunner:
                 tool_name = str(action.get("tool") or "").strip()
                 raw_args = action.get("args") or {}
                 if tool_name not in self.tools or not isinstance(raw_args, dict):
+                    continue
+                if not self._is_tool_allowed(tool_name, intent_type, flow_mode):
                     continue
                 args = self._normalize_tool_args(tool_name, raw_args, message, results)
                 signature = self._tool_signature(tool_name, args)
@@ -508,6 +718,9 @@ class ProcurementAgentRunner:
             return f"查询到 {count} 条物料价格历史汇总，{trend_count} 条月度趋势。"
         if name == "get_supplier_purchase_profile":
             return f"查询到供应商历史供货物料 {count} 条。"
+        if name == "save_manual_quotes":
+            preview = data.get("preview") or {}
+            return f"已生成手动比价任务待确认：{preview.get('title') or ''}，物料项 {preview.get('material_item_count') or 0} 项。"
         return f"工具 {name} 执行完成。"
 
     @staticmethod
@@ -620,6 +833,17 @@ class ProcurementAgentRunner:
                 first_row = selected_requests[0]
                 material_name = str(first_row.get("material_name") or "").strip() or "勾选物料"
                 args["title"] = f"AI询价任务-{material_name}-{datetime.now().strftime('%m%d%H%M')}"
+        elif tool_name == "save_manual_quotes":
+            selected_request_ids = self._extract_selected_request_ids(message)
+            selected_requests = self._extract_selected_requests(message)
+            if not args.get("request_ids") and selected_request_ids:
+                args["request_ids"] = selected_request_ids
+            if not args.get("selected_requests") and selected_requests:
+                args["selected_requests"] = selected_requests
+            if not args.get("title") and selected_requests:
+                first_row = selected_requests[0]
+                material_name = str(first_row.get("material_name") or "").strip() or "勾选物料"
+                args["title"] = f"手动比价任务-{material_name}-{datetime.now().strftime('%m%d%H%M')}"
         elif tool_name in {"recommend_suppliers_for_inquiry", "create_inquiry_draft", "generate_inquiry_message"}:
             current_material_code = str(args.get("material_code") or "").strip()
             if context_defaults["material_code"] and (not current_material_code or current_material_code not in material_codes):
@@ -643,7 +867,18 @@ class ProcurementAgentRunner:
         elif tool_name == "analyze_quotation_compare":
             if not args.get("inquiry_id") and context_defaults.get("inquiry_id"):
                 args["inquiry_id"] = int(context_defaults["inquiry_id"])
+            if not args.get("request_ids"):
+                selected_request_ids = self._extract_selected_request_ids(message)
+                if selected_request_ids:
+                    args["request_ids"] = selected_request_ids
+            if not args.get("selected_requests"):
+                selected_requests = self._extract_selected_requests(message)
+                if selected_requests:
+                    args["selected_requests"] = selected_requests
             args["limit"] = int(args.get("limit") or 5)
+        elif tool_name == "publish_inquiry_task":
+            if not args.get("inquiry_id") and context_defaults.get("inquiry_id"):
+                args["inquiry_id"] = int(context_defaults["inquiry_id"])
         elif tool_name == "create_contract_draft_from_award":
             if not args.get("inquiry_id") and context_defaults.get("inquiry_id"):
                 args["inquiry_id"] = int(context_defaults["inquiry_id"])

@@ -31,3 +31,9 @@ export const confirmProcurementAgentAction = (actionId, payloadOverrides = {}) =
     payload_overrides: payloadOverrides || {},
   })
 }
+
+export const updateProcurementAgentAction = (actionId, payloadOverrides = {}) => {
+  return api.patch(`${AGENT_BASE}/actions/${actionId}`, {
+    payload_overrides: payloadOverrides || {},
+  })
+}

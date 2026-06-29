@@ -322,45 +322,51 @@ def _load_latest_effective_quotes(db: Session, inquiry_supplier_id: int) -> list
 
 
 def _build_manual_compare_allocations(analysis_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """根据比价分析行生成分额分配建议。
+
+    所有有效报价供应商都会列入 allocations，便于采购员在卡片上调整任意一家份额。
+    默认规则：
+    - 只有 1 家：100%
+    - 多家且第 2 名报价金额 ≤ 第 1 名 × 1.08：第 1 名 70%、第 2 名 30%、其余 0%
+    - 否则：第 1 名 100%、其余 0%
+    """
     if not analysis_rows:
         return []
-    if len(analysis_rows) == 1:
-        row = analysis_rows[0]
-        return [{
+
+    # 按 quote_total_amount 升序，价格低的排前面
+    sorted_rows = sorted(analysis_rows, key=lambda item: (item["quote_total_amount"], -item["supplier_rating_score"]))
+
+    def _build(row: dict[str, Any], ratio: float) -> dict[str, Any]:
+        return {
             "link_id": row["link_id"],
             "supplier_id": row["supplier_id"],
             "supplier_name": row["supplier_name"],
-            "allocated_ratio": 100.0,
+            "allocated_ratio": ratio,
             "quote_total_amount": row["quote_total_amount"],
-        }]
+            "avg_quote_price": row.get("avg_quote_price"),
+            "supplier_rating_score": row.get("supplier_rating_score"),
+            "recommendation_reason": row.get("recommendation_reason"),
+        }
 
-    top_row = analysis_rows[0]
-    second_row = analysis_rows[1]
-    second_is_competitive = float(second_row["quote_total_amount"] or 0) <= float(top_row["quote_total_amount"] or 0) * 1.08
-    if second_is_competitive:
-        return [
-            {
-                "link_id": top_row["link_id"],
-                "supplier_id": top_row["supplier_id"],
-                "supplier_name": top_row["supplier_name"],
-                "allocated_ratio": 70.0,
-                "quote_total_amount": top_row["quote_total_amount"],
-            },
-            {
-                "link_id": second_row["link_id"],
-                "supplier_id": second_row["supplier_id"],
-                "supplier_name": second_row["supplier_name"],
-                "allocated_ratio": 30.0,
-                "quote_total_amount": second_row["quote_total_amount"],
-            },
-        ]
-    return [{
-        "link_id": top_row["link_id"],
-        "supplier_id": top_row["supplier_id"],
-        "supplier_name": top_row["supplier_name"],
-        "allocated_ratio": 100.0,
-        "quote_total_amount": top_row["quote_total_amount"],
-    }]
+    if len(sorted_rows) == 1:
+        return [_build(sorted_rows[0], 100.0)]
+
+    top_row = sorted_rows[0]
+    second_row = sorted_rows[1]
+    top_amount = float(top_row["quote_total_amount"] or 0)
+    second_amount = float(second_row["quote_total_amount"] or 0)
+    second_is_competitive = second_amount <= top_amount * 1.08
+
+    allocations: list[dict[str, Any]] = []
+    for index, row in enumerate(sorted_rows):
+        if index == 0:
+            ratio = 70.0 if second_is_competitive else 100.0
+        elif index == 1 and second_is_competitive:
+            ratio = 30.0
+        else:
+            ratio = 0.0
+        allocations.append(_build(row, ratio))
+    return allocations
 
 
 def _collect_task_counts(task: InquiryTask) -> tuple[int, int]:
@@ -458,10 +464,12 @@ def analyze_quotation_compare(
     allocation_rows = _build_manual_compare_allocations(analysis_rows)
     request_count, material_item_count = _collect_task_counts(task)
     quote_source = "手动录入" if str(task.type or "").strip() == "manual" else "已有报价"
+    # share_summary 只显示份额 > 0 的供应商，避免一长串 0%
     share_summary = "，".join(
         f"{row['supplier_name']} {int(row['allocated_ratio']) if float(row['allocated_ratio']).is_integer() else row['allocated_ratio']}%"
         for row in allocation_rows
-    )
+        if float(row.get("allocated_ratio") or 0) > 0
+    ) or "待分配"
 
     pending_action = None
     if recommended and allocation_rows:

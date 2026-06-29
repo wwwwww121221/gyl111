@@ -57,6 +57,62 @@ def _resolve_material(db: Session, material_code: str) -> Material | None:
     return db.query(Material).filter(Material.code == normalized_code).first()
 
 
+def _collect_material_history(
+    db: Session,
+    normalized_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """收集勾选物料的历史采购信息，供手动比价卡片展示。
+
+    对每个唯一 material_code 查询：
+    - 价格历史汇总（按供应商维度：订单数、均价、最新价、最低/最高价）
+    - 月度价格趋势
+    - 最近采购订单明细
+
+    查询失败不影响主流程，对应物料的历史字段为空。
+    """
+    seen_codes: set[str] = set()
+    history_list: list[dict[str, Any]] = []
+    # 延迟导入避免与 procurement_agent.tools 形成循环导入
+    from procurement_agent.tools import get_material_price_history, search_purchase_orders
+
+    for row in normalized_rows:
+        material_code = str(row.get("material_code") or "").strip()
+        if not material_code or material_code in seen_codes:
+            continue
+        seen_codes.add(material_code)
+
+        entry: dict[str, Any] = {
+            "material_code": material_code,
+            "material_name": row.get("material_name"),
+            "material_model": row.get("material_model"),
+            "price_history": None,
+            "monthly_trend": None,
+            "recent_orders": None,
+        }
+
+        try:
+            price_history = get_material_price_history(
+                db,
+                {"material_code": material_code, "limit": 8},
+            )
+            entry["price_history"] = price_history.get("items") or []
+            entry["monthly_trend"] = price_history.get("monthly_trend") or []
+        except Exception:
+            pass
+
+        try:
+            orders = search_purchase_orders(
+                db,
+                {"material_code": material_code, "limit": 8},
+            )
+            entry["recent_orders"] = orders.get("items") or []
+        except Exception:
+            pass
+
+        history_list.append(entry)
+    return history_list
+
+
 def _create_pending_action(
     db: Session,
     user: User,
@@ -102,6 +158,11 @@ def _coerce_optional_float(value: Any) -> float | None:
 
 
 def _normalize_award_allocations(raw_allocations: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """规范化份额分配。
+
+    份额为 0 的供应商会被跳过（不参与分配），允许用户保留未中标的供应商行。
+    最终非零份额合计必须等于 100%。
+    """
     normalized: list[dict[str, Any]] = []
     seen_link_ids: set[int] = set()
     ratio_total = 0.0
@@ -117,9 +178,10 @@ def _normalize_award_allocations(raw_allocations: list[dict[str, Any]] | None) -
         ratio = _coerce_optional_float(row.get("allocated_ratio"))
         if ratio is None:
             raise HTTPException(status_code=400, detail="allocated_ratio is required for manual compare allocations")
-        if ratio <= 0:
-            raise HTTPException(status_code=400, detail="allocated_ratio must be greater than 0")
         seen_link_ids.add(link_id)
+        # 份额为 0 的供应商跳过，不参与分配但允许出现在列表中
+        if ratio <= 0:
+            continue
         ratio_total += float(ratio)
         normalized.append({
             "link_id": link_id,
@@ -234,6 +296,121 @@ def _apply_payload_overrides(action_type: str, payload: dict[str, Any], payload_
         return merged_payload
 
     return merged_payload
+
+
+def _build_pending_action_preview(
+    db: Session,
+    action_type: str,
+    payload: dict[str, Any],
+    current_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    preview = dict(current_preview or {})
+
+    if action_type == "create_inquiry_draft":
+        supplier_ids = _normalize_supplier_ids(payload.get("supplier_ids"))
+        suppliers = (
+            db.query(Supplier)
+            .filter(Supplier.id.in_(supplier_ids))
+            .all()
+            if supplier_ids
+            else []
+        )
+        supplier_name_map = {int(item.id): item.name for item in suppliers}
+        preview.update({
+            "title": str(payload.get("title") or preview.get("title") or "").strip(),
+            "qty": payload.get("qty"),
+            "delivery_date": payload.get("delivery_date"),
+            "supplier_ids": supplier_ids,
+            "supplier_names": [
+                supplier_name_map.get(supplier_id)
+                for supplier_id in supplier_ids
+                if supplier_name_map.get(supplier_id)
+            ],
+            "target_price_suggestion": payload.get("target_price"),
+        })
+        return preview
+
+    if action_type == "create_inquiry_from_selected_requests":
+        supplier_ids = _normalize_supplier_ids(payload.get("supplier_ids"))
+        recommended_suppliers = list(preview.get("recommended_suppliers") or [])
+        recommended_by_id = {
+            int(item.get("supplier_id")): dict(item)
+            for item in recommended_suppliers
+            if int(item.get("supplier_id") or 0) > 0
+        }
+        missing_supplier_ids = [supplier_id for supplier_id in supplier_ids if supplier_id not in recommended_by_id]
+        if missing_supplier_ids:
+            supplier_rows = db.query(Supplier).filter(Supplier.id.in_(missing_supplier_ids)).all()
+            for supplier in supplier_rows:
+                recommended_by_id[int(supplier.id)] = {
+                    "supplier_id": int(supplier.id),
+                    "supplier_name": supplier.name,
+                    "supplier_code": supplier.code,
+                    "avg_price": None,
+                    "latest_price": None,
+                    "recommend_reason": "手动添加到当前询价草稿",
+                }
+        preview.update({
+            "title": str(payload.get("title") or preview.get("title") or "").strip(),
+            "deadline": payload.get("deadline"),
+            "supplier_ids": supplier_ids,
+            "supplier_names": [
+                item.get("supplier_name")
+                for supplier_id in supplier_ids
+                for item in [recommended_by_id.get(supplier_id)]
+                if item and item.get("supplier_name")
+            ],
+            "recommended_supplier_count": len(supplier_ids),
+            "recommended_suppliers": list(recommended_by_id.values()),
+            "target_price_suggestion": payload.get("target_price"),
+        })
+        return preview
+
+    if action_type == "save_manual_quotes":
+        preview.update({
+            "title": str(payload.get("title") or preview.get("title") or "").strip(),
+        })
+        return preview
+
+    if action_type == "confirm_award":
+        preview.update({
+            "allocations": payload.get("allocations") or [],
+        })
+        return preview
+
+    return preview
+
+
+def update_pending_action_payload(
+    db: Session,
+    user: User,
+    action_id: int,
+    payload_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_procurement_roles(user)
+    action = db.query(AgentPendingAction).filter(AgentPendingAction.id == action_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Pending action not found")
+    if action.status != "pending":
+        raise HTTPException(status_code=400, detail="Pending action is already processed")
+    if user.role == "buyer" and action.created_by != user.id:
+        raise HTTPException(status_code=403, detail="You can only update your own pending actions")
+
+    payload = _apply_payload_overrides(action.action_type, dict(action.payload or {}), payload_overrides)
+    preview = _build_pending_action_preview(db, action.action_type, payload, action.preview or {})
+
+    action.payload = payload
+    action.preview = preview
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+    return {
+        "id": action.id,
+        "action_type": action.action_type,
+        "status": action.status,
+        "payload": action.payload,
+        "preview": action.preview,
+    }
 
 
 def _normalize_selected_request_rows(selected_requests: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -385,17 +562,26 @@ def create_inquiry_from_selected_requests(
     request_count = len(normalized_rows)
     material_item_count = _count_unique_material_items(normalized_rows)
     draft_title = str(title or f"AI询价任务-{preview_material_name}-{datetime.now().strftime('%m%d%H%M')}").strip()
-    target_price = ((recommendation or {}).get("price_reference") or {}).get("avg_price")
+    price_reference = (recommendation or {}).get("price_reference") or {}
+    target_price = price_reference.get("avg_price")
+    has_price_reference = any(price_reference.get(key) is not None for key in ("min_price", "max_price", "avg_price"))
+    has_recommended_suppliers = bool(supplier_ids)
+    manual_input_required = not has_price_reference or not has_recommended_suppliers
+    risk_notes = list((recommendation or {}).get("risk_notes") or [])
+    if not has_price_reference:
+        risk_notes.append("未查到可参考的历史价格，请人工补充目标价或最高限价。")
+    if not has_recommended_suppliers:
+        risk_notes.append("未生成可直接使用的推荐供应商，请人工补充供应商后再提交。")
 
     payload = {
         "request_ids": normalized_request_ids,
         "selected_requests": normalized_rows,
         "deadline": str(deadline or "").strip() or None,
         "supplier_ids": supplier_ids,
-        "execution_mode": "send_now",
+        "execution_mode": "draft_only" if manual_input_required else "send_now",
         "title": draft_title,
         "type": "auto",
-        "price_reference": (recommendation or {}).get("price_reference") or {},
+        "price_reference": price_reference,
         "recommended_suppliers": (recommendation or {}).get("recommended_suppliers") or [],
         "recommendation_material_code": recommendation_material_code or None,
         "target_price": target_price,
@@ -422,13 +608,14 @@ def create_inquiry_from_selected_requests(
             for item in ((recommendation or {}).get("recommended_suppliers") or [])
             if item.get("supplier_name")
         ],
-        "price_reference": (recommendation or {}).get("price_reference") or {},
+        "price_reference": price_reference,
         "target_price_suggestion": target_price,
-        "risk_notes": (recommendation or {}).get("risk_notes") or [],
+        "risk_notes": risk_notes,
         "recommendation_material_code": recommendation_material_code or None,
         "status": "ai_draft",
         "existing_request_count": len(existing_requests),
         "plan_mode": "auto_inquiry",
+        "manual_input_required": manual_input_required,
         "expected_operation": "确认后将创建询价任务，并给供应商发送询价单",
     }
     pending_action = _create_pending_action(db, user, "create_inquiry_from_selected_requests", payload, preview)
@@ -537,6 +724,9 @@ def save_manual_quotes(
         if item.get("supplier_id")
     ]
 
+    # 收集勾选物料的历史采购信息（价格趋势、历史订单明细等），供卡片展示参考
+    material_history = _collect_material_history(db, normalized_rows)
+
     payload = {
         "request_ids": normalized_request_ids,
         "selected_requests": normalized_rows,
@@ -565,6 +755,7 @@ def save_manual_quotes(
         "price_reference": (recommendation or {}).get("price_reference") or {},
         "target_price_suggestion": target_price,
         "risk_notes": (recommendation or {}).get("risk_notes") or [],
+        "material_history": material_history,
         "status": "ai_draft",
         "plan_mode": "manual_compare",
         "expected_operation": "确认后将创建手动比价任务，您可以录入供应商报价后进行比价分析",
@@ -1494,13 +1685,21 @@ def confirm_pending_action(
     if not action:
         raise HTTPException(status_code=404, detail="Pending action not found")
     if action.status != "pending":
-        raise HTTPException(status_code=400, detail="Pending action is already processed")
+        # 幂等返回：已确认的动作不重复执行，返回当前状态让前端优雅处理
+        return {
+            "id": action.id,
+            "action_type": action.action_type,
+            "status": action.status,
+            "already_processed": True,
+            "result": {"message": "该动作已处理，无需重复确认"},
+        }
     if user.role == "buyer" and action.created_by != user.id:
         raise HTTPException(status_code=403, detail="You can only confirm your own pending actions")
 
     payload = _apply_payload_overrides(action.action_type, dict(action.payload or {}), payload_overrides)
     if payload != dict(action.payload or {}):
         action.payload = payload
+        action.preview = _build_pending_action_preview(db, action.action_type, payload, action.preview or {})
     if action.action_type == "create_inquiry_draft":
         result = _confirm_create_inquiry_draft(db, user, payload)
     elif action.action_type == "create_inquiry_from_selected_requests":

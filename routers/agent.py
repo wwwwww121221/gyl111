@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from core.config import settings
-from models import User, get_db
+from models import AgentPendingAction, User, get_db
 from procurement_agent.memory import (
     clear_all_session_memories,
     clear_long_term_memories,
@@ -18,6 +18,7 @@ from procurement_agent.memory import (
 from procurement_agent.runner import ProcurementAgentRunner
 from procurement_agent.schemas import (
     AgentActionConfirmRequest,
+    AgentActionUpdateRequest,
     AgentChatRequest,
     AgentChatResponse,
     AgentMemoryClearRequest,
@@ -26,7 +27,7 @@ from procurement_agent.schemas import (
     AgentMemoryOverview,
     AgentSessionSummary,
 )
-from procurement_agent.write_tools import confirm_pending_action
+from procurement_agent.write_tools import confirm_pending_action, update_pending_action_payload
 from routers.auth import get_current_user_auth
 
 router = APIRouter()
@@ -74,11 +75,62 @@ def get_agent_sessions(current_user: User = Depends(get_current_user_auth)) -> l
 @router.get("/sessions/{session_id}/messages", response_model=list[AgentMessageRecord])
 def get_agent_session_messages(
     session_id: str,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_auth),
 ) -> list[AgentMessageRecord]:
     _require_procurement_roles(current_user)
     rows = load_messages(current_user.id, session_id)
+    pending_action_ids: set[int] = set()
+    for row in rows:
+        metadata = row.get("metadata") or {}
+        tool_results = metadata.get("tool_results") or []
+        for tool_result in tool_results:
+            data = tool_result.get("data") or {}
+            pending_action_id = int(data.get("pending_action_id") or 0)
+            if pending_action_id > 0:
+                pending_action_ids.add(pending_action_id)
+            award_pending_action_id = int(((data.get("award_suggestion") or {}).get("pending_action_id")) or 0)
+            if award_pending_action_id > 0:
+                pending_action_ids.add(award_pending_action_id)
+
+    pending_action_map = {
+        int(action.id): action
+        for action in (
+            db.query(AgentPendingAction)
+            .filter(AgentPendingAction.id.in_(list(pending_action_ids)))
+            .all()
+            if pending_action_ids
+            else []
+        )
+    }
+    for row in rows:
+        metadata = row.get("metadata") or {}
+        tool_results = metadata.get("tool_results") or []
+        for tool_result in tool_results:
+            data = tool_result.get("data") or {}
+            pending_action_id = int(data.get("pending_action_id") or 0)
+            pending_action = pending_action_map.get(pending_action_id)
+            if pending_action:
+                data["action_type"] = pending_action.action_type
+                data["preview"] = pending_action.preview or data.get("preview") or {}
+                data["status"] = pending_action.status
     return [AgentMessageRecord(**row) for row in rows]
+
+
+@router.patch("/actions/{action_id}")
+def update_agent_action(
+    action_id: int,
+    payload: AgentActionUpdateRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_auth),
+) -> dict[str, Any]:
+    _require_procurement_roles(current_user)
+    return update_pending_action_payload(
+        db=db,
+        user=current_user,
+        action_id=action_id,
+        payload_overrides=(payload.payload_overrides if payload else None),
+    )
 
 
 @router.post("/actions/{action_id}/confirm")

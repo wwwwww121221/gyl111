@@ -13,7 +13,7 @@ from procurement_agent.schemas import AgentMemoryRecord, AgentSessionSummary
 _FALLBACK_MEMORY: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FALLBACK_LONG_TERM_MEMORY: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _FALLBACK_SESSION_INDEX: dict[str, list[dict[str, Any]]] = defaultdict(list)
-_SESSION_TTL_SECONDS = 60 * 60 * 24
+_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30
 _MAX_MESSAGES = 12
 _MAX_LONG_TERM_MEMORIES = 50
 _REDIS_RETRY_AFTER = 30

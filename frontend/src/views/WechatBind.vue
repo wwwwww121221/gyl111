@@ -63,6 +63,7 @@ const clearAuthStorage = () => {
   localStorage.removeItem('supplier_status')
   localStorage.removeItem('member_status')
   localStorage.removeItem('bound_status')
+  window.dispatchEvent(new Event('auth-changed'))
 }
 
 const persistLogin = (payload) => {
@@ -76,6 +77,7 @@ const persistLogin = (payload) => {
   localStorage.setItem('member_status', payload.member_status || '')
   if (payload.bound_status) localStorage.setItem('bound_status', payload.bound_status)
   else localStorage.removeItem('bound_status')
+  window.dispatchEvent(new Event('auth-changed'))
 }
 
 const displayOpenid = computed(() => openid.value || '未从微信回调中获取到 OpenID')

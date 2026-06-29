@@ -70,3 +70,7 @@ class AgentMemoryClearResponse(BaseModel):
 
 class AgentActionConfirmRequest(BaseModel):
     payload_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentActionUpdateRequest(BaseModel):
+    payload_overrides: dict[str, Any] = Field(default_factory=dict)

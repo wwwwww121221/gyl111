@@ -163,7 +163,7 @@
                       </div>
                     </div>
                     <div v-else-if="action.action_type === 'create_inquiry_from_selected_requests'" class="pending-action-form">
-                      <template v-if="action.preview?.plan_mode === 'auto_inquiry'">
+                      <template v-if="false">
                         <div class="pending-action-summary">
                           <div>自动询价方案已生成</div>
                           <div>已选采购申请：{{ getActionDraft(action).selected_line_count }} 条</div>
@@ -189,8 +189,13 @@
                           multiple
                           collapse-tags
                           collapse-tags-tooltip
+                          filterable
+                          remote
+                          reserve-keyword
                           size="small"
                           placeholder="建议供应商"
+                          :remote-method="(keyword) => querySearchActionSuppliers(action, keyword)"
+                          @change="() => persistActionDraft(action)"
                         >
                           <el-option
                             v-for="supplier in getActionDraft(action).supplier_options"
@@ -203,6 +208,35 @@
                       </div>
                       <div v-if="getActionDraft(action).supplier_names" class="pending-action-hint">
                         建议供应商：{{ getActionDraft(action).supplier_names }}
+                      </div>
+                      <div class="pending-action-hint">
+                        支持按供应商名称或编码模糊搜索，并可把新供应商追加到当前询价草稿。
+                      </div>
+                      <div v-if="getSelectedSupplierDetails(action).length" class="selected-supplier-tags">
+                        <span
+                          v-for="supplier in getSelectedSupplierDetails(action)"
+                          :key="`selected-supplier-${supplier.value}`"
+                          class="selected-supplier-tag"
+                        >
+                          {{ supplier.label }}<span v-if="supplier.code">（{{ supplier.code }}）</span>
+                        </span>
+                      </div>
+                      <div v-if="getActionDraft(action).recommended_supplier_details.length" class="recommended-supplier-list">
+                        <div
+                          v-for="supplier in getActionDraft(action).recommended_supplier_details"
+                          :key="`auto-supplier-${supplier.value}`"
+                          class="recommended-supplier-card"
+                        >
+                          <div class="recommended-supplier-name">
+                            {{ supplier.label }}
+                            <span v-if="supplier.code">（{{ supplier.code }}）</span>
+                          </div>
+                          <div class="recommended-supplier-meta">
+                            <span v-if="supplier.avg_price !== null && supplier.avg_price !== undefined">历史均价：{{ supplier.avg_price }}</span>
+                            <span v-if="supplier.latest_price !== null && supplier.latest_price !== undefined">最新价：{{ supplier.latest_price }}</span>
+                          </div>
+                          <div v-if="supplier.recommend_reason" class="recommended-supplier-reason">{{ supplier.recommend_reason }}</div>
+                        </div>
                       </div>
                       <div v-if="getActionDraft(action).price_reference_text" class="pending-action-hint">
                         历史参考价：{{ getActionDraft(action).price_reference_text }}
@@ -231,7 +265,7 @@
                         <div>手动比价报价卡</div>
                         <div>已选采购申请：{{ getActionDraft(action).selected_line_count }} 条</div>
                         <div>物料项：{{ getActionDraft(action).material_item_count }} 项</div>
-                        <div>说明：请直接补充供应商报价，确认后系统会创建手动比价任务并继续生成份额分配建议。</div>
+                        <div>请直接补充供应商报价，系统会基于卡片内容继续生成比价和份额分配建议。</div>
                       </div>
                       <el-input v-model="getActionDraft(action).title" size="small" placeholder="手动比价任务标题" />
                       <div v-if="getActionDraft(action).bill_nos" class="pending-action-hint">
@@ -253,6 +287,100 @@
                         </div>
                         <div v-if="line.target_price !== null && line.target_price !== undefined && line.target_price !== ''" class="pending-action-hint">
                           目标价参考：{{ line.target_price }}
+                        </div>
+                        <div v-if="line.material_history && (line.material_history.price_history?.length || line.material_history.monthly_trend?.length || line.material_history.recent_orders?.length)" class="manual-quote-history">
+                          <el-collapse>
+                            <el-collapse-item
+                              v-if="line.material_history.price_history?.length"
+                              :name="`price-history-${lineIndex}`"
+                              title="历史价格汇总（按供应商）"
+                            >
+                              <div class="history-table-wrap">
+                                <table class="history-table">
+                                  <thead>
+                                    <tr>
+                                      <th>供应商</th>
+                                      <th>订单数</th>
+                                      <th>均价</th>
+                                      <th>最新价</th>
+                                      <th>最低价</th>
+                                      <th>最高价</th>
+                                      <th>最近日期</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr v-for="(ph, phi) in line.material_history.price_history" :key="`ph-${lineIndex}-${phi}`">
+                                      <td>{{ ph.supplier_name || '-' }}</td>
+                                      <td>{{ ph.order_count ?? '-' }}</td>
+                                      <td>{{ ph.avg_tax_net_price ?? '-' }}</td>
+                                      <td>{{ ph.latest_tax_net_price ?? '-' }}</td>
+                                      <td>{{ ph.lowest_price ?? '-' }}</td>
+                                      <td>{{ ph.highest_price ?? '-' }}</td>
+                                      <td>{{ ph.latest_date || '-' }}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </el-collapse-item>
+                            <el-collapse-item
+                              v-if="line.material_history.monthly_trend?.length"
+                              :name="`monthly-trend-${lineIndex}`"
+                              title="月度价格趋势"
+                            >
+                              <div class="history-table-wrap">
+                                <table class="history-table">
+                                  <thead>
+                                    <tr>
+                                      <th>月份</th>
+                                      <th>供应商</th>
+                                      <th>订单数</th>
+                                      <th>均价</th>
+                                      <th>最低价</th>
+                                      <th>最高价</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr v-for="(mt, mti) in line.material_history.monthly_trend" :key="`mt-${lineIndex}-${mti}`">
+                                      <td>{{ mt.month || '-' }}</td>
+                                      <td>{{ mt.supplier_name || '-' }}</td>
+                                      <td>{{ mt.order_count ?? '-' }}</td>
+                                      <td>{{ mt.avg_tax_net_price ?? '-' }}</td>
+                                      <td>{{ mt.min_tax_net_price ?? '-' }}</td>
+                                      <td>{{ mt.max_tax_net_price ?? '-' }}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </el-collapse-item>
+                            <el-collapse-item
+                              v-if="line.material_history.recent_orders?.length"
+                              :name="`recent-orders-${lineIndex}`"
+                              title="最近采购订单"
+                            >
+                              <div class="history-table-wrap">
+                                <table class="history-table">
+                                  <thead>
+                                    <tr>
+                                      <th>单号</th>
+                                      <th>供应商</th>
+                                      <th>单价</th>
+                                      <th>数量</th>
+                                      <th>日期</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr v-for="(ro, roi) in line.material_history.recent_orders" :key="`ro-${lineIndex}-${roi}`">
+                                      <td>{{ ro.bill_no || '-' }}</td>
+                                      <td>{{ ro.supplier_name || '-' }}</td>
+                                      <td>{{ ro.tax_net_price ?? ro.price ?? '-' }}</td>
+                                      <td>{{ ro.qty ?? '-' }}</td>
+                                      <td>{{ ro.order_date || ro.latest_date || '-' }}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </el-collapse-item>
+                          </el-collapse>
                         </div>
                         <div class="manual-quote-supplier-list">
                           <div class="manual-quote-supplier-head">
@@ -328,7 +456,7 @@
                         </el-button>
                       </div>
                     </div>
-                    <div v-if="action.action_type === 'create_inquiry_from_selected_requests' && action.preview?.plan_mode === 'auto_inquiry'" class="pending-action-button-row">
+                    <div v-if="action.action_type === 'create_inquiry_from_selected_requests'" class="pending-action-button-row">
                       <el-button
                         class="pending-action-confirm-btn"
                         type="primary"
@@ -373,7 +501,7 @@
                         <div>报价来源：{{ getActionDraft(action).quote_source || '已有报价' }}</div>
                         <div>推荐中标供应商：{{ getActionDraft(action).recommended_supplier_count }} 家</div>
                         <div>份额分配：{{ getActionDraft(action).share_summary || '待分配' }}</div>
-                        <div>预计操作：{{ action.preview?.expected_operation || '确认后将保存份额分配结果，并生成合同草稿' }}</div>
+                        <div>请直接调整份额并继续生成中标与合同草稿。</div>
                       </div>
                       <div class="pending-action-allocation-list">
                         <div
@@ -381,16 +509,29 @@
                           :key="allocation.link_id"
                           class="pending-action-allocation-row"
                         >
-                          <span class="pending-action-allocation-name">{{ allocation.supplier_name }}</span>
-                          <el-input-number
-                            v-model="allocation.allocated_ratio"
-                            size="small"
-                            :min="0"
-                            :max="100"
-                            :precision="2"
-                            :disabled="!getActionDraft(action).editing"
-                          />
-                          <span class="pending-action-allocation-suffix">%</span>
+                          <div class="pending-action-allication-info">
+                            <span class="pending-action-allocation-name">{{ allocation.supplier_name }}</span>
+                            <span v-if="allocation.quote_total_amount !== null && allocation.quote_total_amount !== undefined" class="pending-action-allocation-meta">
+                              报价总额：{{ allocation.quote_total_amount }}
+                            </span>
+                            <span v-if="allocation.avg_quote_price !== null && allocation.avg_quote_price !== undefined" class="pending-action-allocation-meta">
+                              均价：{{ allocation.avg_quote_price }}
+                            </span>
+                            <span v-if="allocation.recommendation_reason" class="pending-action-allocation-reason">
+                              {{ allocation.recommendation_reason }}
+                            </span>
+                          </div>
+                          <div class="pending-action-allocation-control">
+                            <el-input-number
+                              v-model="allocation.allocated_ratio"
+                              size="small"
+                              :min="0"
+                              :max="100"
+                              :precision="2"
+                              :disabled="!getActionDraft(action).editing"
+                            />
+                            <span class="pending-action-allocation-suffix">%</span>
+                          </div>
                         </div>
                       </div>
                       <div class="pending-action-hint">
@@ -404,7 +545,7 @@
                           :loading="confirmingActionIds.includes(action.pending_action_id)"
                           @click="confirmAction(action)"
                         >
-                          确认分配份额并生成合同
+                          生成中标与合同草稿
                         </el-button>
                         <el-button
                           class="pending-action-confirm-btn"
@@ -474,7 +615,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '../api'
@@ -486,13 +627,26 @@ import {
   getProcurementAgentSessions,
   getProcurementAgentStatus,
   sendProcurementAgentMessage,
+  updateProcurementAgentAction,
 } from '../api/agent'
 
-const role = computed(() => localStorage.getItem('role') || '')
-const token = computed(() => localStorage.getItem('token') || '')
-const department = computed(() => localStorage.getItem('department') || '')
-const visible = computed(() => role.value !== 'supplier' && department.value === '采购部' && Boolean(token.value))
 const route = useRoute()
+const authSnapshot = ref({
+  role: '',
+  token: '',
+  department: '',
+})
+const syncAuthSnapshot = () => {
+  authSnapshot.value = {
+    role: localStorage.getItem('role') || '',
+    token: localStorage.getItem('token') || '',
+    department: localStorage.getItem('department') || '',
+  }
+}
+const role = computed(() => authSnapshot.value.role)
+const token = computed(() => authSnapshot.value.token)
+const department = computed(() => authSnapshot.value.department)
+const visible = computed(() => role.value !== 'supplier' && department.value === '采购部' && Boolean(token.value))
 
 const expanded = ref(false)
 const sidebarCollapsed = ref(false)
@@ -507,6 +661,8 @@ const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
 const confirmingActionIds = ref([])
 const pendingActionDrafts = ref({})
+const savingActionDraftIds = ref([])
+const actionDraftSaveTimers = new Map()
 const dismissedPendingActionIds = ref([])
 const hasInitialized = ref(false)
 const pageContextVersion = ref(0)
@@ -653,7 +809,7 @@ const getPendingActionButtonLabel = (action) => {
   const actionType = String(action?.action_type || '').trim()
   if (actionType === 'create_inquiry_draft') return '确认创建询价草稿'
   if (actionType === 'create_inquiry_from_selected_requests') return '确认创建询价任务'
-  if (actionType === 'confirm_award' && action?.preview?.plan_mode === 'manual_compare') return '确认分配份额并生成合同'
+  if (actionType === 'confirm_award' && action?.preview?.plan_mode === 'manual_compare') return '生成中标与合同草稿'
   if (actionType === 'confirm_award') return '确认中标'
   if (actionType === 'create_contract_draft') return '确认生成合同草稿'
   return '确认执行'
@@ -676,7 +832,24 @@ const getActionDraft = (action) => {
       supplier_names: Array.isArray(preview.supplier_names) ? preview.supplier_names.filter(Boolean).join('、') : '',
       supplier_options: recommendedSuppliers
         .filter((item) => Number(item?.supplier_id) > 0)
-        .map((item) => ({ value: Number(item.supplier_id), label: item.supplier_name || `供应商${item.supplier_id}` })),
+        .map((item) => ({
+          value: Number(item.supplier_id),
+          label: item.supplier_name || `供应商${item.supplier_id}`,
+          code: item?.supplier_code || '',
+          avg_price: item?.avg_price ?? null,
+          latest_price: item?.latest_price ?? null,
+          recommend_reason: item?.recommend_reason || '',
+        })),
+      recommended_supplier_details: recommendedSuppliers
+        .filter((item) => Number(item?.supplier_id) > 0)
+        .map((item) => ({
+          value: Number(item.supplier_id),
+          label: item.supplier_name || `供应商${item.supplier_id}`,
+          code: item?.supplier_code || '',
+          avg_price: item?.avg_price ?? null,
+          latest_price: item?.latest_price ?? null,
+          recommend_reason: item?.recommend_reason || '',
+        })),
       deadline: preview.deadline || '',
       request_count: preview.request_count ?? '',
       selected_line_count: preview.selected_line_count ?? preview.request_count ?? '',
@@ -699,6 +872,10 @@ const getActionDraft = (action) => {
             supplier_id: Number(item?.supplier_id) || 0,
             supplier_name: item?.supplier_name || '',
             allocated_ratio: Number(item?.allocated_ratio) || 0,
+            quote_total_amount: item?.quote_total_amount ?? null,
+            avg_quote_price: item?.avg_quote_price ?? null,
+            supplier_rating_score: item?.supplier_rating_score ?? null,
+            recommendation_reason: item?.recommendation_reason || '',
           }))
         : [],
     }
@@ -720,6 +897,78 @@ const formatPriceReference = (priceReference) => {
   if (rangeText) return rangeText
   if (avgPrice !== null && avgPrice !== undefined) return `均价 ${avgPrice}`
   return ''
+}
+
+const mergeSupplierOptions = (currentOptions = [], incomingOptions = []) => {
+  const merged = new Map()
+  ;[...currentOptions, ...incomingOptions].forEach((item) => {
+    const value = Number(item?.value || item?.id || item?.supplier_id) || 0
+    const label = String(item?.label || item?.name || item?.supplier_name || '').trim()
+    if (!value || !label) return
+    merged.set(value, {
+      value,
+      label,
+      code: item?.code || item?.supplier_code || '',
+      avg_price: item?.avg_price ?? null,
+      latest_price: item?.latest_price ?? null,
+      recommend_reason: item?.recommend_reason || '',
+    })
+  })
+  return Array.from(merged.values())
+}
+
+const getSelectedSupplierDetails = (action) => {
+  const draftModel = getActionDraft(action)
+  const selectedIds = Array.isArray(draftModel.supplier_ids) ? draftModel.supplier_ids.map((item) => Number(item) || 0) : []
+  if (!selectedIds.length) return []
+  const optionMap = new Map(
+    mergeSupplierOptions(draftModel.supplier_options, draftModel.recommended_supplier_details)
+      .map((item) => [Number(item.value) || 0, item]),
+  )
+  return selectedIds
+    .filter((item) => item > 0)
+    .map((item) => optionMap.get(item))
+    .filter(Boolean)
+}
+
+const querySearchActionSuppliers = async (action, keyword) => {
+  const draftModel = getActionDraft(action)
+  const search = String(keyword || '').trim()
+  if (!search) {
+    draftModel.supplier_options = mergeSupplierOptions(
+      draftModel.supplier_options,
+      draftModel.recommended_supplier_details,
+    )
+    return
+  }
+
+  try {
+    const { data } = await api.get('/supplier/list', {
+      params: {
+        page: 1,
+        page_size: 20,
+        keyword: search,
+      },
+      silentError: true,
+    })
+    const remoteOptions = (Array.isArray(data?.list) ? data.list : []).map((item) => ({
+      value: Number(item?.id || item?.supplier_id) || 0,
+      label: item?.name || item?.supplier_name || '',
+      code: item?.code || item?.supplier_code || '',
+      avg_price: item?.avg_price ?? null,
+      latest_price: item?.latest_price ?? null,
+      recommend_reason: item?.recommend_reason || '',
+    }))
+    draftModel.supplier_options = mergeSupplierOptions(
+      mergeSupplierOptions(draftModel.supplier_options, draftModel.recommended_supplier_details),
+      remoteOptions,
+    )
+  } catch {
+    draftModel.supplier_options = mergeSupplierOptions(
+      draftModel.supplier_options,
+      draftModel.recommended_supplier_details,
+    )
+  }
 }
 
 const buildActionOverrides = (action) => {
@@ -755,6 +1004,37 @@ const buildActionOverrides = (action) => {
   return {}
 }
 
+const applySavedActionPreview = (action, preview = {}) => {
+  if (!action || !preview || typeof preview !== 'object') return
+  action.preview = {
+    ...(action.preview || {}),
+    ...preview,
+  }
+  const actionId = Number(action?.pending_action_id)
+  if (!Number.isFinite(actionId) || actionId <= 0) return
+  delete pendingActionDrafts.value[actionId]
+}
+
+const persistActionDraft = (action) => {
+  const actionId = Number(action?.pending_action_id)
+  if (!Number.isFinite(actionId) || actionId <= 0) return
+  if (actionDraftSaveTimers.has(actionId)) {
+    clearTimeout(actionDraftSaveTimers.get(actionId))
+  }
+  actionDraftSaveTimers.set(actionId, setTimeout(async () => {
+    savingActionDraftIds.value = Array.from(new Set([...savingActionDraftIds.value, actionId]))
+    try {
+      const { data } = await updateProcurementAgentAction(actionId, buildActionOverrides(action))
+      applySavedActionPreview(action, data?.preview || {})
+    } catch (error) {
+      ElMessage.error(error.response?.data?.detail || '保存供应商草稿失败')
+    } finally {
+      savingActionDraftIds.value = savingActionDraftIds.value.filter((id) => id !== actionId)
+      actionDraftSaveTimers.delete(actionId)
+    }
+  }, 300))
+}
+
 const ensureManualQuoteDraft = (action) => {
   const draftModel = getActionDraft(action)
   if (String(action?.action_type || '').trim() !== 'save_manual_quotes') {
@@ -766,27 +1046,41 @@ const ensureManualQuoteDraft = (action) => {
   const preview = action?.preview || {}
   const recommendedSuppliers = Array.isArray(preview.supplier_options) ? preview.supplier_options : []
   const materialLines = Array.isArray(preview.material_lines) ? preview.material_lines : []
-  draftModel.material_lines = materialLines.map((line) => ({
-    id: line?.id ?? null,
-    erp_request_id: line?.erp_request_id || '',
-    bill_no: line?.bill_no || '',
-    material_code: line?.material_code || '',
-    material_name: line?.material_name || '',
-    material_model: line?.material_model || '',
-    qty: Number(line?.qty) || 0,
-    delivery_date: line?.delivery_date || '',
-    target_price: line?.target_price ?? preview.target_price_suggestion ?? '',
-    quote_suppliers: (recommendedSuppliers.length ? recommendedSuppliers : [{}]).map((supplier) => ({
-      supplier_id: Number(supplier?.supplier_id) || null,
-      supplier_code: supplier?.supplier_code || '',
-      supplier_name: supplier?.supplier_name || '',
-      price: supplier?.avg_price ?? '',
+  const materialHistoryMap = {}
+  if (Array.isArray(preview.material_history)) {
+    for (const hist of preview.material_history) {
+      const code = String(hist?.material_code || '').trim()
+      if (code) {
+        materialHistoryMap[code] = hist
+      }
+    }
+  }
+  draftModel.material_lines = materialLines.map((line) => {
+    const code = String(line?.material_code || '').trim()
+    const hist = code ? materialHistoryMap[code] || null : null
+    return {
+      id: line?.id ?? null,
+      erp_request_id: line?.erp_request_id || '',
+      bill_no: line?.bill_no || '',
+      material_code: code,
+      material_name: line?.material_name || '',
+      material_model: line?.material_model || '',
       qty: Number(line?.qty) || 0,
       delivery_date: line?.delivery_date || '',
-      suggested_price: supplier?.avg_price ?? null,
-      recommend_reason: supplier?.recommend_reason || '',
-    })),
-  }))
+      target_price: line?.target_price ?? preview.target_price_suggestion ?? '',
+      quote_suppliers: (recommendedSuppliers.length ? recommendedSuppliers : [{}]).map((supplier) => ({
+        supplier_id: Number(supplier?.supplier_id) || null,
+        supplier_code: supplier?.supplier_code || '',
+        supplier_name: supplier?.supplier_name || '',
+        price: supplier?.avg_price ?? '',
+        qty: Number(line?.qty) || 0,
+        delivery_date: line?.delivery_date || '',
+        suggested_price: supplier?.avg_price ?? null,
+        recommend_reason: supplier?.recommend_reason || '',
+      })),
+      material_history: hist,
+    }
+  })
   return draftModel
 }
 
@@ -833,7 +1127,7 @@ const hasManualQuoteEntries = (action) => {
 
 const getActionConfirmLabel = (action) => {
   if (String(action?.action_type || '').trim() === 'save_manual_quotes') {
-    return hasManualQuoteEntries(action) ? '确认录入报价并继续比价' : '确认创建手动比价任务'
+    return hasManualQuoteEntries(action) ? '生成比价方案' : '填写报价后生成比价方案'
   }
   return getPendingActionButtonLabel(action)
 }
@@ -1078,6 +1372,13 @@ const confirmAction = async (action, extraOverrides = {}) => {
       ...buildManualQuoteOverrides(action),
       ...extraOverrides,
     })
+    if (data?.already_processed) {
+      // 动作已被确认过，幂等处理：不重复执行，仅移除卡片
+      ElMessage.info('该动作已处理，无需重复确认')
+      delete pendingActionDrafts.value[normalizedId]
+      dismissPendingAction(action)
+      return
+    }
     ElMessage.success('AI 待确认动作已执行')
     window.dispatchEvent(new CustomEvent('procurement-agent-action-confirmed', { detail: data }))
     delete pendingActionDrafts.value[normalizedId]
@@ -1249,6 +1550,7 @@ const toggleExpanded = async () => {
 }
 
 onMounted(() => {
+  syncAuthSnapshot()
   resetPanelPosition()
   pageContextVersion.value += 1
   window.addEventListener('resize', resetPanelPosition)
@@ -1257,15 +1559,25 @@ onMounted(() => {
   window.addEventListener('pointercancel', stopInteractions)
   window.addEventListener('procurement-agent-open', handleAgentOpen)
   window.addEventListener('procurement-agent-context-updated', handleAgentContextUpdated)
+  window.addEventListener('auth-changed', syncAuthSnapshot)
+  window.addEventListener('focus', syncAuthSnapshot)
 })
 
 onBeforeUnmount(() => {
+  actionDraftSaveTimers.forEach((timerId) => clearTimeout(timerId))
+  actionDraftSaveTimers.clear()
   window.removeEventListener('resize', resetPanelPosition)
   window.removeEventListener('pointermove', handlePointerMove)
   window.removeEventListener('pointerup', stopInteractions)
   window.removeEventListener('pointercancel', stopInteractions)
   window.removeEventListener('procurement-agent-open', handleAgentOpen)
   window.removeEventListener('procurement-agent-context-updated', handleAgentContextUpdated)
+  window.removeEventListener('auth-changed', syncAuthSnapshot)
+  window.removeEventListener('focus', syncAuthSnapshot)
+})
+
+watch(() => route.fullPath, () => {
+  syncAuthSnapshot()
 })
 </script>
 
@@ -1449,14 +1761,42 @@ onBeforeUnmount(() => {
 
 .pending-action-allocation-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px auto;
+  grid-template-columns: minmax(0, 1fr) 140px;
   gap: 8px;
   align-items: center;
+  padding: 6px 8px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+}
+
+.pending-action-allication-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .pending-action-allocation-name {
   font-size: 13px;
+  font-weight: 600;
   color: #1f2b3d;
+}
+
+.pending-action-allocation-meta {
+  font-size: 11px;
+  color: #607287;
+}
+
+.pending-action-allocation-reason {
+  font-size: 11px;
+  color: #909399;
+}
+
+.pending-action-allocation-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
 .pending-action-allocation-suffix {
@@ -1494,6 +1834,57 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   margin: 8px 0;
+}
+
+.manual-quote-history {
+  margin: 8px 0;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.manual-quote-history :deep(.el-collapse) {
+  border: none;
+}
+
+.manual-quote-history :deep(.el-collapse-item__header) {
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #303133;
+  background: #fafafa;
+}
+
+.manual-quote-history :deep(.el-collapse-item__content) {
+  padding: 8px 12px;
+}
+
+.history-table-wrap {
+  overflow-x: auto;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.history-table th,
+.history-table td {
+  padding: 4px 8px;
+  border: 1px solid #ebeef5;
+  text-align: left;
+}
+
+.history-table th {
+  background: #f5f7fa;
+  font-weight: 600;
+  color: #606266;
+}
+
+.history-table td {
+  color: #303133;
 }
 
 .manual-quote-supplier-head {
@@ -1715,6 +2106,58 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.5;
   color: #5f6b7a;
+}
+
+.recommended-supplier-list {
+  display: grid;
+  gap: 8px;
+}
+
+.selected-supplier-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.selected-supplier-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #ebf4ff;
+  border: 1px solid #cfe0f6;
+  color: #23456b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recommended-supplier-card {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #dce6f2;
+}
+
+.recommended-supplier-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2b3d;
+}
+
+.recommended-supplier-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #607287;
+}
+
+.recommended-supplier-reason {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #6b7a90;
+  line-height: 1.5;
 }
 
 :deep(.pending-action-confirm-btn) {

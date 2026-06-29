@@ -134,8 +134,13 @@
                         multiple
                         collapse-tags
                         collapse-tags-tooltip
+                        filterable
+                        remote
+                        reserve-keyword
                         size="small"
                         placeholder="建议供应商"
+                        :remote-method="(keyword) => querySearchActionSuppliers(action, keyword)"
+                        @change="() => persistActionDraft(action)"
                       >
                         <el-option
                           v-for="supplier in getActionDraft(action).supplier_options"
@@ -148,6 +153,36 @@
                     </div>
                     <div v-if="getActionDraft(action).supplier_names" class="pending-action-hint">
                       建议供应商：{{ getActionDraft(action).supplier_names }}
+                    </div>
+                    <div class="pending-action-hint">
+                      支持按供应商名称或编码模糊搜索，并可把新供应商追加到当前询价草稿。
+                    </div>
+                    <div v-if="getSelectedSupplierDetails(action).length" class="pending-action-button-row">
+                      <span
+                        v-for="supplier in getSelectedSupplierDetails(action)"
+                        :key="`selected-supplier-${supplier.value}`"
+                        class="model-pill"
+                      >
+                        {{ supplier.label }}<span v-if="supplier.code">（{{ supplier.code }}）</span>
+                      </span>
+                    </div>
+                    <div v-if="getRecommendedSupplierDetails(action).length" class="manual-quote-section">
+                      <div class="manual-quote-section-title">推荐供应商</div>
+                      <div
+                        v-for="supplier in getRecommendedSupplierDetails(action)"
+                        :key="`recommended-supplier-${supplier.value}`"
+                        class="manual-supplier-row"
+                      >
+                        <div class="manual-supplier-name">
+                          {{ supplier.label }}
+                          <span v-if="supplier.code">（{{ supplier.code }}）</span>
+                        </div>
+                        <div class="manual-supplier-meta">
+                          <span v-if="supplier.avg_price !== null && supplier.avg_price !== undefined">历史均价：{{ supplier.avg_price }}</span>
+                          <span v-if="supplier.latest_price !== null && supplier.latest_price !== undefined">最新价：{{ supplier.latest_price }}</span>
+                        </div>
+                        <div v-if="supplier.recommend_reason" class="manual-supplier-reason">{{ supplier.recommend_reason }}</div>
+                      </div>
                     </div>
                     <div v-if="getActionDraft(action).price_reference_text" class="pending-action-hint">
                       历史参考价：{{ getActionDraft(action).price_reference_text }}
@@ -172,43 +207,88 @@
                   </div>
                   <div v-else-if="action.action_type === 'save_manual_quotes'" class="pending-action-form">
                     <el-input v-model="getActionDraft(action).title" size="small" placeholder="手动比价任务标题" />
-                    <div class="pending-action-hint">
-                      已勾选明细：{{ getActionDraft(action).selected_line_count }} 条，物料项：{{ getActionDraft(action).material_item_count }} 项
-                    </div>
-                    <div v-if="getActionDraft(action).bill_nos" class="pending-action-hint">
-                      关联单号：{{ getActionDraft(action).bill_nos }}
-                    </div>
                     <div v-if="getActionDraft(action).price_reference_text" class="pending-action-hint">
                       历史参考价：{{ getActionDraft(action).price_reference_text }}
                     </div>
                     <div v-if="getActionDraft(action).risk_notes" class="pending-action-hint">
                       风险提示：{{ getActionDraft(action).risk_notes }}
                     </div>
-                    <div v-if="getActionDraft(action).material_lines.length" class="manual-quote-section">
-                      <div class="manual-quote-section-title">物料明细（确认后将创建手动比价任务）</div>
-                      <div class="manual-quote-table">
-                        <div class="manual-quote-table-header">
-                          <span>物料编码</span>
-                          <span>物料名称</span>
-                          <span>规格型号</span>
-                          <span>数量</span>
-                          <span>需求交期</span>
-                        </div>
-                        <div
-                          v-for="(line, lineIdx) in getActionDraft(action).material_lines"
-                          :key="`material-line-${lineIdx}`"
-                          class="manual-quote-table-row"
-                        >
-                          <span>{{ line.material_code || '-' }}</span>
-                          <span>{{ line.material_name || '-' }}</span>
-                          <span>{{ line.material_model || '-' }}</span>
-                          <span>{{ line.qty ?? '-' }}</span>
-                          <span>{{ line.delivery_date || '-' }}</span>
-                        </div>
+                    <div
+                      v-for="(entry, entryIdx) in getActionDraft(action).quote_entries"
+                      :key="`quote-entry-${entryIdx}`"
+                      class="manual-quote-section"
+                    >
+                      <div class="manual-quote-section-title">
+                        {{ entry.material_name || '物料' }}
+                        <span class="manual-quote-section-meta">| {{ entry.material_code || '-' }} | {{ entry.material_model || '-' }} | 需求 {{ entry.qty ?? '-' }} | 交期 {{ entry.delivery_date || '-' }}</span>
                       </div>
+                      <div
+                        v-for="(supplier, supplierIdx) in entry.suppliers"
+                        :key="`quote-supplier-${entryIdx}-${supplierIdx}`"
+                        class="manual-quote-supplier-row"
+                      >
+                        <el-select
+                          v-model="supplier.supplier_id"
+                          size="small"
+                          filterable
+                          allow-create
+                          default-first-option
+                          placeholder="选择或输入供应商"
+                          style="width: 180px;"
+                          @change="(val) => { supplier.supplier_name = getSupplierLabelById(action, val) }"
+                        >
+                          <el-option
+                            v-for="opt in getActionDraft(action).available_suppliers"
+                            :key="opt.value"
+                            :label="opt.label"
+                            :value="opt.value"
+                          />
+                        </el-select>
+                        <el-input
+                          v-model="supplier.supplier_name"
+                          size="small"
+                          placeholder="供应商名称（可选）"
+                          style="width: 140px;"
+                        />
+                        <el-input-number
+                          v-model="supplier.price"
+                          size="small"
+                          :min="0"
+                          :precision="4"
+                          :step="0.01"
+                          placeholder="报价"
+                          style="width: 110px;"
+                        />
+                        <el-input-number
+                          v-model="supplier.qty"
+                          size="small"
+                          :min="0"
+                          :precision="2"
+                          placeholder="数量"
+                          style="width: 90px;"
+                        />
+                        <el-input
+                          v-model="supplier.delivery_date"
+                          size="small"
+                          placeholder="交期"
+                          style="width: 110px;"
+                        />
+                        <el-button
+                          size="small"
+                          type="danger"
+                          text
+                          @click="entry.suppliers.splice(supplierIdx, 1)"
+                        >删除</el-button>
+                      </div>
+                      <el-button
+                        size="small"
+                        type="primary"
+                        text
+                        @click="addManualQuoteSupplier(action, entryIdx)"
+                      >+ 添加供应商报价</el-button>
                     </div>
                     <div v-if="getActionDraft(action).manual_supplier_options.length" class="manual-quote-section">
-                      <div class="manual-quote-section-title">推荐供应商（参考，确认后可在任务详情中录入报价）</div>
+                      <div class="manual-quote-section-title">推荐供应商参考</div>
                       <div
                         v-for="supplier in getActionDraft(action).manual_supplier_options"
                         :key="`supplier-option-${supplier.value}`"
@@ -224,7 +304,7 @@
                       </div>
                     </div>
                     <div class="pending-action-hint manual-quote-tip">
-                      确认后将创建手动比价任务（不发送询价单）。您可以在询价任务详情中录入供应商报价，再进行比价分析。
+                      确认后将创建手动比价任务。若已录入报价，系统将自动生成比价分析和份额分配建议。
                     </div>
                   </div>
                   <el-button
@@ -275,6 +355,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import api from '../../api'
 import {
   clearProcurementAgentMemory,
   confirmProcurementAgentAction,
@@ -283,6 +364,7 @@ import {
   getProcurementAgentSessions,
   getProcurementAgentStatus,
   sendProcurementAgentMessage,
+  updateProcurementAgentAction,
 } from '../../api/agent'
 
 const pageLoading = ref(false)
@@ -296,6 +378,8 @@ const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
 const confirmingActionIds = ref([])
 const pendingActionDrafts = ref({})
+const savingActionDraftIds = ref([])
+const actionDraftSaveTimers = new Map()
 
 const canSend = computed(() => draft.value.trim().length > 0)
 const currentSessionTitle = computed(() => {
@@ -345,8 +429,8 @@ const getPendingActionButtonLabel = (action) => {
   const actionType = String(action?.action_type || '').trim()
   if (actionType === 'create_inquiry_draft') return '确认创建询价草稿'
   if (actionType === 'create_inquiry_from_selected_requests') return '确认创建询价任务'
-  if (actionType === 'save_manual_quotes') return '确认创建手动比价任务'
-  if (actionType === 'confirm_award') return '确认中标'
+  if (actionType === 'save_manual_quotes') return '生成比价方案'
+  if (actionType === 'confirm_award') return '生成中标与合同草稿'
   if (actionType === 'create_contract_draft') return '确认生成合同草稿'
   return '确认执行'
 }
@@ -394,6 +478,24 @@ const getActionDraft = (action) => {
           rating_score: item.rating_score,
           recommend_reason: item.recommend_reason,
         })),
+      // 手动比价专用：报价录入区，每个物料行对应可录入的多供应商报价
+      quote_entries: Array.isArray(preview.material_lines) ? preview.material_lines.map((line) => ({
+        material_code: line.material_code || '',
+        material_name: line.material_name || '',
+        material_model: line.material_model || '',
+        qty: line.qty ?? null,
+        delivery_date: line.delivery_date || '',
+        erp_request_id: line.erp_request_id || '',
+        request_id: line.id ?? null,
+        suppliers: [],
+      })) : [],
+      // 可选供应商列表（含推荐 + 允许手动输入）
+      available_suppliers: supplierOptions
+        .filter((item) => Number(item?.supplier_id) > 0)
+        .map((item) => ({
+          value: Number(item.supplier_id),
+          label: item.supplier_name || `供应商${item.supplier_id}`,
+        })),
     }
   }
   return pendingActionDrafts.value[actionId]
@@ -413,6 +515,87 @@ const formatPriceReference = (priceReference) => {
   if (rangeText) return rangeText
   if (avgPrice !== null && avgPrice !== undefined) return `均价 ${avgPrice}`
   return ''
+}
+
+const getRecommendedSupplierDetails = (action) => {
+  const recommendedSuppliers = Array.isArray(action?.preview?.recommended_suppliers) ? action.preview.recommended_suppliers : []
+  return recommendedSuppliers
+    .filter((item) => Number(item?.supplier_id) > 0)
+    .map((item) => ({
+      value: Number(item.supplier_id),
+      label: item.supplier_name || `渚涘簲鍟?${item.supplier_id}`,
+      code: item?.supplier_code || '',
+      avg_price: item?.avg_price ?? null,
+      latest_price: item?.latest_price ?? null,
+      recommend_reason: item?.recommend_reason || '',
+    }))
+}
+
+const mergeSupplierOptions = (currentOptions = [], incomingOptions = []) => {
+  const merged = new Map()
+  ;[...currentOptions, ...incomingOptions].forEach((item) => {
+    const value = Number(item?.value || item?.id || item?.supplier_id) || 0
+    const label = String(item?.label || item?.name || item?.supplier_name || '').trim()
+    if (!value || !label) return
+    merged.set(value, {
+      value,
+      label,
+      code: item?.code || item?.supplier_code || '',
+      avg_price: item?.avg_price ?? null,
+      latest_price: item?.latest_price ?? null,
+      recommend_reason: item?.recommend_reason || '',
+    })
+  })
+  return Array.from(merged.values())
+}
+
+const getSelectedSupplierDetails = (action) => {
+  const draftModel = getActionDraft(action)
+  const selectedIds = Array.isArray(draftModel.supplier_ids) ? draftModel.supplier_ids.map((item) => Number(item) || 0) : []
+  if (!selectedIds.length) return []
+  const optionMap = new Map(
+    mergeSupplierOptions(draftModel.supplier_options, getRecommendedSupplierDetails(action))
+      .map((item) => [Number(item.value) || 0, item]),
+  )
+  return selectedIds
+    .filter((item) => item > 0)
+    .map((item) => optionMap.get(item))
+    .filter(Boolean)
+}
+
+const querySearchActionSuppliers = async (action, keyword) => {
+  const draftModel = getActionDraft(action)
+  const search = String(keyword || '').trim()
+  const recommended = getRecommendedSupplierDetails(action)
+  if (!search) {
+    draftModel.supplier_options = mergeSupplierOptions(draftModel.supplier_options, recommended)
+    return
+  }
+
+  try {
+    const { data } = await api.get('/supplier/list', {
+      params: {
+        page: 1,
+        page_size: 20,
+        keyword: search,
+      },
+      silentError: true,
+    })
+    const remoteOptions = (Array.isArray(data?.list) ? data.list : []).map((item) => ({
+      value: Number(item?.id || item?.supplier_id) || 0,
+      label: item?.name || item?.supplier_name || '',
+      code: item?.code || item?.supplier_code || '',
+      avg_price: item?.avg_price ?? null,
+      latest_price: item?.latest_price ?? null,
+      recommend_reason: item?.recommend_reason || '',
+    }))
+    draftModel.supplier_options = mergeSupplierOptions(
+      mergeSupplierOptions(draftModel.supplier_options, recommended),
+      remoteOptions,
+    )
+  } catch {
+    draftModel.supplier_options = mergeSupplierOptions(draftModel.supplier_options, recommended)
+  }
 }
 
 const buildActionOverrides = (action) => {
@@ -436,11 +619,81 @@ const buildActionOverrides = (action) => {
     }
   }
   if (actionType === 'save_manual_quotes') {
+    const manualQuoteEntries = Array.isArray(draftModel.quote_entries)
+      ? draftModel.quote_entries
+          .filter((entry) => Array.isArray(entry.suppliers) && entry.suppliers.length > 0)
+          .map((entry) => ({
+            material_code: entry.material_code || '',
+            erp_request_id: entry.erp_request_id || '',
+            request_id: entry.request_id ?? null,
+            suppliers: entry.suppliers
+              .filter((s) => Number(s.price) > 0 && Number(s.qty) > 0)
+              .map((s) => ({
+                supplier_id: s.supplier_id || null,
+                supplier_name: s.supplier_name || '',
+                price: Number(s.price),
+                qty: Number(s.qty),
+                delivery_date: s.delivery_date || null,
+              })),
+          }))
+          .filter((entry) => entry.suppliers.length > 0)
+      : []
     return {
       title: String(draftModel.title || '').trim(),
+      manual_quote_entries: manualQuoteEntries,
     }
   }
   return {}
+}
+
+const addManualQuoteSupplier = (action, entryIdx) => {
+  const draftModel = getActionDraft(action)
+  if (!Array.isArray(draftModel.quote_entries) || entryIdx < 0 || entryIdx >= draftModel.quote_entries.length) return
+  const entry = draftModel.quote_entries[entryIdx]
+  entry.suppliers.push({
+    supplier_id: null,
+    supplier_name: '',
+    price: null,
+    qty: entry.qty ?? null,
+    delivery_date: entry.delivery_date || '',
+  })
+}
+
+const getSupplierLabelById = (action, supplierId) => {
+  const draftModel = getActionDraft(action)
+  const found = (draftModel.available_suppliers || []).find((item) => Number(item.value) === Number(supplierId))
+  return found ? found.label : ''
+}
+
+const applySavedActionPreview = (action, preview = {}) => {
+  if (!action || !preview || typeof preview !== 'object') return
+  action.preview = {
+    ...(action.preview || {}),
+    ...preview,
+  }
+  const actionId = Number(action?.pending_action_id)
+  if (!Number.isFinite(actionId) || actionId <= 0) return
+  delete pendingActionDrafts.value[actionId]
+}
+
+const persistActionDraft = (action) => {
+  const actionId = Number(action?.pending_action_id)
+  if (!Number.isFinite(actionId) || actionId <= 0) return
+  if (actionDraftSaveTimers.has(actionId)) {
+    clearTimeout(actionDraftSaveTimers.get(actionId))
+  }
+  actionDraftSaveTimers.set(actionId, setTimeout(async () => {
+    savingActionDraftIds.value = Array.from(new Set([...savingActionDraftIds.value, actionId]))
+    try {
+      const { data } = await updateProcurementAgentAction(actionId, buildActionOverrides(action))
+      applySavedActionPreview(action, data?.preview || {})
+    } catch (error) {
+      ElMessage.error(error.response?.data?.detail || '保存供应商草稿失败')
+    } finally {
+      savingActionDraftIds.value = savingActionDraftIds.value.filter((id) => id !== actionId)
+      actionDraftSaveTimers.delete(actionId)
+    }
+  }, 300))
 }
 
 const currentPageContext = computed(() => {
@@ -1011,6 +1264,26 @@ onMounted(async () => {
   margin-top: 4px;
   font-size: 12px;
   color: #8a97aa;
+}
+
+.manual-quote-section-meta {
+  font-weight: 400;
+  color: #6b7a90;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.manual-quote-supplier-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #eef3fa;
+}
+
+.manual-quote-supplier-row:last-child {
+  border-bottom: none;
 }
 
 .manual-quote-tip {

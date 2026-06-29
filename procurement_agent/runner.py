@@ -72,8 +72,9 @@ class ProcurementAgentRunner:
         context = context or {}
         history = load_messages(user_id, session_id)
         effective_message = self._merge_context_into_message(message, context)
-        intent_type = self._classify_user_intent(message)
         flow_mode = self._normalize_flow_mode(context.get("flow_mode"))
+        has_selected_requests = bool(context.get("selected_request_ids") or [])
+        intent_type = self._classify_user_intent(message, flow_mode, has_selected_requests)
 
         guardrail_reason = detect_prompt_injection(message)
         if guardrail_reason:
@@ -122,6 +123,29 @@ class ProcurementAgentRunner:
                 memory_count=len(load_messages(user_id, session_id)),
             )
 
+        # 缺上下文 ID 引导：发布询价/生成合同时，若未选中对应资源，返回明确文字提示，
+        # 避免走到 LLM 自由文本回复或工具静默不触发。
+        missing_context_answer = self._build_missing_context_answer(
+            message=message,
+            flow_mode=flow_mode,
+            context=context,
+        )
+        if missing_context_answer:
+            append_message(user_id, session_id, "user", message)
+            append_message(
+                user_id,
+                session_id,
+                "assistant",
+                missing_context_answer,
+                metadata={"tool_results": []},
+            )
+            return AgentChatResponse(
+                session_id=session_id,
+                answer=missing_context_answer,
+                tool_results=[],
+                memory_count=len(load_messages(user_id, session_id)),
+            )
+
         if intent_type == "workflow_action" and not flow_mode:
             answer, tool_results = self._build_flow_mode_required_response()
             append_message(user_id, session_id, "user", message)
@@ -149,6 +173,23 @@ class ProcurementAgentRunner:
             intent_type=intent_type,
             flow_mode=flow_mode,
         )
+        card_first_answer = self._build_card_first_answer(tool_results)
+        if card_first_answer:
+            append_message(user_id, session_id, "user", message)
+            append_message(
+                user_id,
+                session_id,
+                "assistant",
+                card_first_answer,
+                metadata={"tool_results": [item.model_dump() for item in tool_results]},
+            )
+            self._save_long_term_memory(user_id, session_id, message, card_first_answer, tool_results)
+            return AgentChatResponse(
+                session_id=session_id,
+                answer=card_first_answer,
+                tool_results=tool_results,
+                memory_count=len(load_messages(user_id, session_id)),
+            )
         tool_text = self._format_tool_results(tool_results)
 
         prompt_messages = AGENT_PROMPT.format_messages(
@@ -342,15 +383,34 @@ class ProcurementAgentRunner:
         flow_mode = str(value or "").strip()
         return flow_mode if flow_mode in {"auto_inquiry", "manual_compare"} else None
 
-    def _classify_user_intent(self, message: str) -> str:
+    def _classify_user_intent(
+        self,
+        message: str,
+        flow_mode: str | None = None,
+        has_selected_requests: bool = False,
+    ) -> str:
         text = str(message or "")
+        if any(keyword in text for keyword in ["生成采购草稿", "采购草稿", "询价草稿", "生成询价草稿", "生成询价", "询价任务"]):
+            return "workflow_action"
         workflow_keywords = [
             "发起询价", "创建询价任务", "发送询价单", "自动询价", "手动比价",
             "分配份额", "确认中标", "生成合同", "发布询价", "生成询价单",
-            "生成询价草稿", "生成合同草稿", "发询价", "推送供应商",
+            "生成询价草稿", "生成合同草稿", "发询价", "推送供应商", "生成询价", "询价任务",
+            "手动报价", "手动询价", "录入报价", "线下报价", "报价录入",
+            "填写报价", "填入报价", "录入供应商报价", "手动比价任务",
+            "创建手动比价", "处理勾选物料", "处理勾选", "发起比价",
         ]
         if any(keyword in text for keyword in workflow_keywords):
             return "workflow_action"
+        # Context-aware 兜底：flow_mode 已选 + 已勾选采购申请 + 消息含业务动作词根，
+        # 直接判为 workflow_action，避免措辞变体导致漏判（如"生成询价任务草稿"）。
+        if flow_mode and has_selected_requests:
+            action_roots = [
+                "询价", "比价", "草稿", "合同", "份额", "中标", "定标",
+                "发布", "发送", "推送", "录入", "报价", "创建", "生成",
+            ]
+            if any(root in text for root in action_roots):
+                return "workflow_action"
         return "read_only_query"
 
     @staticmethod
@@ -372,6 +432,52 @@ class ProcurementAgentRunner:
             )
         ]
         return answer, tool_results
+
+    def _build_missing_context_answer(
+        self,
+        message: str,
+        flow_mode: str | None,
+        context: dict[str, Any],
+    ) -> str:
+        """检测发布询价/生成合同场景下缺失 inquiry_id 或 supplier_id，返回文字引导。
+
+        这些场景没有合适的 pending_action 可以创建（不知道用户要操作哪个询价单），
+        所以用文字明确告知用户需要先选中什么，避免 LLM 自由文本或工具静默。
+
+        注意：manual_compare 模式下若缺 inquiry_id，由 save_manual_quotes 兜底建任务，
+        不在此处拦截；仅当已有 inquiry_id 但缺 supplier_id 时才提示选供应商。
+        """
+        if not flow_mode:
+            return ""
+        text = str(message or "")
+        inquiry_id = str(context.get("inquiry_id") or "").strip()
+        supplier_id = str(context.get("supplier_id") or "").strip()
+
+        asks_publish = self._has_any_keyword(text, ["发布询价", "发送询价单", "推送供应商", "发询价"])
+        asks_contract = self._has_any_keyword(text, ["生成合同", "合同草稿"])
+
+        # auto_inquiry 模式下：发布询价需要选中 AI 草稿状态的询价单
+        if flow_mode == "auto_inquiry" and asks_publish and not inquiry_id:
+            return (
+                "发布询价需要先选中一个 AI 草稿状态的询价单。\n\n"
+                "请在询价单列表中点击要发布的草稿行，让上下文带上该询价单后再告诉我“发布询价”。"
+            )
+
+        # auto_inquiry 模式下：生成合同需要选中已定标的询价单和中标供应商
+        if flow_mode == "auto_inquiry" and asks_contract and not inquiry_id:
+            return (
+                "生成合同需要先选中已定标的询价单和中标供应商。\n\n"
+                "请在询价单列表中点击已完成份额分配的询价单，并选中中标供应商行，"
+                "再告诉我“生成合同”。"
+            )
+
+        # 两种模式下：已有 inquiry_id 但缺 supplier_id 时，提示选中标供应商
+        if asks_contract and inquiry_id and not supplier_id:
+            return (
+                "生成合同需要先选中中标供应商。\n\n"
+                "请在询价单的供应商列表中点击要生成合同的中标供应商行，再告诉我“生成合同”。"
+            )
+        return ""
 
     def _get_allowed_tools(self, intent_type: str, flow_mode: str | None) -> set[str]:
         if intent_type == "read_only_query":
@@ -418,29 +524,26 @@ class ProcurementAgentRunner:
             message,
             ["录入报价", "手动报价", "录入供应商报价", "填入报价", "填写报价", "手动比价任务", "创建手动比价"],
         )
-        if intent_type == "workflow_action" and flow_mode == "auto_inquiry" and (asks_inquiry or asks_draft_inquiry) and selected_request_ids:
-            actions.append((
-                "create_inquiry_from_selected_requests",
-                {
-                    "request_ids": selected_request_ids,
-                },
-            ))
+        if intent_type == "workflow_action" and flow_mode == "auto_inquiry" and selected_request_ids:
+            # auto_inquiry 模式下：用户已勾选申请且表达了业务动作意图，
+            # 只要不是发布/中标/合同这类后续动作，默认触发草稿生成，避免措辞变体漏判。
+            is_followup_action = asks_publish or asks_award or asks_contract
+            if (asks_inquiry or asks_draft_inquiry or not is_followup_action):
+                actions.append((
+                    "create_inquiry_from_selected_requests",
+                    {
+                        "request_ids": selected_request_ids,
+                    },
+                ))
 
         # 手动比价模式：用户要发起询价/生成询价单/处理勾选物料/录入报价/分配份额/生成合同，
         # 且当前没有 inquiry_id（即还没有手动比价任务），优先创建手动比价任务（save_manual_quotes）
+        # 只要 manual_compare 模式下有勾选申请且没有现有任务，就触发卡片，减少用户操作
         if (
             intent_type == "workflow_action"
             and flow_mode == "manual_compare"
             and selected_request_ids
             and not context_defaults.get("inquiry_id")
-            and (
-                asks_inquiry
-                or asks_draft_inquiry
-                or asks_manual_quote_entry
-                or asks_manual_compare
-                or asks_award
-                or asks_contract
-            )
         ):
             actions.append((
                 "save_manual_quotes",
@@ -632,6 +735,31 @@ class ProcurementAgentRunner:
         data = tool.invoke(args)
         summary = self._summarize_tool_result(name, data)
         return AgentToolResult(name=name, args=args, summary=summary, data=data)
+
+    @staticmethod
+    def _build_card_first_answer(tool_results: list[AgentToolResult]) -> str:
+        for item in tool_results:
+            data = item.data or {}
+            pending_action_id = int(data.get("pending_action_id") or 0)
+            if pending_action_id <= 0:
+                continue
+
+            preview = data.get("preview") or {}
+            title = str(preview.get("title") or preview.get("task_title") or "").strip()
+            action_type = str(data.get("action_type") or item.name or "").strip()
+
+            if action_type == "save_manual_quotes":
+                return "请在下方卡片中确认物料明细并录入供应商报价。"
+            if action_type == "create_inquiry_from_selected_requests":
+                return f"已生成询价草稿，请直接在下方卡片中补充并确认。{title}".strip("。")
+            if action_type == "create_inquiry_draft":
+                return f"已生成询价草稿，请直接在下方卡片中确认或修改。{title}".strip("。")
+            if action_type == "confirm_award":
+                return f"已生成待确认的份额分配方案，请直接在下方卡片中处理。{title}".strip("。")
+            if action_type == "create_contract_draft":
+                return f"已生成合同草稿待确认，请直接在下方卡片中处理。{title}".strip("。")
+            return "已生成待确认草稿，请直接在下方卡片中继续操作。"
+        return ""
 
     def get_memory_overview(self, session_id: str | None = None) -> dict[str, Any]:
         short_term_count = len(load_messages(self.user.id, session_id)) if session_id else 0

@@ -256,6 +256,7 @@ const saveProfile = async () => {
     })
     localStorage.setItem('department', data.department || '')
     localStorage.setItem('username', data.username || userName.value)
+    window.dispatchEvent(new Event('auth-changed'))
     ElMessage.success('个人信息已更新')
     profileDialogVisible.value = false
   } catch (error) {
@@ -280,6 +281,7 @@ const handleLogout = () => {
   localStorage.removeItem('role')
   localStorage.removeItem('department')
   localStorage.removeItem('username')
+  window.dispatchEvent(new Event('auth-changed'))
   ElMessage.success('已退出登录')
   router.push('/login')
 }

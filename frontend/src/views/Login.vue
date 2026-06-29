@@ -282,6 +282,7 @@ const persistLogin = (payload, fallbackUsername = '') => {
   localStorage.setItem('member_status', payload.member_status || '')
   if (payload.bound_status) localStorage.setItem('bound_status', payload.bound_status)
   else localStorage.removeItem('bound_status')
+  window.dispatchEvent(new Event('auth-changed'))
 }
 
 const startCountdown = (target) => {

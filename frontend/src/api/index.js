@@ -10,6 +10,7 @@ const clearAuthStorage = () => {
   localStorage.removeItem('supplier_name')
   localStorage.removeItem('supplier_status')
   localStorage.removeItem('member_status')
+  window.dispatchEvent(new Event('auth-changed'))
 }
 
 const getLoginRoute = () => '/#/login'

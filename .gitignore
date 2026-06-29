@@ -9,6 +9,8 @@ env/
 # 前端依赖
 node_modules/
 dist/
+dist_tmp/
+frontend/dist_tmp/
 build/
 
 # 本地环境变量和机密

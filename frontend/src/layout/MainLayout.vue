@@ -1,13 +1,13 @@
 <template>
   <div class="layout-container">
     <el-container>
-      <el-aside width="240px" class="modern-sidebar">
+      <el-aside v-if="!isMobileViewport" width="240px" class="modern-sidebar">
         <div class="sidebar-header">
           <div class="logo">
-            <div class="logo-icon">📦</div>
+            <div class="logo-icon">SCM</div>
             <div class="logo-content">
               <div class="logo-title">julan</div>
-              <div class="logo-subtitle">智能采购平台</div>
+              <div class="logo-subtitle">采购协同平台</div>
             </div>
           </div>
         </div>
@@ -64,7 +64,7 @@
               <el-menu-item index="/suppliers/assessment-summary" class="submenu-item">考核汇总</el-menu-item>
             </el-sub-menu>
 
-            <el-sub-menu index="/system" class="sub-menu" v-if="isAdminLike">
+            <el-sub-menu v-if="isAdminLike" index="/system" class="sub-menu">
               <template #title>
                 <el-icon class="menu-icon"><Setting /></el-icon>
                 <span class="menu-text">系统管理</span>
@@ -117,6 +117,93 @@
       </el-container>
     </el-container>
 
+    <el-drawer
+      v-model="mobileMenuVisible"
+      direction="ltr"
+      size="280px"
+      :with-header="false"
+      class="mobile-nav-drawer"
+    >
+      <div class="sidebar-header mobile-sidebar-header">
+        <div class="logo">
+          <div class="logo-icon">SCM</div>
+          <div class="logo-content">
+            <div class="logo-title">julan</div>
+            <div class="logo-subtitle">采购协同平台</div>
+          </div>
+        </div>
+      </div>
+
+      <el-menu
+        :default-active="activeMenu"
+        class="modern-menu"
+        background-color="transparent"
+        text-color="var(--text-secondary)"
+        active-text-color="var(--primary-color)"
+        router
+        @select="handleMenuSelect"
+      >
+        <template v-if="!isScoringOnlyUser">
+          <el-sub-menu index="/inquiries" class="sub-menu">
+            <template #title>
+              <el-icon class="menu-icon"><List /></el-icon>
+              <span class="menu-text">询价管理</span>
+            </template>
+            <el-menu-item index="/inquiries/requests" class="submenu-item">采购申请列表</el-menu-item>
+            <el-menu-item index="/inquiries/compare" class="submenu-item">智能比价工作台</el-menu-item>
+            <el-menu-item index="/inquiries/tasks" class="submenu-item">询价任务</el-menu-item>
+            <el-menu-item index="/inquiries/contracts" class="submenu-item">合同管理</el-menu-item>
+            <el-menu-item index="/inquiries/templates" class="submenu-item">模板设置</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu index="/dashboard" class="sub-menu">
+            <template #title>
+              <el-icon class="menu-icon"><DataBoard /></el-icon>
+              <span class="menu-text">预警管理</span>
+            </template>
+            <el-menu-item index="/dashboard/supplier" class="submenu-item">供应商预警</el-menu-item>
+            <el-menu-item index="/dashboard/warehouse" class="submenu-item">仓库预警</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu index="/analysis" class="sub-menu">
+            <template #title>
+              <el-icon class="menu-icon"><PieChart /></el-icon>
+              <span class="menu-text">统计分析</span>
+            </template>
+            <el-menu-item index="/analysis/supplier" class="submenu-item">供应商分析</el-menu-item>
+            <el-menu-item index="/analysis/material" class="submenu-item">物料分析</el-menu-item>
+            <el-menu-item v-if="isAdminLike" index="/analysis/buyer" class="submenu-item">采购员分析</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu index="/suppliers" class="sub-menu">
+            <template #title>
+              <el-icon class="menu-icon"><User /></el-icon>
+              <span class="menu-text">供应商管理</span>
+            </template>
+            <el-menu-item index="/suppliers/pending" class="submenu-item">待审核供应商</el-menu-item>
+            <el-menu-item index="/suppliers/manage" class="submenu-item">供应商名册</el-menu-item>
+            <el-menu-item v-if="canManageAssessment" index="/suppliers/assessment" class="submenu-item">考核管理</el-menu-item>
+            <el-menu-item index="/suppliers/assessment-scoring" class="submenu-item">部门打分</el-menu-item>
+            <el-menu-item index="/suppliers/assessment-summary" class="submenu-item">考核汇总</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu v-if="isAdminLike" index="/system" class="sub-menu">
+            <template #title>
+              <el-icon class="menu-icon"><Setting /></el-icon>
+              <span class="menu-text">系统管理</span>
+            </template>
+            <el-menu-item index="/system/users" class="submenu-item">账号管理</el-menu-item>
+            <el-menu-item index="/system/logs" class="submenu-item">操作日志</el-menu-item>
+          </el-sub-menu>
+        </template>
+
+        <el-menu-item v-if="isScoringOnlyUser" index="/suppliers/assessment-scoring" class="submenu-item">
+          <el-icon class="menu-icon"><EditPen /></el-icon>
+          <span class="menu-text">部门打分</span>
+        </el-menu-item>
+      </el-menu>
+    </el-drawer>
+
     <el-dialog v-model="profileDialogVisible" title="个人中心" width="420px" destroy-on-close>
       <el-form ref="profileFormRef" :model="profileForm" :rules="profileRules" label-position="top" size="large">
         <el-form-item label="账号">
@@ -141,15 +228,16 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, DataBoard, Expand, List, PieChart, Setting, User, EditPen } from '@element-plus/icons-vue'
+import { ArrowDown, DataBoard, EditPen, Expand, List, PieChart, Setting, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 
 const router = useRouter()
 const route = useRoute()
-const isCollapse = ref(false)
+const isMobileViewport = ref(false)
+const mobileMenuVisible = ref(false)
 const profileDialogVisible = ref(false)
 const profileSaving = ref(false)
 const profileFormRef = ref(null)
@@ -165,10 +253,7 @@ const userName = computed(() => localStorage.getItem('username') || '')
 const userDepartment = computed(() => localStorage.getItem('department') || '')
 const isAdminLike = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
 const canManageAssessment = computed(() => ['admin', 'buyer_manager'].includes(userRole.value))
-
-const isScoringOnlyUser = computed(() => {
-  return userRole.value === 'scorer' && !isAdminLike.value
-})
+const isScoringOnlyUser = computed(() => userRole.value === 'scorer' && !isAdminLike.value)
 
 const roleLabel = computed(() => {
   if (userRole.value === 'admin') return '超级管理员'
@@ -181,9 +266,7 @@ const roleLabel = computed(() => {
 const activeMenu = computed(() => route.path)
 
 const currentRouteName = computed(() => {
-  if (route.path === '/agent/workspace') {
-    return '采购助手'
-  }
+  if (route.path === '/agent/workspace') return '采购助手'
   const map = {
     '/dashboard/supplier': '供应商预警',
     '/dashboard/warehouse': '仓库预警',
@@ -201,13 +284,28 @@ const currentRouteName = computed(() => {
     '/analysis/material': '物料分析',
     '/analysis/buyer': '采购员分析',
     '/system/users': '账号管理',
-    '/system/logs': '系统操作日志',
+    '/system/logs': '操作日志',
   }
-  return map[route.path] || '未知页面'
+  return map[route.path] || '页面'
 })
 
+const syncViewportState = () => {
+  isMobileViewport.value = window.innerWidth <= 768
+  if (!isMobileViewport.value) {
+    mobileMenuVisible.value = false
+  }
+}
+
 const toggleSidebar = () => {
-  isCollapse.value = !isCollapse.value
+  if (isMobileViewport.value) {
+    mobileMenuVisible.value = !mobileMenuVisible.value
+  }
+}
+
+const handleMenuSelect = () => {
+  if (isMobileViewport.value) {
+    mobileMenuVisible.value = false
+  }
 }
 
 const phoneValidator = (_, value, callback) => {
@@ -272,19 +370,28 @@ const handleUserCommand = (command) => {
     return
   }
   if (command === 'logout') {
-    handleLogout()
+    localStorage.removeItem('token')
+    localStorage.removeItem('role')
+    localStorage.removeItem('department')
+    localStorage.removeItem('username')
+    window.dispatchEvent(new Event('auth-changed'))
+    ElMessage.success('已退出登录')
+    router.push('/login')
   }
 }
 
-const handleLogout = () => {
-  localStorage.removeItem('token')
-  localStorage.removeItem('role')
-  localStorage.removeItem('department')
-  localStorage.removeItem('username')
-  window.dispatchEvent(new Event('auth-changed'))
-  ElMessage.success('已退出登录')
-  router.push('/login')
-}
+onMounted(() => {
+  syncViewportState()
+  window.addEventListener('resize', syncViewportState)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncViewportState)
+})
+
+watch(() => route.fullPath, () => {
+  handleMenuSelect()
+})
 </script>
 
 <style scoped>
@@ -317,7 +424,7 @@ const handleLogout = () => {
 }
 
 .logo-icon {
-  font-size: 24px;
+  min-width: 40px;
   width: 40px;
   height: 40px;
   display: flex;
@@ -326,6 +433,8 @@ const handleLogout = () => {
   background: linear-gradient(135deg, var(--primary-color), var(--info-color));
   border-radius: var(--radius-lg);
   color: white;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .logo-content {
@@ -366,36 +475,6 @@ const handleLogout = () => {
   border-radius: var(--radius-lg) !important;
 }
 
-.menu-item {
-  height: 48px !important;
-  line-height: 48px !important;
-  margin: 0 var(--space-3) !important;
-  border-radius: var(--radius-lg) !important;
-}
-
-.menu-item :deep(.el-menu-item),
-:deep(.el-sub-menu__title) {
-  color: var(--text-secondary) !important;
-  font-weight: 500 !important;
-}
-
-.menu-item :deep(.el-menu-item:hover),
-:deep(.el-sub-menu__title:hover) {
-  background: var(--bg-secondary) !important;
-  color: var(--text-primary) !important;
-}
-
-.menu-item.is-active {
-  background: var(--primary-color) !important;
-  color: white !important;
-  box-shadow: var(--shadow-sm);
-}
-
-.menu-item.is-active :deep(.el-icon),
-.menu-item.is-active .menu-text {
-  color: white !important;
-}
-
 .menu-icon {
   font-size: 18px !important;
   margin-right: var(--space-3) !important;
@@ -406,8 +485,14 @@ const handleLogout = () => {
   font-weight: 500;
 }
 
-:deep(.el-sub-menu) {
-  margin-bottom: 0;
+:deep(.el-sub-menu__title) {
+  color: var(--text-secondary) !important;
+  font-weight: 500 !important;
+}
+
+:deep(.el-sub-menu__title:hover) {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
 }
 
 :deep(.el-menu--inline) {
@@ -433,54 +518,6 @@ const handleLogout = () => {
 .submenu-item.is-active {
   background: var(--primary-color) !important;
   color: white !important;
-}
-
-.sidebar-footer {
-  padding: var(--space-4);
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  transition: background var(--transition-fast);
-}
-
-.user-info:hover {
-  background: var(--bg-tertiary);
-}
-
-.user-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-color), var(--info-color));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.user-details {
-  display: flex;
-  flex-direction: column;
-}
-
-.user-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.user-role {
-  font-size: 12px;
-  color: var(--text-tertiary);
 }
 
 .el-header {
@@ -547,6 +584,10 @@ const handleLogout = () => {
   overflow-y: auto;
 }
 
+.mobile-sidebar-header {
+  padding-bottom: var(--space-4);
+}
+
 :deep(.el-breadcrumb__inner) {
   color: var(--text-secondary) !important;
   font-weight: 500;
@@ -559,5 +600,58 @@ const handleLogout = () => {
 
 :deep(.el-breadcrumb__separator) {
   color: var(--text-tertiary) !important;
+}
+
+@media (min-width: 769px) {
+  .hamburger {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .el-header {
+    padding: 0 var(--space-4);
+  }
+
+  .header-left {
+    min-width: 0;
+    flex: 1;
+  }
+
+  :deep(.el-breadcrumb) {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  :deep(.el-breadcrumb__item:last-child .el-breadcrumb__inner) {
+    display: inline-block;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+
+  .header-right {
+    margin-left: 12px;
+    max-width: 46%;
+    overflow: hidden;
+  }
+
+  .el-dropdown-link {
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .main-content-wrapper {
+    overflow-x: hidden;
+  }
+
+  :deep(.mobile-nav-drawer .el-drawer__body) {
+    padding: 0;
+    overflow-y: auto;
+  }
 }
 </style>

@@ -40,7 +40,6 @@
             <p>支持查询物料、供应商、历史价格、采购申请和采购订单。</p>
           </div>
           <div class="chat-header-actions">
-            <span class="model-pill">{{ agentModelLabel }}</span>
             <el-button plain @click="clearCurrentConversation" :disabled="!currentSessionId || loading">清空当前对话</el-button>
           </div>
         </header>
@@ -362,7 +361,6 @@ import {
   createProcurementAgentSession,
   getProcurementAgentSessionMessages,
   getProcurementAgentSessions,
-  getProcurementAgentStatus,
   sendProcurementAgentMessage,
   updateProcurementAgentAction,
 } from '../../api/agent'
@@ -374,7 +372,6 @@ const sessions = ref([])
 const messages = ref([])
 const currentSessionId = ref('')
 const pendingSessionId = ref('')
-const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
 const confirmingActionIds = ref([])
 const pendingActionDrafts = ref({})
@@ -897,13 +894,7 @@ const handleKeydown = (event) => {
 onMounted(async () => {
   pageLoading.value = true
   try {
-    const [statusRes] = await Promise.all([
-      getProcurementAgentStatus(),
-      refreshSessions(),
-    ])
-    if (statusRes?.data?.model) {
-      agentModelLabel.value = statusRes.data.model
-    }
+    await refreshSessions()
     if (currentSessionId.value) {
       await openSession(currentSessionId.value)
     }
@@ -935,6 +926,7 @@ onMounted(async () => {
   border: 1px solid #d9e3ef;
   border-radius: 22px;
   box-shadow: 0 12px 30px rgba(88, 115, 155, 0.08);
+  min-height: 0;
 }
 
 .agent-sidebar {
@@ -1047,14 +1039,8 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.model-pill {
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #ebf2ff;
-  color: #2b5ebc;
-  font-size: 13px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .chat-body {
@@ -1139,6 +1125,7 @@ onMounted(async () => {
 .message-text {
   white-space: pre-wrap;
   line-height: 1.7;
+  word-break: break-word;
 }
 
 .pending-actions {
@@ -1152,6 +1139,7 @@ onMounted(async () => {
   border-radius: 14px;
   background: #f2f7ff;
   border: 1px solid #d7e4fb;
+  min-width: 0;
 }
 
 .pending-action-form {
@@ -1386,6 +1374,129 @@ onMounted(async () => {
 
   .message-bubble {
     max-width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .agent-page {
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .agent-shell {
+    gap: 12px;
+    min-height: calc(100dvh - 24px - env(safe-area-inset-bottom));
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .agent-sidebar {
+    max-height: 220px;
+  }
+
+  .agent-main {
+    min-height: 0;
+  }
+
+  .sidebar-header,
+  .chat-header,
+  .chat-body,
+  .chat-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .sidebar-header,
+  .chat-header {
+    padding-top: 16px;
+    padding-bottom: 14px;
+  }
+
+  .chat-body {
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .chat-footer {
+    padding-top: 14px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .sidebar-header h2,
+  .chat-header h3 {
+    font-size: 22px;
+  }
+
+  .session-list {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .session-item {
+    padding: 12px;
+  }
+
+  .session-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .chat-header-actions {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .chat-header-actions .model-pill {
+    align-self: flex-start;
+  }
+
+  .chat-header-actions :deep(.el-button) {
+    width: 100%;
+    margin: 0;
+  }
+
+  .empty-card {
+    padding: 20px 18px;
+  }
+
+  .chat-footer-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chat-footer-bar :deep(.el-button) {
+    width: 100%;
+  }
+
+  .pending-action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pending-action-card,
+  .manual-quote-section {
+    padding: 10px;
+  }
+
+  .empty-actions {
+    flex-direction: column;
+  }
+
+  .prompt-chip {
+    width: 100%;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .manual-quote-supplier-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .manual-quote-supplier-row :deep(.el-input),
+  .manual-quote-supplier-row :deep(.el-select),
+  .manual-quote-supplier-row :deep(.el-input-number),
+  .manual-quote-supplier-row :deep(.el-button) {
+    width: 100% !important;
   }
 }
 </style>

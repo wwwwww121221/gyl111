@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from core.config import settings
 from core.redis_client import cache_clear_pattern, cache_delete, cache_get, cache_set
-from models import InquirySupplier, InquiryTask, LinkStatus, Supplier, SupplierMember, TaskStatus, User
+from models import Contract, InquirySupplier, InquiryTask, LinkStatus, Supplier, SupplierMember, TaskStatus, User
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,162 @@ def _format_dt(value: object) -> str:
 
 
 def _resolve_template_url(url: Optional[str] = None) -> Optional[str]:
-    return str(url or settings.WECHAT_TEMPLATE_DEFAULT_URL or "").strip() or None
+    normalized = str(url or settings.WECHAT_TEMPLATE_DEFAULT_URL or "").strip()
+    if normalized:
+        return normalized
+
+    try:
+        return build_wechat_frontend_route_url("/login")
+    except Exception:
+        return None
+
+
+def _build_supplier_portal_url(path: str, query: Optional[dict[str, str]] = None) -> Optional[str]:
+    try:
+        return build_wechat_frontend_route_url(path, query)
+    except Exception:
+        return _resolve_template_url()
+
+
+def _get_inquiry_supplier_link_id(db: Session, task: InquiryTask, supplier: Supplier) -> Optional[int]:
+    if not task or not supplier:
+        return None
+
+    link = (
+        db.query(InquirySupplier)
+        .filter(
+            InquirySupplier.task_id == task.id,
+            InquirySupplier.supplier_id == supplier.id,
+        )
+        .first()
+    )
+    return int(link.id) if link else None
+
+
+def _build_supplier_inquiry_url(
+    db: Session,
+    task: InquiryTask,
+    supplier: Supplier,
+    action: str = "detail",
+) -> Optional[str]:
+    link_id = _get_inquiry_supplier_link_id(db, task, supplier)
+    query: dict[str, str] = {}
+    if link_id:
+        query["inquiry_supplier_id"] = str(link_id)
+    if action:
+        query["action"] = action
+    if task and task.id:
+        query["task_id"] = str(task.id)
+    return _build_supplier_portal_url("/supplier/inquiries", query or None)
+
+
+def _collect_task_project_labels(task: InquiryTask) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in task.items or []:
+        request = getattr(item, "request", None)
+        project_info = getattr(request, "project_info", None) or {}
+        for raw_value in (project_info.get("name"), project_info.get("number")):
+            normalized = str(raw_value or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            labels.append(normalized)
+    return labels
+
+
+def _get_task_project_label(task: InquiryTask) -> str:
+    labels = _collect_task_project_labels(task)
+    if labels:
+        return "、".join(labels[:3])
+    return str(task.title or "").strip() or "-"
+
+
+def _get_task_material_label(task: InquiryTask) -> str:
+    material_names: list[str] = []
+    seen: set[str] = set()
+    for item in task.items or []:
+        request = getattr(item, "request", None)
+        normalized = str(getattr(request, "material_name", "") or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        material_names.append(normalized)
+    if not material_names:
+        return "-"
+    if len(material_names) == 1:
+        return material_names[0]
+    return f"{material_names[0]} 等{len(material_names)}项物料"
+
+
+def _get_supplier_account_label(db: Session, supplier: Supplier) -> str:
+    direct_username = str(getattr(getattr(supplier, "user", None), "username", "") or "").strip()
+    if direct_username:
+        return direct_username
+
+    member_rows = (
+        db.query(SupplierMember)
+        .filter(
+            SupplierMember.supplier_id == supplier.id,
+            SupplierMember.status.in_(["active", "pending"]),
+        )
+        .all()
+    )
+    for member in member_rows:
+        username = str(getattr(getattr(member, "user", None), "username", "") or "").strip()
+        if username:
+            return username
+        member_name = str(getattr(member, "member_name", "") or "").strip()
+        if member_name:
+            return member_name
+
+    return str(supplier.contact_person or supplier.phone or supplier.name or "-").strip() or "-"
+
+
+def _get_task_buyer_unit_label(task: InquiryTask) -> str:
+    buyer = getattr(task, "buyer", None)
+    for raw_value in (
+        getattr(buyer, "department", None),
+        getattr(buyer, "username", None),
+    ):
+        normalized = str(raw_value or "").strip()
+        if normalized:
+            return normalized
+    return "询价平台"
+
+
+def _get_awarded_supplier_label(task: InquiryTask) -> str:
+    supplier_names: list[str] = []
+    seen: set[str] = set()
+    for link in task.suppliers or []:
+        if link.status != LinkStatus.DEAL:
+            continue
+        supplier_name = str(getattr(getattr(link, "supplier", None), "name", "") or "").strip()
+        if not supplier_name or supplier_name in seen:
+            continue
+        seen.add(supplier_name)
+        supplier_names.append(supplier_name)
+    if not supplier_names:
+        return "无"
+    return "、".join(supplier_names[:3])
+
+
+def _get_contract_buyer_label(db: Session, task: InquiryTask, supplier: Supplier) -> str:
+    link = (
+        db.query(InquirySupplier)
+        .filter(
+            InquirySupplier.task_id == task.id,
+            InquirySupplier.supplier_id == supplier.id,
+        )
+        .first()
+    )
+    if link:
+        contract = db.query(Contract).filter(Contract.inquiry_supplier_id == link.id).first()
+        if contract:
+            normalized = str(contract.buyer_company_name or "").strip()
+            if normalized:
+                return normalized
+    return _get_task_buyer_unit_label(task)
 
 
 def get_wechat_public_base_url() -> str:
@@ -311,20 +466,22 @@ def build_wechat_oauth_entry_url(target: str = "login") -> str:
 
 def build_wechat_menu_payload() -> dict[str, object]:
     menu_version = str(settings.WECHAT_MENU_URL_VERSION or "").strip()
-    menu_query = {"menu_v": menu_version} if menu_version else None
-    homepage_url = build_wechat_frontend_route_url("/login", menu_query)
+    homepage_url = build_wechat_frontend_route_url(
+        "/login",
+        {"menu_v": menu_version} if menu_version else None,
+    )
 
     return {
         "button": [
             {
-                "type": "click",
+                "type": "view",
                 "name": "\u5e73\u53f0\u767b\u5f55",
-                "key": WECHAT_MENU_KEY_LOGIN,
+                "url": build_wechat_oauth_entry_url("login"),
             },
             {
-                "type": "click",
+                "type": "view",
                 "name": "\u4f9b\u5e94\u5546\u5165\u9a7b",
-                "key": WECHAT_MENU_KEY_REGISTER,
+                "url": build_wechat_oauth_entry_url("register"),
             },
             {
                 "type": "view",
@@ -338,8 +495,8 @@ def build_wechat_menu_payload() -> dict[str, object]:
 def build_wechat_menu_click_message(event_key: str, openid: str | None = None) -> str:
     normalized_key = str(event_key or "").strip()
     if normalized_key == WECHAT_MENU_KEY_REGISTER:
-        register_url = build_wechat_bind_entry_url(openid=openid, target="register")
-        login_url = build_wechat_bind_entry_url(openid=openid, target="login")
+        register_url = build_wechat_oauth_entry_url(target="register")
+        login_url = build_wechat_oauth_entry_url(target="login")
         return "\n".join(
             [
                 "请先创建供应商账号。注册完成后，系统会进入同一个资料提交页面，可选择绑定已有供应商，或创建新供应商入驻申请。",
@@ -349,8 +506,8 @@ def build_wechat_menu_click_message(event_key: str, openid: str | None = None) -
             ]
         )
 
-    login_url = build_wechat_bind_entry_url(openid=openid, target="login")
-    register_url = build_wechat_bind_entry_url(openid=openid, target="register")
+    login_url = build_wechat_oauth_entry_url(target="login")
+    register_url = build_wechat_oauth_entry_url(target="register")
     return "\n".join(
         [
             "请登录供应链协同平台。内部人员可直接使用账号登录；供应商登录后可绑定已有供应商，或创建新供应商入驻申请。",
@@ -363,8 +520,6 @@ def build_wechat_menu_click_message(event_key: str, openid: str | None = None) -
 
 def build_wechat_subscribe_welcome_message(openid: str | None = None) -> str:
     base_message = str(settings.WECHAT_SUBSCRIBE_WELCOME_MESSAGE or "").strip()
-    login_url = build_wechat_bind_entry_url(openid=openid, target="login")
-    register_url = build_wechat_bind_entry_url(openid=openid, target="register")
 
     lines = [base_message] if base_message else ["欢迎关注供应链协同平台。"]
     lines.extend(
@@ -378,13 +533,9 @@ def build_wechat_subscribe_welcome_message(openid: str | None = None) -> str:
             "",
             "请点击公众号底部菜单【平台登录】进入系统。内部人员可直接登录，供应商登录后可绑定已有供应商或创建新供应商入驻申请。",
             "供应商没有账号时，请点击【供应商入驻】先完成账号创建。",
-            f"平台登录：{login_url}",
-            f"供应商入驻：{register_url}",
         ]
     )
     return "\n".join(lines)
-
-
 def get_wechat_menu() -> dict:
     access_token = get_wechat_access_token()
     response = requests.get(
@@ -492,15 +643,17 @@ def notify_supplier_onboarding_result(
         "rejected": "审核未通过",
     }
     status_text = status_map.get(str(review_status or "").strip().lower(), review_status or "待处理")
-    remark = review_comment or "请登录供应链系统查看详情。"
     data = {
-        "first": _wrap_template_value("供应商入驻审核结果如下，请及时查看。"),
-        "keyword1": _wrap_template_value(supplier.name),
-        "keyword2": _wrap_template_value(status_text),
-        "keyword3": _wrap_template_value(datetime.now().strftime("%Y-%m-%d %H:%M")),
-        "remark": _wrap_template_value(remark),
+        "thing8": _wrap_template_value(supplier.name or "-"),
+        "const3": _wrap_template_value(status_text),
+        "thing4": _wrap_template_value(_get_supplier_account_label(db, supplier)),
     }
-    return _batch_send_template_message(openids, template_id, data, url=_resolve_template_url())
+    return _batch_send_template_message(
+        openids,
+        template_id,
+        data,
+        url=_build_supplier_portal_url("/supplier/onboard"),
+    )
 
 
 def notify_new_inquiry_invitation(
@@ -517,20 +670,24 @@ def notify_new_inquiry_invitation(
         return {"sent_count": 0, "failed_count": 0, "skipped": "missing_openid"}
 
     data = {
-        "first": _wrap_template_value("您收到一条新的询价邀请，请尽快登录系统报价。"),
-        "keyword1": _wrap_template_value(task.title),
-        "keyword2": _wrap_template_value(f"INQ-{task.id:06d}"),
-        "keyword3": _wrap_template_value(_format_dt(task.deadline)),
-        "remark": _wrap_template_value("如您已完成报价，请忽略此提醒。"),
+        "thing3": _wrap_template_value(_get_task_buyer_unit_label(task)),
+        "thing8": _wrap_template_value(supplier.name or "-"),
+        "time30": _wrap_template_value(_format_dt(task.deadline)),
     }
-    return _batch_send_template_message(openids, template_id, data, url=_resolve_template_url())
+    return _batch_send_template_message(
+        openids,
+        template_id,
+        data,
+        url=_build_supplier_inquiry_url(db, task, supplier, action="detail"),
+    )
 
 
 def notify_warning_message(
     db: Session,
     supplier: Supplier,
-    latest_delivery: object,
-    item_count: int,
+    required_delivery_time: object,
+    anomaly_time: object,
+    project_name: Optional[str] = None,
     buyer_name: Optional[str] = None,
 ) -> dict[str, object]:
     template_id = str(settings.WECHAT_TEMPLATE_WARNING_ID or "").strip()
@@ -541,18 +698,18 @@ def notify_warning_message(
     if not openids:
         return {"sent_count": 0, "failed_count": 0, "skipped": "missing_openid"}
 
-    remark = "请及时登录系统查看明细并安排处理。"
-    if buyer_name:
-        remark = f"采购员 {buyer_name} 已发出提醒，请及时处理。"
-
     data = {
-        "first": _wrap_template_value("您有新的发货预警提醒，请尽快处理。"),
-        "keyword1": _wrap_template_value(supplier.name),
-        "keyword2": _wrap_template_value(item_count),
-        "keyword3": _wrap_template_value(_format_dt(latest_delivery)),
-        "remark": _wrap_template_value(remark),
+        "time4": _wrap_template_value(_format_dt(required_delivery_time)),
+        "thing6": _wrap_template_value(supplier.name or "-"),
+        "time13": _wrap_template_value(_format_dt(anomaly_time)),
+        "thing9": _wrap_template_value(project_name or buyer_name or "-"),
     }
-    return _batch_send_template_message(openids, template_id, data, url=_resolve_template_url())
+    return _batch_send_template_message(
+        openids,
+        template_id,
+        data,
+        url=_build_supplier_portal_url("/supplier/warnings"),
+    )
 
 
 def notify_inquiry_result(
@@ -570,14 +727,20 @@ def notify_inquiry_result(
     if not openids:
         return {"sent_count": 0, "failed_count": 0, "skipped": "missing_openid"}
 
+    inquiry_no = f"INQ-{task.id:06d}"
     data = {
-        "first": _wrap_template_value("询价结果已更新，请及时查看。"),
-        "keyword1": _wrap_template_value(task.title),
-        "keyword2": _wrap_template_value(f"INQ-{task.id:06d}"),
-        "keyword3": _wrap_template_value(result_text),
-        "remark": _wrap_template_value(remark or "请登录系统查看结果详情。"),
+        "thing2": _wrap_template_value(task.title or "-"),
+        "const3": _wrap_template_value(result_text or "-"),
+        "thing4": _wrap_template_value(_get_awarded_supplier_label(task)),
+        "thing9": _wrap_template_value(_get_task_material_label(task)),
+        "character_string1": _wrap_template_value(inquiry_no),
     }
-    return _batch_send_template_message(openids, template_id, data, url=_resolve_template_url())
+    return _batch_send_template_message(
+        openids,
+        template_id,
+        data,
+        url=_build_supplier_inquiry_url(db, task, supplier, action="detail"),
+    )
 
 
 def notify_quote_deadline_reminder(
@@ -594,13 +757,15 @@ def notify_quote_deadline_reminder(
         return {"sent_count": 0, "failed_count": 0, "skipped": "missing_openid"}
 
     data = {
-        "first": _wrap_template_value("询价报价即将截止，请尽快处理。"),
-        "keyword1": _wrap_template_value(task.title),
-        "keyword2": _wrap_template_value(f"INQ-{task.id:06d}"),
-        "keyword3": _wrap_template_value(_format_dt(task.deadline)),
-        "remark": _wrap_template_value("若已完成报价，请忽略本提醒。"),
+        "thing12": _wrap_template_value(task.title or _get_task_project_label(task)),
+        "time15": _wrap_template_value(_format_dt(task.deadline)),
     }
-    return _batch_send_template_message(openids, template_id, data, url=_resolve_template_url())
+    return _batch_send_template_message(
+        openids,
+        template_id,
+        data,
+        url=_build_supplier_inquiry_url(db, task, supplier, action="detail"),
+    )
 
 
 def dispatch_quote_deadline_reminders(db: Session) -> dict[str, int]:
@@ -622,7 +787,7 @@ def dispatch_quote_deadline_reminders(db: Session) -> dict[str, int]:
         if not task.deadline:
             continue
         seconds_left = (task.deadline - now).total_seconds()
-        if seconds_left <= 0 or seconds_left > 24 * 3600:
+        if seconds_left > 0 or seconds_left < -(24 * 3600):
             continue
 
         scanned_tasks += 1
@@ -666,13 +831,16 @@ def notify_contract_confirm(
         return {"sent_count": 0, "failed_count": 0, "skipped": "missing_openid"}
 
     data = {
-        "first": _wrap_template_value("合同已生成，请尽快进入系统确认。"),
-        "keyword1": _wrap_template_value(task.title),
-        "keyword2": _wrap_template_value(contract_no or f"CT-{task.id:06d}"),
-        "keyword3": _wrap_template_value(status_text),
-        "remark": _wrap_template_value(remark or "请登录系统完善并确认合同信息。"),
+        "thing1": _wrap_template_value(task.title or "-"),
+        "character_string2": _wrap_template_value(contract_no or f"CT-{task.id:06d}"),
+        "thing11": _wrap_template_value(_get_contract_buyer_label(db, task, supplier)),
     }
-    return _batch_send_template_message(openids, template_id, data, url=_resolve_template_url())
+    return _batch_send_template_message(
+        openids,
+        template_id,
+        data,
+        url=_build_supplier_inquiry_url(db, task, supplier, action="contract"),
+    )
 
 
 def notify_member_review_result(
@@ -697,17 +865,17 @@ def notify_member_review_result(
     }.get(str(review_status or "").strip().lower(), review_status or "待处理")
 
     data = {
-        "first": _wrap_template_value("供应商成员申请审核结果如下。"),
+        "first": _wrap_template_value("供应商成员审核结果已更新，请及时查看。"),
         "keyword1": _wrap_template_value(supplier_name),
         "keyword2": _wrap_template_value(member_name),
         "keyword3": _wrap_template_value(review_text),
-        "remark": _wrap_template_value(remark or "请登录系统查看详情。"),
+        "remark": _wrap_template_value(remark or "请登录系统查看审核详情。"),
     }
     result = send_template_message(
         openid=openid,
         template_id=template_id,
         data=data,
-        url=_resolve_template_url(),
+        url=_build_supplier_portal_url("/supplier/members"),
     )
     return {"sent_count": 1, "failed_count": 0, "wechat_result": result}
 
@@ -723,11 +891,9 @@ def send_wechat_test_notification(
         raise RuntimeError("缺少微信测试模板 ID: WECHAT_TEMPLATE_ONBOARDING_RESULT_ID")
 
     data = {
-        "first": _wrap_template_value("这是一条来自供应链系统的微信测试消息。"),
-        "keyword1": _wrap_template_value(subject or "系统测试"),
-        "keyword2": _wrap_template_value(result_text or "发送成功"),
-        "keyword3": _wrap_template_value(datetime.now().strftime("%Y-%m-%d %H:%M")),
-        "remark": _wrap_template_value(remark or "如您收到此消息，说明微信公众号推送链路已打通。"),
+        "thing8": _wrap_template_value(subject or "系统测试企业"),
+        "const3": _wrap_template_value(result_text or "审核通过"),
+        "thing4": _wrap_template_value(remark or "supplier_test_account"),
     }
     return send_template_message(
         openid=openid,

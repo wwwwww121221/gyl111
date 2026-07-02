@@ -326,7 +326,15 @@ router.beforeEach((to, from) => {
 
   if (!tokenValid) {
     clearAuth()
-    return '/login'
+    if (to.path === '/login') {
+      return '/login'
+    }
+    return {
+      path: '/login',
+      query: {
+        redirect: to.fullPath,
+      },
+    }
   }
 
   // Check role authorization

@@ -10,6 +10,7 @@ from core.config import settings
 from services.wechat_service import (
     build_wechat_bind_entry_url,
     build_wechat_menu_payload,
+    build_wechat_oauth_entry_url,
     delete_wechat_menu,
     get_wechat_menu,
     is_wechat_configured,
@@ -347,14 +348,20 @@ def get_buyer_analysis(
 def get_wechat_status(
     current_user: User = Depends(get_current_user_auth),
 ) -> Any:
+    oauth_login_url = None
+    oauth_register_url = None
     login_url = None
     register_url = None
     preview_openid = str(current_user.openid or "").strip() or None
     if is_wechat_configured():
         try:
+            oauth_login_url = build_wechat_oauth_entry_url(target="login")
+            oauth_register_url = build_wechat_oauth_entry_url(target="register")
             login_url = build_wechat_bind_entry_url(openid=preview_openid, target="login")
             register_url = build_wechat_bind_entry_url(openid=preview_openid, target="register")
         except Exception:
+            oauth_login_url = None
+            oauth_register_url = None
             login_url = None
             register_url = None
 
@@ -362,9 +369,11 @@ def get_wechat_status(
         "configured": is_wechat_configured(),
         "app_id": settings.WECHAT_APP_ID,
         "verify_url": settings.WECHAT_VERIFY_URL,
+        "oauth_login_url": oauth_login_url,
+        "oauth_register_url": oauth_register_url,
         "bind_login_url": login_url,
         "bind_register_url": register_url,
-        "menu_preview": build_wechat_menu_payload() if login_url and register_url else None,
+        "menu_preview": build_wechat_menu_payload() if oauth_login_url and oauth_register_url else None,
         "current_user_openid": current_user.openid,
         "current_user_openid_bound": bool(str(current_user.openid or "").strip()),
     }

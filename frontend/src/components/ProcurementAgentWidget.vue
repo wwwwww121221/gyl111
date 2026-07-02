@@ -50,7 +50,9 @@
               <p>可查询物料、供应商、历史价格、采购申请和采购订单。</p>
             </div>
             <div class="panel-actions">
-              <span class="model-pill">{{ agentModelLabel }}</span>
+              <button class="ghost-btn mobile-session-btn" type="button" @click.stop="sidebarCollapsed = !sidebarCollapsed">
+                {{ sidebarCollapsed ? '会话' : '收起会话' }}
+              </button>
               <button class="ghost-btn" type="button" :disabled="!currentSessionId || loading" @click.stop="clearCurrentConversation">
                 清空当前对话
               </button>
@@ -625,7 +627,6 @@ import {
   createProcurementAgentSession,
   getProcurementAgentSessionMessages,
   getProcurementAgentSessions,
-  getProcurementAgentStatus,
   sendProcurementAgentMessage,
   updateProcurementAgentAction,
 } from '../api/agent'
@@ -650,6 +651,7 @@ const visible = computed(() => role.value !== 'supplier' && department.value ===
 
 const expanded = ref(false)
 const sidebarCollapsed = ref(false)
+const isMobileViewport = ref(false)
 const pageLoading = ref(false)
 const loading = ref(false)
 const draft = ref('')
@@ -657,7 +659,6 @@ const sessions = ref([])
 const messages = ref([])
 const currentSessionId = ref('')
 const pendingSessionId = ref('')
-const agentModelLabel = ref('DeepSeek Flash')
 const messagesRef = ref(null)
 const confirmingActionIds = ref([])
 const pendingActionDrafts = ref({})
@@ -761,12 +762,23 @@ const clearFlowMode = () => {
   writeAgentPageContext({ flow_mode: null })
 }
 
-const panelStyle = computed(() => ({
-  width: `${panelWidth.value}px`,
-  height: `${panelHeight.value}px`,
-  right: `${panelRight.value}px`,
-  bottom: `${panelBottom.value}px`,
-}))
+const panelStyle = computed(() => {
+  if (isMobileViewport.value) {
+    return {
+      inset: '0',
+      width: '100vw',
+      height: '100dvh',
+      right: '0',
+      bottom: '0',
+    }
+  }
+  return {
+    width: `${panelWidth.value}px`,
+    height: `${panelHeight.value}px`,
+    right: `${panelRight.value}px`,
+    bottom: `${panelBottom.value}px`,
+  }
+})
 
 const normalizeMessages = (rows = []) =>
   rows.map((item, index) => ({
@@ -1260,10 +1272,12 @@ const clampPanelBounds = () => {
 }
 
 const resetPanelPosition = () => {
+  isMobileViewport.value = window.innerWidth <= 768
   panelWidth.value = Math.min(920, window.innerWidth - maxWidthPadding)
   panelHeight.value = Math.min(720, window.innerHeight - maxHeightPadding)
   panelRight.value = window.innerWidth <= 768 ? 12 : 24
   panelBottom.value = window.innerWidth <= 768 ? 82 : 94
+  sidebarCollapsed.value = isMobileViewport.value
   clampPanelBounds()
 }
 
@@ -1465,13 +1479,7 @@ const ensureLoaded = async () => {
   ensureLoadedPromise = (async () => {
   pageLoading.value = true
   try {
-    const [statusRes] = await Promise.all([
-      getProcurementAgentStatus(),
-      refreshSessions(),
-    ])
-    if (statusRes?.data?.model) {
-      agentModelLabel.value = statusRes.data.model
-    }
+    await refreshSessions()
     if (currentSessionId.value) {
       await openSession(currentSessionId.value)
     }
@@ -2075,6 +2083,7 @@ watch(() => route.fullPath, () => {
   white-space: pre-wrap;
   line-height: 1.7;
   font-size: 14px;
+  word-break: break-word;
 }
 
 .pending-actions {
@@ -2088,6 +2097,7 @@ watch(() => route.fullPath, () => {
   border-radius: 14px;
   background: #f2f7ff;
   border: 1px solid #d7e4fb;
+  min-width: 0;
 }
 
 .pending-action-form {
@@ -2269,12 +2279,8 @@ watch(() => route.fullPath, () => {
   cursor: pointer;
 }
 
-.model-pill {
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #ebf2ff;
-  color: #2b5ebc;
-  font-size: 13px;
+.mobile-session-btn {
+  display: none;
 }
 
 .prompt-chip {
@@ -2378,6 +2384,25 @@ watch(() => route.fullPath, () => {
     align-items: stretch;
   }
 
+  .agent-panel {
+    inset: 0;
+    width: auto !important;
+    height: 100dvh !important;
+    border-radius: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .panel-sidebar {
+    border-right: none;
+    border-bottom: 1px solid #dbe6f2;
+    max-height: 40dvh;
+  }
+
+  .panel-sidebar.collapsed {
+    width: 100%;
+    max-height: 72px;
+  }
+
   .panel-header,
   .footer-actions {
     flex-direction: column;
@@ -2386,6 +2411,7 @@ watch(() => route.fullPath, () => {
 
   .panel-header {
     cursor: default;
+    padding: 16px 16px 14px;
   }
 
   .message-bubble {
@@ -2394,15 +2420,114 @@ watch(() => route.fullPath, () => {
 
   .floating-trigger {
     justify-content: center;
+    width: 100%;
   }
 
   .resize-handle {
     display: none;
   }
 
-  .manual-quote-supplier-head,
-  .manual-quote-supplier-row {
+  .mobile-session-btn {
+    display: inline-flex;
+  }
+
+  .panel-actions,
+  .flow-mode-actions,
+  .footer-actions {
+    width: 100%;
+  }
+
+  .panel-actions {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    justify-content: stretch;
+    align-items: center;
+  }
+
+  .panel-actions .mobile-session-btn,
+  .panel-actions .ghost-btn {
+    width: 100%;
+    justify-content: center;
+    display: inline-flex;
+  }
+
+  .panel-actions .icon-btn {
+    justify-self: end;
+  }
+
+  .flow-mode-bar,
+  .messages-area,
+  .panel-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .messages-area {
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .empty-card {
+    padding: 20px 18px;
+  }
+
+  .empty-suggestions {
+    flex-direction: column;
+  }
+
+  .prompt-chip {
+    width: 100%;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .panel-footer {
+    padding-top: 14px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .flow-mode-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .mode-chip {
+    width: 100%;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .pending-action-grid,
+  .manual-quote-supplier-head,
+  .manual-quote-supplier-row,
+  .pending-action-allocation-row {
+    grid-template-columns: 1fr;
+  }
+
+  .pending-action-card,
+  .manual-quote-block,
+  .recommended-supplier-card {
+    padding: 10px;
+  }
+
+  .manual-quote-supplier-row :deep(.el-input),
+  .manual-quote-supplier-row :deep(.el-input-number),
+  .manual-quote-supplier-row :deep(.el-select),
+  .manual-quote-supplier-row :deep(.el-date-editor) {
+    width: 100% !important;
+  }
+
+  .footer-actions .send-btn,
+  .footer-actions .ghost-btn {
+    width: 100%;
+    justify-content: center;
+    display: inline-flex;
+  }
+
+  .session-list {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
   }
 }
 </style>

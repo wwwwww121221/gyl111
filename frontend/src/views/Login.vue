@@ -196,6 +196,7 @@ import api from '../api'
 
 const router = useRouter()
 const route = useRoute()
+const getRedirectPath = () => String(route.query.redirect || '').trim()
 
 const loginMode = ref('supplier')
 const activeTab = ref('password')
@@ -228,6 +229,11 @@ const internalSmsForm = reactive({ phone: '', sms_code: '' })
 const resetForm = reactive({ phone: '', sms_code: '', new_password: '', confirm_password: '' })
 
 const getOpenid = () => String(route.query.openid || '').trim()
+
+const resolvePostLoginRoute = () => {
+  const redirect = getRedirectPath()
+  return redirect || '/'
+}
 
 const goRegister = () => {
   const openid = getOpenid()
@@ -362,7 +368,7 @@ const handleSupplierLogin = async (type) => {
     }
     persistLogin(res.data, form.phone)
     ElMessage.success('登录成功')
-    router.push('/')
+    router.push(resolvePostLoginRoute())
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '登录失败')
   } finally {
@@ -386,7 +392,7 @@ const handleInternalLogin = async () => {
     })
     persistLogin(data, internalForm.username)
     ElMessage.success('登录成功')
-    router.push('/')
+    router.push(resolvePostLoginRoute())
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '登录失败')
   } finally {
@@ -422,7 +428,7 @@ const handleInternalSmsLogin = async () => {
     })
     persistLogin(data, internalSmsForm.phone)
     ElMessage.success('登录成功')
-    router.push('/')
+    router.push(resolvePostLoginRoute())
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '登录失败')
   } finally {

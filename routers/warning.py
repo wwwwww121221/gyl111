@@ -144,12 +144,27 @@ def send_warning_to_supplier(
         if delivery_values:
             latest_delivery = sorted(delivery_values)[0]
 
+    project_name = None
+    if req.items:
+        project_values = []
+        for item in req.items:
+            normalized = str(
+                item.get("project_name")
+                or item.get("project_number")
+                or ""
+            ).strip()
+            if normalized and normalized not in project_values:
+                project_values.append(normalized)
+        if project_values:
+            project_name = "、".join(project_values[:3])
+
     try:
         notify_warning_message(
             db,
             supplier,
-            latest_delivery=latest_delivery,
-            item_count=len(req.items or []),
+            required_delivery_time=latest_delivery,
+            anomaly_time=datetime.now(),
+            project_name=project_name,
             buyer_name=current_user.username,
         )
     except Exception:

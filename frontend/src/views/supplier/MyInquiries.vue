@@ -353,15 +353,19 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import api, { getApiOrigin } from '../../api/index'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Search, ChatLineRound } from '@element-plus/icons-vue'
 
+const route = useRoute()
+const router = useRouter()
 const inquiries = ref([])
 const loading = ref(false)
 const searchQuery = ref('')
 const statusFilter = ref('')
 const isMobile = ref(window.innerWidth <= 768)
+const pendingAutoOpenKey = ref('')
 
 const getDisplayStatus = (row) => {
   if (row.status === 'deal') return 'deal'
@@ -475,6 +479,7 @@ const fetchInquiries = async () => {
   try {
     const res = await api.get('/supplier/my-inquiries')
     inquiries.value = res.data
+    await maybeOpenFromRoute()
   } catch (error) {
     console.error(error)
     ElMessage.error(error.response?.data?.detail || '获取询价列表失败')
@@ -497,6 +502,15 @@ watch(dialogVisible, (visible) => {
   if (visible) startDeadlineTimer()
   else stopDeadlineTimer()
 })
+
+watch(
+  () => `${route.query.inquiry_supplier_id || ''}|${route.query.action || ''}`,
+  () => {
+    if (inquiries.value.length > 0) {
+      maybeOpenFromRoute()
+    }
+  }
+)
 
 const getNewStatusText = (row) => {
   const status = getDisplayStatus(row)
@@ -696,6 +710,44 @@ const handleDetail = async (row) => {
   } catch (error) {
     console.error(error)
     ElMessage.error(error.response?.data?.detail || '获取询价详情失败')
+  }
+}
+
+const getRouteTargetRow = () => {
+  const rawLinkId = String(route.query.inquiry_supplier_id || '').trim()
+  if (!rawLinkId) return null
+  return inquiries.value.find((item) => String(item.inquiry_supplier_id) === rawLinkId) || null
+}
+
+const clearRouteActionQuery = async () => {
+  const nextQuery = { ...route.query }
+  delete nextQuery.inquiry_supplier_id
+  delete nextQuery.action
+  delete nextQuery.task_id
+  await router.replace({ path: route.path, query: nextQuery })
+}
+
+const maybeOpenFromRoute = async () => {
+  const linkId = String(route.query.inquiry_supplier_id || '').trim()
+  if (!linkId) return
+
+  const action = String(route.query.action || 'detail').trim().toLowerCase()
+  const openKey = `${linkId}:${action}`
+  if (pendingAutoOpenKey.value === openKey) return
+
+  const targetRow = getRouteTargetRow()
+  if (!targetRow) return
+
+  pendingAutoOpenKey.value = openKey
+  try {
+    if (action === 'contract' && canFillContract(targetRow)) {
+      await handleOpenContractForm(targetRow)
+    } else {
+      await handleDetail(targetRow)
+    }
+    await clearRouteActionQuery()
+  } finally {
+    pendingAutoOpenKey.value = ''
   }
 }
 
